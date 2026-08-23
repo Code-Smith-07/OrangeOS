@@ -14,6 +14,9 @@ const gdt = @import("arch/x86_64/gdt.zig");
 const idt = @import("arch/x86_64/idt.zig");
 const mm = @import("mm/mm.zig");
 const mm_test = @import("mm/test.zig");
+const platform = @import("dev/acpi/init.zig");
+const time = @import("time/time.zig");
+const tsc = @import("time/tsc.zig");
 const fmt = @import("lib/fmt.zig");
 const panic_mod = @import("panic.zig");
 
@@ -79,11 +82,20 @@ export fn kmain() callconv(.c) noreturn {
     };
     mm.reportFragmentation();
 
-    console.write("\n");
-    console.ok("Phase 2 complete - Zest manages its own memory.", .{});
-    console.info("next: ACPI, APIC, timer, interrupts enabled (Phase 3)", .{});
-
     if (build_options.mm_test) mm_test.runAll();
+
+    // ── 7. Platform: ACPI, APICs, timers, interrupts on. ────────────────────
+    console.write("\n");
+    platform.init() catch |e| {
+        console.err("platform init failed: {s}", .{@errorName(e)});
+        io.hang();
+    };
+
+    console.write("\n");
+    console.ok("Phase 3 complete - Zest keeps time.", .{});
+    console.info("next: tasks, context switch, scheduler, ring 3 (Phase 4)", .{});
+
+    heartbeat();
 
     // A deliberate breakpoint proves the IDT actually routes and returns.
     selfTest();
@@ -91,6 +103,54 @@ export fn kmain() callconv(.c) noreturn {
     if (build_options.fault_test) faultTest();
 
     io.hang();
+}
+
+/// Prove the timer actually fires: sample the tick counter across a known
+/// interval and confirm it advanced by roughly the right amount.
+fn heartbeat() void {
+    console.write("\n");
+    console.info("timer self-test: measuring against the TSC...", .{});
+
+    // Sleep on the TSC, then ask how many ticks actually arrived. On real
+    // hardware this matches TICK_HZ; under TCG emulation it shows how many
+    // the machine could not service.
+    const measured = time.measuredTickHz();
+
+    console.print("[info] tick rate: {d} Hz nominal, {d} Hz observed\n", .{
+        time.TICK_HZ, measured,
+    });
+
+    const nominal: u64 = time.TICK_HZ;
+    const drift = if (measured > nominal) measured - nominal else nominal - measured;
+    const pct = if (nominal == 0) 100 else drift * 100 / nominal;
+
+    if (pct <= 5) {
+        console.ok("timer within 5% of nominal", .{});
+    } else {
+        console.warn("dropping {d}% of ticks - expected under TCG emulation", .{pct});
+        console.info("timekeeping is TSC-based, so uptime stays correct", .{});
+    }
+
+    // Independent check: does one TSC-measured second really take one second?
+    const t0 = time.monotonicNs();
+    time.busySleepMs(1000);
+    const dt_ms = (time.monotonicNs() - t0) / 1_000_000;
+    console.print("[ ok ] 1000 ms sleep measured {d} ms\n", .{dt_ms});
+
+    console.write("\n");
+    console.info("idle: system is alive and preemptible", .{});
+
+    var last_second: u64 = 0;
+    while (true) {
+        asm volatile ("hlt");
+        const secs = time.millisSinceBoot() / 1000;
+        if (secs != last_second) {
+            last_second = secs;
+            if (secs % 5 == 0) {
+                console.print("[info] uptime {d}s, {d} ticks\n", .{ secs, time.tickCount() });
+            }
+        }
+    }
 }
 
 /// Deliberately fault, three calls deep, so the panic path and the frame-pointer

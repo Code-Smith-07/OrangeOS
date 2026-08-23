@@ -200,6 +200,23 @@ export var paging_mode_request linksection(".limine_requests") = extern struct {
     .min_mode = PAGING_MODE_X86_64_4LVL,
 };
 
+// ── RSDP (ACPI root pointer) ─────────────────────────────────────────────────
+
+pub const RsdpResponse = extern struct {
+    revision: u64,
+    address: u64,
+};
+
+export var rsdp_request linksection(".limine_requests") = extern struct {
+    id: [4]u64,
+    revision: u64,
+    response: ?*RsdpResponse,
+}{
+    .id = .{ COMMON_MAGIC_0, COMMON_MAGIC_1, 0xc5e77b6b397e7b43, 0x27637845accdcf3c },
+    .revision = 0,
+    .response = null,
+};
+
 // ── Accessors ────────────────────────────────────────────────────────────────
 
 pub fn bootloaderInfo() ?*BootloaderInfoResponse {
@@ -216,6 +233,11 @@ pub fn memmap() ?*MemmapResponse {
 
 pub fn executableAddress() ?*ExecutableAddressResponse {
     return executable_address_request.response;
+}
+
+pub fn rsdp() ?u64 {
+    const r = rsdp_request.response orelse return null;
+    return r.address;
 }
 
 pub fn hhdmOffset() ?u64 {

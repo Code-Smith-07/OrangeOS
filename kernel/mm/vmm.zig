@@ -319,6 +319,29 @@ pub fn init() !void {
     loadCr3(kernel_pml4_phys);
 }
 
+/// Map a physical MMIO range into the HHDM window and return its virtual
+/// address. Device registers must be uncached: the CPU caching a status
+/// register would read stale values forever.
+pub fn mapMmio(phys: u64, size: usize) Error!u64 {
+    const aligned_phys = std.mem.alignBackward(u64, phys, PAGE_SIZE);
+    const offset = phys - aligned_phys;
+    const total = std.mem.alignForward(usize, size + offset, PAGE_SIZE);
+    const virt = pmm.physToVirt(aligned_phys);
+
+    try mapRange(
+        kernel_pml4_phys,
+        virt,
+        aligned_phys,
+        total,
+        PRESENT | WRITABLE | NO_EXECUTE | NO_CACHE | WRITE_THROUGH,
+    );
+
+    var off: usize = 0;
+    while (off < total) : (off += PAGE_SIZE) invalidatePage(virt + off);
+
+    return virt + offset;
+}
+
 pub fn kernelPml4() u64 {
     return kernel_pml4_phys;
 }

@@ -44,7 +44,16 @@ pub fn build(b: *std.Build) void {
         "Run memory subsystem stress tests at boot",
     ) orelse false;
 
+    const tick_hz = b.option(
+        u32,
+        "tick-hz",
+        "Scheduler tick frequency (default 1000). QEMU's TCG emulation cannot " ++
+            "service 1000 Hz on a non-x86 host and will drop ticks; timekeeping " ++
+            "is TSC-based so only scheduling granularity is affected.",
+    ) orelse 1000;
+
     const options = b.addOptions();
+    options.addOption(u32, "tick_hz", tick_hz);
     options.addOption(bool, "fault_test", fault_test);
     options.addOption(bool, "mm_test", mm_test);
 
