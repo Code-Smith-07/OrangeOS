@@ -9,11 +9,11 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-orange.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-x86__64-orange.svg)](ARCHITECTURE.md)
 [![Language](https://img.shields.io/badge/language-Zig-orange.svg)](https://ziglang.org)
-[![Status](https://img.shields.io/badge/status-Phase%202-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
+[![Status](https://img.shields.io/badge/status-Phase%203-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS booting](docs/screenshots/phase1.png)
+![Orange OS booting](docs/screenshots/phase2.png)
 
 </div>
 
@@ -76,15 +76,15 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 1 complete.** The kernel boots, installs its own GDT/TSS/IDT, and turns
-any CPU fault into a full diagnostic instead of a silent reboot.
+**Phase 2 complete.** The kernel manages its own memory: a buddy page-frame
+allocator, its own page tables with W^X enforced, and a slab-backed heap.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
 | 0 | Boot, serial, framebuffer | ✅ **Done** |
 | 1 | GDT, IDT, exception handling | ✅ **Done** |
-| 2 | Memory management | 🔨 In progress |
-| 3 | Interrupts and time | ⬜ Planned |
+| 2 | Memory management | ✅ **Done** |
+| 3 | Interrupts and time | 🔨 In progress |
 | 4 | Processes and scheduling | ⬜ Planned |
 | 5 | Storage and filesystems | ⬜ Planned |
 | 6 | Userland and IPC | ⬜ Planned |
@@ -129,6 +129,12 @@ zig build run
 
 ```bash
 gdb build/kernel.elf -ex 'target remote :1234' -ex 'break kmain'
+```
+
+Run the memory subsystem stress tests:
+
+```bash
+zig build -Dmm-test run
 ```
 
 Exercise the fault path, then resolve the backtrace to function names:

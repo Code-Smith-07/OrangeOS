@@ -158,6 +158,48 @@ export var hhdm_request linksection(".limine_requests") = extern struct {
     .response = null,
 };
 
+// ── Executable address ───────────────────────────────────────────────────────
+// Needed to build our own page tables: we know the kernel's virtual addresses
+// from the linker script, but not where Limine actually loaded it in RAM.
+
+pub const ExecutableAddressResponse = extern struct {
+    revision: u64,
+    physical_base: u64,
+    virtual_base: u64,
+};
+
+export var executable_address_request linksection(".limine_requests") = extern struct {
+    id: [4]u64,
+    revision: u64,
+    response: ?*ExecutableAddressResponse,
+}{
+    .id = .{ COMMON_MAGIC_0, COMMON_MAGIC_1, 0x71ba76863cc55f63, 0xb2644a48c516a487 },
+    .revision = 0,
+    .response = null,
+};
+
+// ── Paging mode ──────────────────────────────────────────────────────────────
+// Pin 4-level paging. 5-level would change the address layout documented in
+// ARCHITECTURE.md and is not worth supporting yet.
+
+pub const PAGING_MODE_X86_64_4LVL: u64 = 0;
+
+export var paging_mode_request linksection(".limine_requests") = extern struct {
+    id: [4]u64,
+    revision: u64,
+    response: ?*anyopaque,
+    mode: u64,
+    max_mode: u64,
+    min_mode: u64,
+}{
+    .id = .{ COMMON_MAGIC_0, COMMON_MAGIC_1, 0x95c1a0edab0944cb, 0xa4e5cb3842f7488a },
+    .revision = 1,
+    .response = null,
+    .mode = PAGING_MODE_X86_64_4LVL,
+    .max_mode = PAGING_MODE_X86_64_4LVL,
+    .min_mode = PAGING_MODE_X86_64_4LVL,
+};
+
 // ── Accessors ────────────────────────────────────────────────────────────────
 
 pub fn bootloaderInfo() ?*BootloaderInfoResponse {
@@ -170,6 +212,10 @@ pub fn framebuffers() ?*FramebufferResponse {
 
 pub fn memmap() ?*MemmapResponse {
     return memmap_request.response;
+}
+
+pub fn executableAddress() ?*ExecutableAddressResponse {
+    return executable_address_request.response;
 }
 
 pub fn hhdmOffset() ?u64 {

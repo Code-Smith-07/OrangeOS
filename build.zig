@@ -38,8 +38,15 @@ pub fn build(b: *std.Build) void {
         "After boot, dereference null from nested calls to exercise the fault path",
     ) orelse false;
 
+    const mm_test = b.option(
+        bool,
+        "mm-test",
+        "Run memory subsystem stress tests at boot",
+    ) orelse false;
+
     const options = b.addOptions();
     options.addOption(bool, "fault_test", fault_test);
+    options.addOption(bool, "mm_test", mm_test);
 
     // ── Zest kernel ──────────────────────────────────────────────────────────
     const kernel_mod = b.createModule(.{

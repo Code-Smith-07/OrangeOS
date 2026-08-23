@@ -12,6 +12,8 @@ const console = @import("console.zig");
 const io = @import("arch/x86_64/io.zig");
 const gdt = @import("arch/x86_64/gdt.zig");
 const idt = @import("arch/x86_64/idt.zig");
+const mm = @import("mm/mm.zig");
+const mm_test = @import("mm/test.zig");
 const fmt = @import("lib/fmt.zig");
 const panic_mod = @import("panic.zig");
 
@@ -70,9 +72,18 @@ export fn kmain() callconv(.c) noreturn {
     idt.init();
     console.ok("IDT installed (256 vectors, 32 exception handlers)", .{});
 
+    // ── 6. Memory. pmm -> vmm -> heap, in that order. ───────────────────────
+    mm.init() catch |e| {
+        console.err("memory init failed: {s}", .{@errorName(e)});
+        io.hang();
+    };
+    mm.reportFragmentation();
+
     console.write("\n");
-    console.ok("Phase 1 complete - Zest survives faults.", .{});
-    console.info("next: physical memory manager, paging, heap (Phase 2)", .{});
+    console.ok("Phase 2 complete - Zest manages its own memory.", .{});
+    console.info("next: ACPI, APIC, timer, interrupts enabled (Phase 3)", .{});
+
+    if (build_options.mm_test) mm_test.runAll();
 
     // A deliberate breakpoint proves the IDT actually routes and returns.
     selfTest();
@@ -113,7 +124,7 @@ fn selfTest() void {
 
 /// Total up usable RAM from the Limine memory map and print a summary.
 fn reportMemory() void {
-    const mm = limine.memmap() orelse {
+    const map = limine.memmap() orelse {
         console.warn("no memory map from bootloader", .{});
         return;
     };
@@ -123,8 +134,8 @@ fn reportMemory() void {
     var total: u64 = 0;
 
     var i: usize = 0;
-    while (i < mm.entry_count) : (i += 1) {
-        const e = mm.entries[i];
+    while (i < map.entry_count) : (i += 1) {
+        const e = map.entries[i];
         total += e.length;
         switch (e.type) {
             .usable => usable += e.length,
@@ -141,7 +152,7 @@ fn reportMemory() void {
         fmt.humanBytes(&b2, reclaimable),
         fmt.humanBytes(&b3, total),
     });
-    console.print("[info] memory map: {d} regions\n", .{mm.entry_count});
+    console.print("[info] memory map: {d} regions\n", .{map.entry_count});
 }
 
 /// Draw the Orange OS boot banner: an orange bar, the name, and the version.
