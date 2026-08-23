@@ -1,0 +1,31 @@
+Orange OS is dual-licensed under either of:
+
+  * Apache License, Version 2.0 ......... see LICENSE-APACHE
+  * MIT License ......................... see LICENSE-MIT
+
+at your option.
+
+You may choose either license when using, modifying, or redistributing this
+software. You are not required to comply with both.
+
+SPDX-License-Identifier: MIT OR Apache-2.0
+
+Copyright (c) 2026 Official Vishwateja
+
+
+CONTRIBUTION
+------------
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this work by you shall be dual-licensed as above, without any
+additional terms or conditions.
+
+
+WHY TWO LICENSES
+----------------
+
+MIT is short, permissive, and universally understood.
+Apache 2.0 adds an explicit patent grant and contribution terms.
+
+Offering both lets downstream users pick whichever fits their legal situation.
+This is the same arrangement used by the Rust project.

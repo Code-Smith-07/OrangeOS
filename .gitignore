@@ -1,0 +1,42 @@
+# Zig
+zig-out/
+zig-cache/
+.zig-cache/
+
+# Build output
+build/
+*.o
+*.a
+*.elf
+*.bin
+*.map
+
+# Disk images
+*.iso
+*.img
+*.qcow2
+*.vdi
+
+# Bootloader (fetched at build time)
+third_party/limine/
+
+# Debug
+*.log
+*.core
+qemu.log
+serial.log
+
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cache/
+compile_commands.json

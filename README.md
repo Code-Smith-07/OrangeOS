@@ -1,0 +1,156 @@
+<div align="center">
+
+# 🍊 Orange OS
+
+**A modern operating system, written from scratch.**
+
+*No Linux. No BSD. No inherited code. Every line ours.*
+
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-orange.svg)](LICENSE)
+[![Architecture](https://img.shields.io/badge/arch-x86__64-orange.svg)](ARCHITECTURE.md)
+[![Language](https://img.shields.io/badge/language-Zig-orange.svg)](https://ziglang.org)
+[![Status](https://img.shields.io/badge/status-Phase%200-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
+
+**[📐 Read the Architecture](ARCHITECTURE.md)**
+
+</div>
+
+---
+
+## What this is
+
+Orange OS is a from-scratch operating system for `x86_64` — its own kernel, its
+own C library, its own filesystem, its own display server, its own desktop.
+It is not a Linux distribution and shares no code with any existing OS.
+
+Three things define the project:
+
+**Written from scratch.** Every line in the kernel and core userland is ours.
+That gives total control over the hardware, the software, and the licensing.
+
+**Radically lightweight.** The full desktop targets **under 128 MB of RAM at
+idle** and a **sub-2-second boot**. These are CI-enforced budgets, not
+aspirations — a change that regresses them fails the build.
+
+**Beautiful by design.** Compositing, animation, and typography are Phase 0
+concerns, not something bolted on later.
+
+---
+
+## Architecture at a glance
+
+```
+  APPLICATIONS      Squeeze · Files · Settings · Editor · Monitor
+  TOOLKIT           Segment       widgets, layout, text, theming
+  DESKTOP           Grove         panel, dock, launcher
+  DISPLAY SERVER    Peel          compositor, window mgmt, input
+  SERVICES          Seed (init) · devmgr · netd · audiod · logd
+  C LIBRARY         Pulp          libc + syscall stubs
+  ══════════════════════════════════════════════════ ring 3 / ring 0
+  KERNEL            Zest          sched · mm · vfs · ipc · drivers
+  ARCH LAYER        x86_64        GDT · IDT · paging · APIC
+  BOOT              Limine        UEFI / BIOS
+```
+
+Every component has a citrus name. Full detail — including the complete file
+tree, memory layout, syscall ABI, and IPC model — is in
+**[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
+| Name | Component |
+|------|-----------|
+| **Zest** | The kernel |
+| **Pulp** | C standard library |
+| **Seed** | init, PID 1 |
+| **Peel** | Display server / compositor |
+| **Segment** | Widget toolkit |
+| **Grove** | Desktop shell |
+| **Squeeze** | Terminal emulator |
+| **Juice** | Command-line shell |
+| **Crate** | Package manager |
+| **CitrusFS** | Native filesystem |
+| **Marmalade** | Debug and trace subsystem |
+
+---
+
+## Status
+
+**Phase 0 — Foundation.** Architecture complete. Implementation beginning.
+
+| Phase | Milestone | Status |
+|-------|-----------|--------|
+| 0 | Boot, serial, framebuffer | 🔨 In progress |
+| 1 | GDT, IDT, exception handling | ⬜ Planned |
+| 2 | Memory management | ⬜ Planned |
+| 3 | Interrupts and time | ⬜ Planned |
+| 4 | Processes and scheduling | ⬜ Planned |
+| 5 | Storage and filesystems | ⬜ Planned |
+| 6 | Userland and IPC | ⬜ Planned |
+| 7 | **Graphics — the desktop** | ⬜ Planned |
+| 8 | SMP, networking, USB, audio | ⬜ Planned |
+| 9 | Real hardware | ⬜ Planned |
+
+See the [full roadmap](ARCHITECTURE.md#16-development-roadmap) for what each
+phase contains and honest time estimates.
+
+---
+
+## Building
+
+> Not yet buildable — Phase 0 is in progress. These are the intended commands.
+
+**Requirements** (macOS or Linux host):
+
+```bash
+brew install qemu zig      # macOS
+```
+
+**Build and run:**
+
+```bash
+zig build                  # → build/orange.iso
+zig build run              # boot in QEMU
+zig build debug            # boot halted, GDB stub on :1234
+zig build test             # host-side unit tests
+```
+
+---
+
+## Design principles
+
+1. **Correctness before performance** — a slow kernel that works can be optimized
+2. **Explicit before clever** — kernel code is read at 3 AM chasing a triple fault
+3. **No silent failure** — every fallible operation returns an error
+4. **One allocator per purpose** — never mix allocation domains
+5. **Architecture behind a wall** — porting must touch exactly one directory
+6. **The desktop is not privileged** — if the compositor dies, the system lives
+7. **Measure every byte** — memory footprint is a tracked CI budget
+
+---
+
+## License
+
+Dual-licensed under either:
+
+- **[Apache License 2.0](LICENSE-APACHE)** — includes an explicit patent grant
+- **[MIT License](LICENSE-MIT)** — short and permissive
+
+at your option. `SPDX-License-Identifier: MIT OR Apache-2.0`
+
+---
+
+<div align="center">
+
+### Official Vishwateja
+
+**Developed by Vishwateja S B**
+*Software Developer and AI Data Analyst*
+
+Copyright © 2026 Official Vishwateja
+
+---
+
+🍊
+
+*Written from scratch. Every layer. On purpose.*
+
+</div>
