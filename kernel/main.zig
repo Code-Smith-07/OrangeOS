@@ -3,12 +3,15 @@
 //! Phase 0: reach long mode via Limine, bring up serial, claim the
 //! framebuffer, and report what the bootloader handed us.
 
+const build_options = @import("build_options");
 const limine = @import("boot/limine_req.zig");
 const serial = @import("drivers/char/serial.zig");
 const framebuffer = @import("drivers/video/framebuffer.zig");
 const fbcon = @import("drivers/video/fbcon.zig");
 const console = @import("console.zig");
 const io = @import("arch/x86_64/io.zig");
+const gdt = @import("arch/x86_64/gdt.zig");
+const idt = @import("arch/x86_64/idt.zig");
 const fmt = @import("lib/fmt.zig");
 const panic_mod = @import("panic.zig");
 
@@ -60,11 +63,52 @@ export fn kmain() callconv(.c) noreturn {
 
     reportMemory();
 
+    // ── 5. CPU structures. Faults become diagnosable from here on. ───────────
+    gdt.init();
+    console.ok("GDT + TSS installed (IST stacks for #DF, NMI, #MC)", .{});
+
+    idt.init();
+    console.ok("IDT installed (256 vectors, 32 exception handlers)", .{});
+
     console.write("\n");
-    console.ok("Phase 0 complete - Zest is alive.", .{});
-    console.info("next: GDT, IDT, exception handlers (Phase 1)", .{});
+    console.ok("Phase 1 complete - Zest survives faults.", .{});
+    console.info("next: physical memory manager, paging, heap (Phase 2)", .{});
+
+    // A deliberate breakpoint proves the IDT actually routes and returns.
+    selfTest();
+
+    if (build_options.fault_test) faultTest();
 
     io.hang();
+}
+
+/// Deliberately fault, three calls deep, so the panic path and the frame-pointer
+/// backtrace both get exercised. Enabled with `zig build -Dfault-test`.
+fn faultTest() void {
+    console.write("\n");
+    console.info("fault test: dereferencing null from nested calls...", .{});
+    faultLevel1();
+}
+
+noinline fn faultLevel3() void {
+    const bad: *allowzero volatile u64 = @ptrFromInt(0);
+    bad.* = 0xDEAD;
+}
+noinline fn faultLevel2() void {
+    faultLevel3();
+}
+noinline fn faultLevel1() void {
+    faultLevel2();
+}
+
+/// Prove the interrupt path works end to end: raise #BP, have the handler run,
+/// and return normally to the next instruction. If the IDT were wrong this
+/// would triple-fault instead of printing.
+fn selfTest() void {
+    console.write("\n");
+    console.info("self-test: raising int3 (breakpoint)...", .{});
+    asm volatile ("int3");
+    console.ok("returned from exception handler - interrupt path works", .{});
 }
 
 /// Total up usable RAM from the Limine memory map and print a summary.

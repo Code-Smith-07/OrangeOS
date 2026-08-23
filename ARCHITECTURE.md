@@ -613,8 +613,10 @@ kernel/
 │   │   ├── gdt.zig                  Global Descriptor Table + TSS + IST stacks
 │   │   ├── idt.zig                  Interrupt Descriptor Table, 256 vectors
 │   │   ├── isr.zig                  Exception handlers 0–31 (#PF, #GP, #DF…)
+│   │   │                            Entry stubs are comptime-generated naked
+│   │   │                            functions, not a separate .S file, so the
+│   │   │                            vector table and entry code cannot drift
 │   │   ├── irq.zig                  Hardware IRQ dispatch and routing
-│   │   ├── isr_stubs.S              Assembly entry stubs, register save/restore
 │   │   ├── apic.zig                 Local APIC: timer, EOI, IPI
 │   │   ├── ioapic.zig               I/O APIC: IRQ redirection entries
 │   │   ├── msr.zig                  Model-Specific Register read/write

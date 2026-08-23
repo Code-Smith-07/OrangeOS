@@ -31,6 +31,16 @@ pub fn build(b: *std.Build) void {
         .cpu_features_add = enabled,
     });
 
+    // ── Build options ────────────────────────────────────────────────────────
+    const fault_test = b.option(
+        bool,
+        "fault-test",
+        "After boot, dereference null from nested calls to exercise the fault path",
+    ) orelse false;
+
+    const options = b.addOptions();
+    options.addOption(bool, "fault_test", fault_test);
+
     // ── Zest kernel ──────────────────────────────────────────────────────────
     const kernel_mod = b.createModule(.{
         .root_source_file = b.path("kernel/main.zig"),
@@ -46,6 +56,8 @@ pub fn build(b: *std.Build) void {
         .strip = false,
         .single_threaded = true, // SMP arrives in Phase 8
     });
+
+    kernel_mod.addOptions("build_options", options);
 
     const kernel = b.addExecutable(.{
         .name = "kernel.elf",

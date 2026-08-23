@@ -9,11 +9,11 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-orange.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-x86__64-orange.svg)](ARCHITECTURE.md)
 [![Language](https://img.shields.io/badge/language-Zig-orange.svg)](https://ziglang.org)
-[![Status](https://img.shields.io/badge/status-Phase%201-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
+[![Status](https://img.shields.io/badge/status-Phase%202-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS Phase 0 booting](docs/screenshots/phase0.png)
+![Orange OS booting](docs/screenshots/phase1.png)
 
 </div>
 
@@ -76,14 +76,14 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 0 complete.** The kernel boots in QEMU, brings up a serial console and
-a framebuffer text console, and reports the machine it found.
+**Phase 1 complete.** The kernel boots, installs its own GDT/TSS/IDT, and turns
+any CPU fault into a full diagnostic instead of a silent reboot.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
 | 0 | Boot, serial, framebuffer | ✅ **Done** |
-| 1 | GDT, IDT, exception handling | 🔨 In progress |
-| 2 | Memory management | ⬜ Planned |
+| 1 | GDT, IDT, exception handling | ✅ **Done** |
+| 2 | Memory management | 🔨 In progress |
 | 3 | Interrupts and time | ⬜ Planned |
 | 4 | Processes and scheduling | ⬜ Planned |
 | 5 | Storage and filesystems | ⬜ Planned |
@@ -130,6 +130,21 @@ zig build run
 ```bash
 gdb build/kernel.elf -ex 'target remote :1234' -ex 'break kmain'
 ```
+
+Exercise the fault path, then resolve the backtrace to function names:
+
+```bash
+zig build -Dfault-test run
+```
+
+```bash
+./tools/symbolize/symbolize.py < build/serial.log
+```
+
+A page fault reports the faulting address, a decoded cause, every register, and
+a frame-pointer backtrace:
+
+![Orange OS fault diagnostic](docs/screenshots/phase1-fault.png)
 
 ---
 
