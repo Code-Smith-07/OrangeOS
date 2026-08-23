@@ -9,9 +9,11 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-orange.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-x86__64-orange.svg)](ARCHITECTURE.md)
 [![Language](https://img.shields.io/badge/language-Zig-orange.svg)](https://ziglang.org)
-[![Status](https://img.shields.io/badge/status-Phase%200-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
+[![Status](https://img.shields.io/badge/status-Phase%201-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
+
+![Orange OS Phase 0 booting](docs/screenshots/phase0.png)
 
 </div>
 
@@ -74,12 +76,13 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 0 — Foundation.** Architecture complete. Implementation beginning.
+**Phase 0 complete.** The kernel boots in QEMU, brings up a serial console and
+a framebuffer text console, and reports the machine it found.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
-| 0 | Boot, serial, framebuffer | 🔨 In progress |
-| 1 | GDT, IDT, exception handling | ⬜ Planned |
+| 0 | Boot, serial, framebuffer | ✅ **Done** |
+| 1 | GDT, IDT, exception handling | 🔨 In progress |
 | 2 | Memory management | ⬜ Planned |
 | 3 | Interrupts and time | ⬜ Planned |
 | 4 | Processes and scheduling | ⬜ Planned |
@@ -96,21 +99,36 @@ phase contains and honest time estimates.
 
 ## Building
 
-> Not yet buildable — Phase 0 is in progress. These are the intended commands.
-
-**Requirements** (macOS or Linux host):
+**Requirements** (macOS):
 
 ```bash
-brew install qemu zig      # macOS
+brew install qemu xorriso zig@0.14 && brew link --overwrite zig@0.14
 ```
 
-**Build and run:**
+> **Zig 0.14.1 is required — not 0.16.** Zig 0.16's bundled LLD segfaults when
+> linking any freestanding x86_64 binary, and its self-hosted ELF linker
+> silently ignores linker scripts, which places the kernel at `0x1000000`
+> instead of the higher-half address `-mcmodel=kernel` requires. 0.14.1 handles
+> both correctly.
+
+Then fetch the bootloader and build:
 
 ```bash
-zig build                  # → build/orange.iso
-zig build run              # boot in QEMU
-zig build debug            # boot halted, GDB stub on :1234
-zig build test             # host-side unit tests
+./scripts/fetch-limine.sh
+zig build run
+```
+
+| Command | What it does |
+|---------|--------------|
+| `zig build` | Compile and assemble `build/orange.iso` |
+| `zig build run` | Boot in QEMU with serial on stdio |
+| `zig build debug` | Boot halted, GDB stub on `:1234` |
+| `zig build trace` | Boot with interrupt and fault tracing |
+
+**Debugging:**
+
+```bash
+gdb build/kernel.elf -ex 'target remote :1234' -ex 'break kmain'
 ```
 
 ---

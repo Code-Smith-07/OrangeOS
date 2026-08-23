@@ -133,7 +133,7 @@ Locked-in choices. Changing any of these is a project-wide event.
 | # | Decision | Choice | Rationale |
 |---|----------|--------|-----------|
 | D1 | **Target architecture** | `x86_64` long mode | Widest documentation, real hardware available, all tooling mature. `aarch64` planned behind the arch wall. |
-| D2 | **Implementation language** | **Zig** `0.14+` | Cross-compiles to bare metal from macOS with zero toolchain setup, ships its own ELF linker, C-ABI native, compile-time safety without a runtime. |
+| D2 | **Implementation language** | **Zig** `0.14.1` (pinned) | Cross-compiles to bare metal from macOS with zero toolchain setup, C-ABI native, compile-time safety without a runtime. **Pinned to 0.14.1:** 0.16's bundled LLD segfaults on any freestanding x86_64 link, and its self-hosted ELF linker ignores linker scripts. |
 | D3 | **Assembly** | Inline Zig `asm` + `.S` for trampolines | Only where unavoidable: context switch, ISR stubs, syscall entry. |
 | D4 | **Kernel model** | **Monolithic with loadable modules** | Microkernel IPC costs contradict the low-resource goal; a pure monolith is unmaintainable. Drivers are modules with defined interfaces. |
 | D5 | **Bootloader** | **Limine** (protocol v3) | Hands us long mode, a higher-half map, the memory map, a linear framebuffer, and ACPI pointers. UEFI + BIOS both. |
