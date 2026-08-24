@@ -17,10 +17,21 @@ pub const PerCpu = extern struct {
     user_rsp: u64 = 0,
     /// gs:16 — currently running task.
     current_task: u64 = 0,
-    /// gs:24 — this CPU's LAPIC id.
-    cpu_id: u64 = 0,
-    /// gs:32 — pointer to this block, so a CPU can find itself.
-    self_ptr: u64 = 0,
+    /// gs:24 — this CPU's index into the block array. Read through GS so a
+    /// core can identify itself without a lock or a lookup.
+    cpu_index: u64 = 0,
+    /// gs:32 — this CPU's LAPIC id.
+    apic_id: u64 = 0,
+
+    // ── Scheduler state, per CPU ────────────────────────────────────────────
+    // `current` used to be a single global. With more than one core running
+    // the scheduler that is immediately wrong: two CPUs would believe they
+    // were running the same task and both would switch away from it.
+    current: ?*anyopaque = null,
+    idle: ?*anyopaque = null,
+    /// Set by the timer tick, acted on where switching is safe.
+    need_resched: bool = false,
+    switches: u64 = 0,
 };
 
 pub const MAX_CPUS = 32;
@@ -51,37 +62,65 @@ fn writeMsr(msr: u32, value: u64) void {
 /// a swapgs of its own. Any scheme where kernel GS depends on how the thread
 /// got there breaks the moment the scheduler runs.
 pub fn init() void {
-    blocks[0].cpu_id = 0;
+    blocks[0].cpu_index = 0;
+    blocks[0].apic_id = 0;
     writeMsr(IA32_GS_BASE, @intFromPtr(&blocks[0]));
     writeMsr(IA32_KERNEL_GS_BASE, 0);
 }
 
 /// Establish the same invariant on an application processor. Called from the
 /// AP's own entry point, on its own stack.
-pub fn initAp(index: usize, apic_id: u32) void {
-    blocks[index].cpu_id = apic_id;
+pub fn initAp(index: usize, apic_id_value: u32) void {
+    blocks[index].cpu_index = index;
+    blocks[index].apic_id = apic_id_value;
     writeMsr(IA32_GS_BASE, @intFromPtr(&blocks[index]));
     writeMsr(IA32_KERNEL_GS_BASE, 0);
+}
+
+fn readMsrRaw(msr: u32) u64 {
+    // One rdmsr, both halves out of the same instruction. Issuing two separate
+    // rdmsr instructions and taking eax from one and edx from the other is not
+    // a 64-bit read: the compiler is free to schedule them independently, and
+    // the halves can come from different executions.
+    var low: u32 = undefined;
+    var high: u32 = undefined;
+    asm volatile ("rdmsr"
+        : [low] "={eax}" (low),
+          [high] "={edx}" (high),
+        : [msr] "{ecx}" (msr),
+    );
+    return (@as(u64, high) << 32) | low;
+}
+
+pub fn gsBase() u64 {
+    return readMsrRaw(IA32_GS_BASE);
+}
+
+pub fn blockAddr(index: usize) u64 {
+    return @intFromPtr(&blocks[index]);
 }
 
 pub fn block(index: usize) *PerCpu {
     return &blocks[index];
 }
 
-/// Read this CPU's own block through GS, which is the only way that works
-/// identically on every core.
-pub fn current() *PerCpu {
-    const addr = asm volatile ("movq %%gs:0x20, %[out]"
+/// Which core is executing this code. Read straight out of GS, so it is
+/// correct on every core with no lock and no lookup.
+pub inline fn cpuIndex() usize {
+    return @intCast(asm volatile ("movq %%gs:24, %[out]"
         : [out] "=r" (-> u64),
-    );
-    _ = addr;
-    return &blocks[0];
+    ));
+}
+
+/// This CPU's own block.
+pub inline fn this() *PerCpu {
+    return &blocks[cpuIndex()];
 }
 
 pub fn self() *PerCpu {
-    return &blocks[0];
+    return this();
 }
 
 pub fn setKernelStack(rsp: u64) void {
-    blocks[0].kernel_rsp = rsp;
+    this().kernel_rsp = rsp;
 }

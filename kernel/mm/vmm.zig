@@ -192,15 +192,15 @@ fn enableNx() void {
     const IA32_EFER: u32 = 0xC000_0080;
     const NXE: u64 = 1 << 11;
 
-    const low = asm volatile ("rdmsr"
-        : [ret] "={eax}" (-> u32),
+    // One rdmsr, both halves from the same instruction. Two separate rdmsr
+    // instructions taking eax from one and edx from the other is not a 64-bit
+    // read - the compiler may schedule them independently.
+    var low: u32 = undefined;
+    var high: u32 = undefined;
+    asm volatile ("rdmsr"
+        : [low] "={eax}" (low),
+          [high] "={edx}" (high),
         : [msr] "{ecx}" (IA32_EFER),
-        : "edx"
-    );
-    const high = asm volatile ("rdmsr"
-        : [ret] "={edx}" (-> u32),
-        : [msr] "{ecx}" (IA32_EFER),
-        : "eax"
     );
     const efer = (@as(u64, high) << 32) | low;
     const updated = efer | NXE;

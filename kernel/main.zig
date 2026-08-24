@@ -18,6 +18,7 @@ const platform = @import("dev/acpi/init.zig");
 const time = @import("time/time.zig");
 const tsc = @import("time/tsc.zig");
 const sched = @import("sched/sched.zig");
+const smp = @import("arch/x86_64/smp.zig");
 const sched_test = @import("sched/test.zig");
 const process = @import("sched/process.zig");
 const blk_test = @import("drivers/block/test.zig");
@@ -82,6 +83,13 @@ export fn kmain() callconv(.c) noreturn {
     idt.init();
     console.ok("IDT installed (256 vectors, 32 exception handlers)", .{});
 
+    // Per-CPU data must exist before interrupts are enabled. The timer handler
+    // reads this core's index out of GS to decide whether it owns the wall
+    // clock, and a GS_BASE of zero makes that a null dereference at the first
+    // tick - which is exactly what happened.
+    percpu.init();
+    console.ok("per-CPU block established (GS_BASE)", .{});
+
     // ── 6. Memory. pmm -> vmm -> heap, in that order. ───────────────────────
     mm.init() catch |e| {
         console.err("memory init failed: {s}", .{@errorName(e)});
@@ -106,9 +114,8 @@ export fn kmain() callconv(.c) noreturn {
     console.ok("scheduler: MLFQ, 4 levels, idle thread created", .{});
 
     // ── 9. Syscall gate and per-CPU data, needed before any ring 3 code. ────
-    percpu.init();
     syscall_entry.init();
-    console.ok("syscall gate armed (SYSCALL/SYSRET, per-CPU block via GS)", .{});
+    console.ok("syscall gate armed (SYSCALL/SYSRET)", .{});
 
     console.write("\n");
     console.ok("Phase 5 complete - Zest reads and runs from disk.", .{});
@@ -118,9 +125,17 @@ export fn kmain() callconv(.c) noreturn {
     if (build_options.fs_test) fs_test.run();
 
     if (build_options.sched_test) sched_test.spawnAll();
+
+    // A short-lived reporter, so the per-CPU switch counts are visible without
+    // needing a userland tool for it.
+    _ = sched.spawn("cpu-report", cpuReport, null, .batch) catch {};
     _ = sched.spawn("init", process.initThread, null, .normal) catch |e| {
         console.err("could not spawn init: {s}", .{@errorName(e)});
     };
+
+    // Let the other cores into the scheduler now that the run queues exist
+    // and there is work on them.
+    smp.releaseAps();
 
     // Hand the boot context to the scheduler. This never returns: the boot
     // stack is abandoned and every subsequent instruction runs on a thread.
@@ -132,6 +147,12 @@ export fn kmain() callconv(.c) noreturn {
     if (build_options.fault_test) faultTest();
 
     io.hang();
+}
+
+/// Wait a while, then report how much work each core has done.
+fn cpuReport(_: ?*anyopaque) void {
+    time.busySleepMs(12_000);
+    sched.reportCpus(smp.cpusOnline());
 }
 
 /// Prove the timer actually fires: sample the tick counter across a known

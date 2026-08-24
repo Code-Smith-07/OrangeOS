@@ -19,6 +19,9 @@ const tramp = @import("trampoline.zig");
 const tsc = @import("../../time/tsc.zig");
 const console = @import("../../console.zig");
 const io = @import("io.zig");
+const sched = @import("../../sched/sched.zig");
+const time = @import("../../time/time.zig");
+const syscall_entry = @import("syscall_entry.zig");
 
 /// LAPIC registers used only for IPI delivery.
 const REG_ICR_LOW: usize = 0x300;
@@ -62,20 +65,56 @@ export fn apEntry(index: u64) callconv(.c) noreturn {
 
     // Each core needs its own view of the CPU-local structures. The GDT and
     // IDT are shared and read-only in practice, so they can simply be loaded.
-    gdt.init();
+    // Order matters, and not for the reason it looks like. Loading the GDT
+    // reloads every segment register, and writing the GS *selector* zeroes
+    // GS_BASE - in long mode the base survives only until something loads the
+    // segment. So the per-CPU block must be established AFTER the GDT, never
+    // before, or this core comes up with a null GS and faults on the first
+    // %gs-relative access.
+    gdt.initCpu(i);
     idt.load();
     percpu.initAp(i, apic.id());
 
+    // SYSCALL is configured through per-CPU MSRs: EFER.SCE, STAR, LSTAR and
+    // FMASK are all core-local. Skipping this on an application processor
+    // makes the `syscall` instruction raise #UD the moment a task migrates
+    // there - which is a fault in userspace with no obvious cause.
+    syscall_entry.init();
+
     apic.initAp();
+
+    // Every core needs its own idle task: idle is where a core goes when no
+    // work is ready, and two cores cannot share one stack.
+    sched.initCpu(i) catch {
+        params().ready = 1;
+        while (true) asm volatile ("hlt");
+    };
 
     params().ready = 1;
     _ = @atomicRmw(usize, &online, .Add, 1, .seq_cst);
 
-    // Nothing schedules across cores yet, so an AP parks. Waking here is
-    // harmless: it simply halts again.
-    while (true) {
-        asm volatile ("hlt");
+    // Signal that this core is ready, then wait until the boot processor has
+    // finished starting everyone. Entering the scheduler before the run queues
+    // are live would have this core pick work that does not exist yet.
+    while (@atomicLoad(bool, &release_aps, .acquire) == false) {
+        asm volatile ("pause");
     }
+
+    // Each core drives its own preemption: the LAPIC timer is per-CPU, so a
+    // core without one would run whatever it picked up until that task blocked.
+    apic.startTimer(time.TICK_HZ);
+    io.sti();
+
+    sched.startAp();
+}
+
+/// Held false until the boot processor has brought everyone up and entered the
+/// scheduler itself.
+var release_aps: bool = false;
+
+/// Let the application processors start scheduling.
+pub fn releaseAps() void {
+    @atomicStore(bool, &release_aps, true, .release);
 }
 
 /// Copy the trampoline into low memory and identity-map it.

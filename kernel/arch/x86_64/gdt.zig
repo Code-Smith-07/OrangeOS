@@ -5,6 +5,12 @@
 //! stack pointer on privilege transitions plus the IST stacks that make
 //! double-fault handling survivable.
 //!
+//! Every CPU gets its own GDT and its own TSS. That is not an optimisation:
+//! the TSS holds rsp0, the kernel stack the CPU switches to on an interrupt
+//! from ring 3. A shared TSS means every core lands on whichever core's stack
+//! was written last, and two cores taking interrupts at once trample each
+//! other. The IST stacks are per-CPU for the same reason.
+//!
 //! Selector layout is chosen for SYSCALL/SYSRET in Phase 4. SYSRET derives
 //! SS from STAR[63:48]+8 and CS from STAR[63:48]+16, so user data must sit
 //! immediately before user code:
@@ -17,6 +23,7 @@
 //!     0x28  TSS (16 bytes, occupies two entries)
 
 const std = @import("std");
+const percpu = @import("percpu.zig");
 
 pub const KERNEL_CODE: u16 = 0x08;
 pub const KERNEL_DATA: u16 = 0x10;
@@ -32,11 +39,14 @@ pub const IST_DOUBLE_FAULT: u8 = 1;
 pub const IST_NMI: u8 = 2;
 pub const IST_MACHINE_CHECK: u8 = 3;
 
-// Stacks are .bss; 16-byte aligned per the SysV ABI.
-var df_stack: [IST_STACK_SIZE]u8 align(16) = undefined;
-var nmi_stack: [IST_STACK_SIZE]u8 align(16) = undefined;
-var mc_stack: [IST_STACK_SIZE]u8 align(16) = undefined;
-var kernel_stack: [IST_STACK_SIZE]u8 align(16) = undefined;
+pub const MAX_CPUS = 32;
+
+/// Per-CPU stacks. Sized as arrays rather than allocated, so they exist before
+/// the memory manager does and cannot fail to be there when a fault arrives.
+var df_stacks: [MAX_CPUS][IST_STACK_SIZE]u8 align(16) = undefined;
+var nmi_stacks: [MAX_CPUS][IST_STACK_SIZE]u8 align(16) = undefined;
+var mc_stacks: [MAX_CPUS][IST_STACK_SIZE]u8 align(16) = undefined;
+var kernel_stacks: [MAX_CPUS][IST_STACK_SIZE]u8 align(16) = undefined;
 
 /// A standard 8-byte descriptor. In long mode base and limit are ignored for
 /// code/data, but the access and flag bits still matter.
@@ -109,8 +119,8 @@ const Gdtr = packed struct {
     base: u64,
 };
 
-var gdt: [7]u64 align(16) = [_]u64{0} ** 7;
-var tss: Tss = .{};
+var gdts: [MAX_CPUS][7]u64 align(16) = undefined;
+var tsses: [MAX_CPUS]Tss = undefined;
 
 /// Top of a stack array, 16-byte aligned. Stacks grow downward, so the CPU
 /// wants the highest address.
@@ -120,21 +130,29 @@ fn stackTop(stack: []u8) u64 {
 }
 
 pub fn init() void {
+    initCpu(0);
+}
+
+/// Build and load this CPU's GDT and TSS.
+pub fn initCpu(index: usize) void {
+    const gdt = &gdts[index];
+    const tss = &tsses[index];
+
     gdt[0] = 0;
     gdt[1] = @bitCast(Entry.code(0));
     gdt[2] = @bitCast(Entry.data(0));
     gdt[3] = @bitCast(Entry.data(3));
     gdt[4] = @bitCast(Entry.code(3));
 
-    tss = .{};
-    tss.rsp0 = stackTop(&kernel_stack);
-    tss.ist[IST_DOUBLE_FAULT - 1] = stackTop(&df_stack);
-    tss.ist[IST_NMI - 1] = stackTop(&nmi_stack);
-    tss.ist[IST_MACHINE_CHECK - 1] = stackTop(&mc_stack);
+    tss.* = .{};
+    tss.rsp0 = stackTop(&kernel_stacks[index]);
+    tss.ist[IST_DOUBLE_FAULT - 1] = stackTop(&df_stacks[index]);
+    tss.ist[IST_NMI - 1] = stackTop(&nmi_stacks[index]);
+    tss.ist[IST_MACHINE_CHECK - 1] = stackTop(&mc_stacks[index]);
     // No I/O permission bitmap: point past the TSS limit.
     tss.iomap_base = @sizeOf(Tss);
 
-    const tss_addr = @intFromPtr(&tss);
+    const tss_addr = @intFromPtr(tss);
     const tss_desc = TssDescriptor{
         .limit_low = @truncate(@sizeOf(Tss) - 1),
         .base_low = @truncate(tss_addr),
@@ -149,8 +167,8 @@ pub fn init() void {
     gdt[6] = @truncate(raw >> 64);
 
     const gdtr = Gdtr{
-        .limit = @sizeOf(@TypeOf(gdt)) - 1,
-        .base = @intFromPtr(&gdt),
+        .limit = @sizeOf([7]u64) - 1,
+        .base = @intFromPtr(gdt),
     };
 
     load(&gdtr);
@@ -188,8 +206,9 @@ fn loadTss() void {
     );
 }
 
-/// Called on every context switch in Phase 4 so the CPU finds the right
-/// kernel stack when a user thread traps.
+/// Called on every context switch so the CPU finds the right kernel stack
+/// when a user thread traps. Writes THIS core's TSS: writing a shared one
+/// would send another core's traps to this thread's stack.
 pub fn setKernelStack(rsp: u64) void {
-    tss.rsp0 = rsp;
+    tsses[percpu.cpuIndex()].rsp0 = rsp;
 }

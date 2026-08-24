@@ -13,7 +13,7 @@
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS desktop](docs/screenshots/phase8a.png)
+![Orange OS desktop](docs/screenshots/phase8b.png)
 
 </div>
 
@@ -76,10 +76,10 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 8a complete.** Orange OS boots every processor. The application
-processors are brought up from real mode through to 64-bit long mode and run
-kernel code on their own stacks with their own per-CPU state, alongside the
-full desktop.
+**Phase 8b complete.** Orange OS schedules across every processor. All four
+cores run the same scheduler over shared run queues, each with its own current
+task, idle thread, GDT, TSS and timer — sharing the load roughly evenly while
+the full desktop runs.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -94,7 +94,7 @@ full desktop.
 | 7 | Graphics: client protocol | ✅ **Done** |
 | 7 | Graphics: PTY and terminal emulator | ✅ **Done** |
 | 7 | Graphics: widget toolkit and desktop shell | ✅ **Done** |
-| 8 | SMP: multiprocessor bring-up | ✅ **Done** |
+| 8 | SMP: bring-up and cross-CPU scheduling | ✅ **Done** |
 | 8 | Networking, USB, audio | 🔨 In progress |
 | 9 | Real hardware | ⬜ Planned |
 

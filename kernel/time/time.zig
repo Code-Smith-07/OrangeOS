@@ -20,6 +20,7 @@ const isr = @import("../arch/x86_64/isr.zig");
 const tsc = @import("tsc.zig");
 const pic = @import("../arch/x86_64/pic.zig");
 const sched = @import("../sched/sched.zig");
+const percpu = @import("../arch/x86_64/percpu.zig");
 
 pub const TICK_HZ: u32 = build_options.tick_hz;
 const NS_PER_TICK: u64 = 1_000_000_000 / TICK_HZ;
@@ -27,10 +28,19 @@ const NS_PER_TICK: u64 = 1_000_000_000 / TICK_HZ;
 var ticks: u64 = 0;
 var boot_tsc: u64 = 0;
 
-/// Called from the LAPIC timer interrupt, 1000 times a second.
+/// Called from the LAPIC timer interrupt on EVERY core.
+///
+/// The LAPIC timer is per-CPU, so with four cores this fires four times per
+/// tick period. Only CPU 0 advances the global tick counter: letting all of
+/// them do it would both race on the increment and run the clock at four times
+/// speed. Every core still runs the scheduler, because each one needs to
+/// preempt whatever it is personally running.
 fn tickHandler(frame: *isr.TrapFrame) void {
     _ = frame;
-    ticks +%= 1;
+
+    if (percpu.cpuIndex() == 0) {
+        ticks +%= 1;
+    }
 
     // EOI before scheduling: switching away from here means we may not return
     // for a long time, and the LAPIC will not deliver another interrupt at

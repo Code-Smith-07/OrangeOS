@@ -106,15 +106,16 @@ fn writeMsr(msr: u32, value: u64) void {
 }
 
 fn readMsr(msr: u32) u64 {
-    const low = asm volatile ("rdmsr"
-        : [ret] "={eax}" (-> u32),
+    // One rdmsr, both halves out of the same instruction. Issuing two separate
+    // rdmsr instructions and taking eax from one and edx from the other is not
+    // a 64-bit read: the compiler is free to schedule them independently, and
+    // the halves can come from different executions.
+    var low: u32 = undefined;
+    var high: u32 = undefined;
+    asm volatile ("rdmsr"
+        : [low] "={eax}" (low),
+          [high] "={edx}" (high),
         : [msr] "{ecx}" (msr),
-        : "edx"
-    );
-    const high = asm volatile ("rdmsr"
-        : [ret] "={edx}" (-> u32),
-        : [msr] "{ecx}" (msr),
-        : "eax"
     );
     return (@as(u64, high) << 32) | low;
 }
