@@ -9,11 +9,11 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-orange.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-x86__64-orange.svg)](ARCHITECTURE.md)
 [![Language](https://img.shields.io/badge/language-Zig-orange.svg)](https://ziglang.org)
-[![Status](https://img.shields.io/badge/status-Phase%208-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
+[![Status](https://img.shields.io/badge/status-Phase%209-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS desktop](docs/screenshots/phase8e.png)
+![Orange OS desktop](docs/screenshots/phase8g.png)
 
 </div>
 
@@ -76,11 +76,10 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 8g in progress.** USB devices are fully enumerated: control transfers,
-device and configuration descriptors, and interface identification — the OS
-recognises a HID keyboard and mouse and finds their interrupt endpoints. Every
-subsystem runs together: 4 CPUs, SATA, CitrusFS, networking, audio, USB and
-the desktop.
+**Phase 8 complete.** USB HID works end to end — with PS/2 disabled entirely,
+a USB keyboard and mouse drive the desktop. Every subsystem runs together:
+4 processors, SATA, CitrusFS, networking with DHCP and TCP, audio, USB, and
+the full graphical desktop.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -99,8 +98,8 @@ the desktop.
 | 8 | Networking: e1000, IPv4, ICMP, UDP, DHCP, DNS, TCP | ✅ **Done** |
 | 8 | Audio: Intel HD Audio | ✅ **Done** |
 | 8 | USB: xHCI, control transfers, enumeration | ✅ **Done** |
-| 8 | USB: HID input, mass storage | 🔨 In progress |
-| 9 | Real hardware | ⬜ Planned |
+| 8 | USB: HID input | ✅ **Done** |
+| 9 | Real hardware | 🔨 Next |
 
 See the [full roadmap](ARCHITECTURE.md#16-development-roadmap) for what each
 phase contains and honest time estimates.

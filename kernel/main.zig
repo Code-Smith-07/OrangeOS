@@ -21,6 +21,7 @@ const sched = @import("sched/sched.zig");
 const smp = @import("arch/x86_64/smp.zig");
 const net = @import("net/net.zig");
 const hda = @import("drivers/audio/hda.zig");
+const xhci = @import("drivers/usb/xhci.zig");
 const sched_test = @import("sched/test.zig");
 const process = @import("sched/process.zig");
 const blk_test = @import("drivers/block/test.zig");
@@ -133,6 +134,7 @@ export fn kmain() callconv(.c) noreturn {
     _ = sched.spawn("cpu-report", cpuReport, null, .batch) catch {};
     _ = sched.spawn("net-test", netTest, null, .normal) catch {};
     _ = sched.spawn("audio-test", audioTest, null, .batch) catch {};
+    _ = sched.spawn("usb-input", usbInputThread, null, .realtime) catch {};
     _ = sched.spawn("init", process.initThread, null, .normal) catch |e| {
         console.err("could not spawn init: {s}", .{@errorName(e)});
     };
@@ -151,6 +153,17 @@ export fn kmain() callconv(.c) noreturn {
     if (build_options.fault_test) faultTest();
 
     io.hang();
+}
+
+/// USB has no interrupt handler yet, so reports are collected by polling.
+/// At 1 kHz this is responsive enough to type on and costs almost nothing.
+fn usbInputThread(_: ?*anyopaque) void {
+    if (!xhci.hasInputDevices()) return;
+    console.ok("usb: HID input polling started", .{});
+    while (true) {
+        xhci.pollInput();
+        time.busySleepMs(1);
+    }
 }
 
 /// Play a tone and confirm the DMA engine actually advances through the

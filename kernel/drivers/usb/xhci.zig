@@ -19,6 +19,7 @@ const vmm = @import("../../mm/vmm.zig");
 const pmm = @import("../../mm/pmm.zig");
 const console = @import("../../console.zig");
 const tsc = @import("../../time/tsc.zig");
+const hid = @import("hid.zig");
 
 // Capability registers.
 /// CAPLENGTH is a byte at 0x00 and HCIVERSION a 16-bit value at 0x02, so both
@@ -176,6 +177,19 @@ const Device = struct {
     /// how a HID device delivers reports.
     interrupt_ep: u8 = 0,
     interrupt_max_packet: u16 = 0,
+    interrupt_interval: u8 = 0,
+
+    /// Transfer ring for the interrupt endpoint, once configured.
+    int_ring_phys: u64 = 0,
+    int_ring: [*]volatile Trb = undefined,
+    int_enqueue: usize = 0,
+    int_cycle: u32 = 1,
+    int_buffer_phys: u64 = 0,
+    int_buffer_virt: u64 = 0,
+    int_configured: bool = false,
+    /// Device Context Index for that endpoint, which is also its doorbell
+    /// target. Endpoint 1 IN is DCI 3: number * 2, plus one for IN.
+    int_dci: u8 = 0,
 };
 
 var devices: [MAX_DEVICES]Device = [_]Device{.{}} ** MAX_DEVICES;
@@ -567,6 +581,7 @@ fn readConfiguration(dev: *Device) bool {
                         dev.interrupt_ep = addr;
                         dev.interrupt_max_packet =
                             @as(u16, buf[off + 4]) | (@as(u16, buf[off + 5]) << 8);
+                        dev.interrupt_interval = buf[off + 6];
                     }
                 }
             },
@@ -577,6 +592,106 @@ fn readConfiguration(dev: *Device) bool {
     }
 
     return found_interface;
+}
+
+/// Tell the device which configuration to use. Nothing but endpoint 0 works
+/// until this is done.
+fn setConfiguration(dev: *Device, value: u8) bool {
+    // 0x00: host to device, standard, device. Request 9 = SET_CONFIGURATION.
+    const setup: u64 = @as(u64, 0x00) |
+        (@as(u64, 9) << 8) |
+        (@as(u64, value) << 16);
+
+    // Transfer type 0: no data stage.
+    enqueueTransfer(dev, setup, 8, (TRB_SETUP_STAGE << 10) | (1 << 6));
+    enqueueTransfer(dev, 0, 0, (TRB_STATUS_STAGE << 10) | (1 << 5) | (1 << 16));
+    ringDoorbell(dev.slot, 1);
+
+    const deadline = tsc.microsSinceBoot() + 1_000_000;
+    while (tsc.microsSinceBoot() < deadline) {
+        if (pollEvent()) |e| {
+            if (e.trb_type != TRB_TRANSFER_EVENT) continue;
+            return e.completion_code == 1 or e.completion_code == 13;
+        }
+        asm volatile ("pause");
+    }
+    return false;
+}
+
+/// Add the interrupt endpoint to the device's context so the controller will
+/// poll it, and give it a transfer ring of its own.
+fn configureInterruptEndpoint(dev: *Device) bool {
+    if (dev.interrupt_ep == 0) return false;
+
+    const ep_num: u8 = dev.interrupt_ep & 0x0F;
+    dev.int_dci = ep_num * 2 + 1; // +1 because it is an IN endpoint
+
+    dev.int_ring_phys = pmm.allocPageZeroed() catch return false;
+    dev.int_ring = @ptrFromInt(pmm.physToVirt(dev.int_ring_phys));
+    linkRing(dev.int_ring, dev.int_ring_phys, true);
+    dev.int_enqueue = 0;
+    dev.int_cycle = 1;
+
+    dev.int_buffer_phys = pmm.allocPageZeroed() catch return false;
+    dev.int_buffer_virt = pmm.physToVirt(dev.int_buffer_phys);
+
+    const input_virt = pmm.physToVirt(dev.input_ctx_phys);
+    const iv: [*]volatile u8 = @ptrFromInt(input_virt);
+    var i: usize = 0;
+    while (i < context_size * 12) : (i += 1) iv[i] = 0;
+
+    // Add the slot context and this endpoint. The slot context has to be
+    // included: its "context entries" field tells the controller how far down
+    // the device context is now valid.
+    const icc = ctxAt(input_virt, 0);
+    icc[1] = 1 | (@as(u32, 1) << @intCast(dev.int_dci));
+
+    const slot_ctx = ctxAt(input_virt, 1);
+    slot_ctx[0] = (@as(u32, dev.int_dci) << 27) | (@as(u32, dev.speed) << 20);
+    slot_ctx[1] = @as(u32, dev.port) << 16;
+
+    // Endpoint context sits one past its DCI, because the input context has
+    // the control context in front.
+    const ep = ctxAt(input_virt, dev.int_dci + 1);
+    // Interval is a power-of-two exponent in 125 us units; bInterval from the
+    // descriptor is already that for high speed.
+    const interval: u32 = if (dev.interrupt_interval > 0) dev.interrupt_interval - 1 else 3;
+    ep[0] = interval << 16;
+    // EP type 7 = Interrupt IN. Three error retries.
+    ep[1] = (3 << 1) | (7 << 3) | (@as(u32, dev.interrupt_max_packet) << 16);
+    ep[2] = @truncate(dev.int_ring_phys | 1);
+    ep[3] = @truncate(dev.int_ring_phys >> 32);
+    ep[4] = dev.interrupt_max_packet;
+
+    submitCommand(dev.input_ctx_phys, 0, TRB_CONFIGURE_ENDPOINT | (@as(u32, dev.slot) << 14));
+    const e = waitCommand(1_000_000) orelse return false;
+    if (e.completion_code != 1) return false;
+
+    dev.int_configured = true;
+    queueReport(dev);
+    return true;
+}
+
+/// Hand the controller a buffer to put the next report in. One is queued at a
+/// time: a report that arrives before the previous was consumed is stale
+/// anyway for keyboard and mouse state.
+fn queueReport(dev: *Device) void {
+    dev.int_ring[dev.int_enqueue] = .{
+        .param_lo = @truncate(dev.int_buffer_phys),
+        .param_hi = @truncate(dev.int_buffer_phys >> 32),
+        .status = dev.interrupt_max_packet,
+        .control = (TRB_NORMAL << 10) | (1 << 5) | dev.int_cycle, // IOC
+    };
+
+    dev.int_enqueue += 1;
+    if (dev.int_enqueue == RING_SIZE - 1) {
+        dev.int_ring[RING_SIZE - 1].control =
+            (TRB_LINK << 10) | (1 << 1) | dev.int_cycle;
+        dev.int_enqueue = 0;
+        dev.int_cycle ^= 1;
+    }
+
+    ringDoorbell(dev.slot, dev.int_dci);
 }
 
 fn allocDevice(slot: u8, port: u8, speed: u8) ?*Device {
@@ -697,8 +812,12 @@ pub fn enumerate() void {
                     describe(dev),
                 });
                 if (dev.interrupt_ep != 0) {
-                    console.print("[info]   interrupt endpoint 0x{x}, {d}-byte reports\n", .{
-                        dev.interrupt_ep, dev.interrupt_max_packet,
+                    _ = setConfiguration(dev, 1);
+                    const ok = configureInterruptEndpoint(dev);
+                    console.print("[info]   interrupt endpoint 0x{x}, {d}-byte reports, {s}\n", .{
+                        dev.interrupt_ep,
+                        dev.interrupt_max_packet,
+                        if (ok) "polling" else "not configured",
                     });
                 }
             } else {
@@ -718,6 +837,48 @@ pub fn commandRingWorks() bool {
     submitCommand(0, 0, TRB_NOOP_CMD);
     const e = waitCommand(1_000_000) orelse return false;
     return e.completion_code == 1;
+}
+
+/// Drain completed interrupt transfers and turn the reports into input
+/// events. Called from a kernel thread; there is no interrupt handler yet, so
+/// this is how reports reach the system.
+pub fn pollInput() void {
+    if (!present) return;
+
+    while (pollEvent()) |e| {
+        if (e.trb_type != TRB_TRANSFER_EVENT) continue;
+        // 1 = success, 13 = short packet. A mouse that sends three bytes into
+        // a four-byte buffer reports short every single time.
+        if (e.completion_code != 1 and e.completion_code != 13) continue;
+
+        // Find whose endpoint completed.
+        var i: usize = 0;
+        while (i < device_count) : (i += 1) {
+            const dev = &devices[i];
+            if (!dev.int_configured or dev.slot != e.slot_id) continue;
+
+            const buf: [*]const u8 = @ptrFromInt(dev.int_buffer_virt);
+            const len = dev.interrupt_max_packet;
+
+            switch (dev.interface_protocol) {
+                1 => hid.handleKeyboard(buf[0..@min(len, 8)]),
+                2 => hid.handleMouse(buf[0..@min(len, 4)]),
+                else => {},
+            }
+
+            // Hand the buffer back for the next report.
+            queueReport(dev);
+            break;
+        }
+    }
+}
+
+pub fn hasInputDevices() bool {
+    var i: usize = 0;
+    while (i < device_count) : (i += 1) {
+        if (devices[i].int_configured) return true;
+    }
+    return false;
 }
 
 pub fn isPresent() bool {

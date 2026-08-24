@@ -26,6 +26,7 @@ const partition = @import("../../drivers/block/partition.zig");
 const vfs = @import("../../fs/vfs/vfs.zig");
 const fmtlib = @import("../../lib/fmt.zig");
 const console = @import("../../console.zig");
+const build_options = @import("build_options");
 const serial = @import("../../drivers/char/serial.zig");
 const ps2 = @import("../../drivers/input/ps2.zig");
 const smp = @import("../../arch/x86_64/smp.zig");
@@ -104,8 +105,12 @@ pub fn init() !void {
     serial.enableInput();
     console.ok("serial input enabled (COM1 RX on IRQ 4)", .{});
 
-    ps2.init();
-    console.ok("PS/2 keyboard and mouse online (IRQ 1, IRQ 12)", .{});
+    if (build_options.no_ps2) {
+        console.info("PS/2 disabled by build option; USB HID only", .{});
+    } else {
+        ps2.init();
+        console.ok("PS/2 keyboard and mouse online (IRQ 1, IRQ 12)", .{});
+    }
 
     net.init() catch |e| {
         console.warn("network init failed: {s}", .{@errorName(e)});

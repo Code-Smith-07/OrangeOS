@@ -74,6 +74,14 @@ pub fn build(b: *std.Build) void {
     const verbose_exec = b.option(bool, "verbose-exec", "Log every process load") orelse false;
     options.addOption(bool, "verbose_exec", verbose_exec);
 
+    const no_ps2 = b.option(
+        bool,
+        "no-ps2",
+        "Skip the PS/2 driver, so input can only arrive over USB. Used to " ++
+            "prove HID reports are actually being delivered.",
+    ) orelse false;
+    options.addOption(bool, "no_ps2", no_ps2);
+
     // ── Userland ─────────────────────────────────────────────────────────────
     // Every program links against Pulp and nothing else: no libc, no runtime,
     // static ELF, same bare-metal target as the kernel.
