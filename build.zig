@@ -57,6 +57,9 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "fault_test", fault_test);
     options.addOption(bool, "mm_test", mm_test);
 
+    const blk_test = b.option(bool, "blk-test", "Run block device tests at boot") orelse false;
+    options.addOption(bool, "blk_test", blk_test);
+
     // ── Userland: init, the first ring 3 program ─────────────────────────────
     // Built for the same bare-metal target: no libc, no runtime, static ELF.
     const init_mod = b.createModule(.{
@@ -125,13 +128,18 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&iso.step);
 
     // ── Run targets ──────────────────────────────────────────────────────────
+    // A SATA disk is attached on every run target. scripts/mkdisk.sh creates
+    // it; AHCI simply reports no disks if the file is missing.
     const qemu_base = [_][]const u8{
         "qemu-system-x86_64",
-        "-M",         "q35",
-        "-m",         "512M",
-        "-cdrom",     "build/orange.iso",
-        "-boot",      "d",
-        "-serial",    "stdio",
+        "-M",     "q35",
+        "-m",     "512M",
+        "-cdrom", "build/orange.iso",
+        "-boot",  "d",
+        "-drive", "id=disk0,file=build/disk.img,format=raw,if=none",
+        "-device", "ahci,id=ahci",
+        "-device", "ide-hd,drive=disk0,bus=ahci.0",
+        "-serial", "stdio",
         "-no-reboot", "-no-shutdown",
     };
 

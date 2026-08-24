@@ -94,8 +94,9 @@ pub const handler = struct {
         panicFn("sentinel mismatch", @returnAddress());
     }
     pub fn unwrapError(err: anyerror) noreturn {
-        _ = err;
-        panicFn("attempt to unwrap error", @returnAddress());
+        // Report which error it was. `_ = err` is rejected for error sets, and
+        // the name is far more useful than a generic message anyway.
+        panicFn(@errorName(err), @returnAddress());
     }
     pub fn outOfBounds(index: usize, len: usize) noreturn {
         _ = index;

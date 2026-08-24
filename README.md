@@ -13,7 +13,7 @@
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS booting](docs/screenshots/phase4.png)
+![Orange OS booting](docs/screenshots/phase5.png)
 
 </div>
 
@@ -76,9 +76,9 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 4 complete.** The kernel preemptively schedules threads, loads ELF
-binaries into isolated address spaces, and runs real programs in ring 3 that
-talk to it through `syscall`.
+**Phase 5 in progress.** PCI enumeration, an AHCI (SATA) driver, the block
+layer, and GPT partitioning all work — the kernel reads and writes real disks.
+VFS and CitrusFS are next.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -87,7 +87,8 @@ talk to it through `syscall`.
 | 2 | Memory management | ✅ **Done** |
 | 3 | Interrupts and time | ✅ **Done** |
 | 4 | Processes and scheduling | ✅ **Done** |
-| 5 | Storage and filesystems | 🔨 In progress |
+| 5 | Storage: PCI, AHCI, block, GPT | ✅ **Done** |
+| 5 | Storage: VFS and CitrusFS | 🔨 In progress |
 | 6 | Userland and IPC | ⬜ Planned |
 | 7 | **Graphics — the desktop** | ⬜ Planned |
 | 8 | SMP, networking, USB, audio | ⬜ Planned |
@@ -112,11 +113,10 @@ brew install qemu xorriso zig@0.14 && brew link --overwrite zig@0.14
 > instead of the higher-half address `-mcmodel=kernel` requires. 0.14.1 handles
 > both correctly.
 
-Then fetch the bootloader and build:
+Then fetch the bootloader, create a disk, and build:
 
 ```bash
-./scripts/fetch-limine.sh
-zig build run
+./scripts/fetch-limine.sh && ./scripts/mkdisk.sh && zig build run
 ```
 
 | Command | What it does |
@@ -126,6 +126,7 @@ zig build run
 | `zig build debug` | Boot halted, GDB stub on `:1234` |
 | `zig build trace` | Boot with interrupt and fault tracing |
 | `zig build -Dtick-hz=100` | Lower the scheduler tick rate |
+| `zig build -Dblk-test run` | Run block device read/write tests |
 
 > **A note on timer accuracy under emulation.** The scheduler tick is
 > best-effort; timekeeping is not. QEMU's TCG emulation on a non-x86 host

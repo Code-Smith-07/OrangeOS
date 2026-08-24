@@ -19,6 +19,11 @@ const pic = @import("../../arch/x86_64/pic.zig");
 const io = @import("../../arch/x86_64/io.zig");
 const tsc = @import("../../time/tsc.zig");
 const time = @import("../../time/time.zig");
+const pci = @import("../pci/pci.zig");
+const ahci = @import("../../drivers/block/ahci.zig");
+const block = @import("../../drivers/block/block.zig");
+const partition = @import("../../drivers/block/partition.zig");
+const fmtlib = @import("../../lib/fmt.zig");
 const console = @import("../../console.zig");
 const fmt = @import("../../lib/fmt.zig");
 
@@ -60,7 +65,33 @@ pub fn init() !void {
         });
     }
 
+    pci.init() catch |e| {
+        console.warn("PCI enumeration failed: {s}", .{@errorName(e)});
+    };
+    pci.report();
+
     time.init();
     io.sti();
     console.ok("interrupts enabled - system is preemptible", .{});
+
+    // Storage comes up after interrupts, because the driver times out against
+    // the TSC and wants a running clock.
+    const disks = ahci.init() catch |e| blk: {
+        console.warn("AHCI init failed: {s}", .{@errorName(e)});
+        break :blk 0;
+    };
+    if (disks == 0) {
+        console.warn("no SATA disks found", .{});
+    } else {
+        for (block.list()) |*d| {
+            var cap: [32]u8 = undefined;
+            console.print("[ ok ] block: {s} - {s} ({d} sectors)\n", .{
+                d.nameSlice(),
+                fmtlib.humanBytes(&cap, d.byteCapacity()),
+                d.sectors,
+            });
+        }
+        const parts = partition.scanAll();
+        if (parts == 0) console.info("no GPT partitions found", .{});
+    }
 }

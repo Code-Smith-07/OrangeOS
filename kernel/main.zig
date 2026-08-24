@@ -20,6 +20,7 @@ const tsc = @import("time/tsc.zig");
 const sched = @import("sched/sched.zig");
 const sched_test = @import("sched/test.zig");
 const process = @import("sched/process.zig");
+const blk_test = @import("drivers/block/test.zig");
 const percpu = @import("arch/x86_64/percpu.zig");
 const syscall_entry = @import("arch/x86_64/syscall_entry.zig");
 const fmt = @import("lib/fmt.zig");
@@ -111,6 +112,8 @@ export fn kmain() callconv(.c) noreturn {
     console.write("\n");
     console.ok("Phase 4 complete - Zest runs user processes.", .{});
     console.info("next: PCI, block devices, VFS, CitrusFS (Phase 5)", .{});
+
+    if (build_options.blk_test) blk_test.run();
 
     sched_test.spawnAll();
     _ = sched.spawn("init", process.initThread, null, .normal) catch |e| {

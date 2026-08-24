@@ -33,6 +33,21 @@ pub inline fn inw(port: u16) u16 {
     );
 }
 
+pub inline fn outl(port: u16, value: u32) void {
+    asm volatile ("outl %[value], %[port]"
+        :
+        : [value] "{eax}" (value),
+          [port] "{dx}" (port),
+    );
+}
+
+pub inline fn inl(port: u16) u32 {
+    return asm volatile ("inl %[port], %[result]"
+        : [result] "={eax}" (-> u32),
+        : [port] "{dx}" (port),
+    );
+}
+
 /// Brief delay by writing to an unused port. Some legacy hardware needs a
 /// settling period between consecutive accesses.
 pub inline fn ioWait() void {
