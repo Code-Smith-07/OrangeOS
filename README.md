@@ -76,9 +76,9 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 8f complete.** Orange OS makes sound. An Intel HD Audio driver walks
-the codec graph, configures a stream, and plays a tone — verified by recording
-the output and measuring it at 440.2 Hz with 0.994 correlation to a pure sine.
+**Phase 8g in progress.** The xHCI controller is up: command and event rings
+verified, ports reset, and device slots allocated. Every subsystem now runs
+together — 4 CPUs, SATA, CitrusFS, networking, audio, USB and the desktop.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -96,7 +96,8 @@ the output and measuring it at 440.2 Hz with 0.994 correlation to a pure sine.
 | 8 | SMP: bring-up and cross-CPU scheduling | ✅ **Done** |
 | 8 | Networking: e1000, IPv4, ICMP, UDP, DHCP, DNS, TCP | ✅ **Done** |
 | 8 | Audio: Intel HD Audio | ✅ **Done** |
-| 8 | USB | 🔨 In progress |
+| 8 | USB: xHCI bring-up and enumeration | ✅ **Done** |
+| 8 | USB: device descriptors, HID, storage | 🔨 In progress |
 | 9 | Real hardware | ⬜ Planned |
 
 See the [full roadmap](ARCHITECTURE.md#16-development-roadmap) for what each
@@ -137,7 +138,8 @@ Then fetch the bootloader, create a disk, and build:
 Add `-smp 4` to the QEMU command line to boot with four processors,
 `-netdev user,id=n0 -device e1000,netdev=n0` for networking, and
 `-audiodev wav,id=snd0,path=out.wav -device intel-hda -device hda-output,audiodev=snd0`
-to record what the machine plays.
+to record what the machine plays. Add
+`-device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0` for USB.
 
 > **A note on timer accuracy under emulation.** The scheduler tick is
 > best-effort; timekeeping is not. QEMU's TCG emulation on a non-x86 host

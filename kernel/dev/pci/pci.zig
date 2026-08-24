@@ -292,9 +292,10 @@ pub fn report() void {
     var i: usize = 0;
     while (i < device_count) : (i += 1) {
         const d = devices[i];
-        console.print("[info]   {d:0>2}:{d:0>2}.{d}  {x:0>4}:{x:0>4}  {s}\n", .{
-            d.addr.bus, @as(u8, d.addr.device), @as(u8, d.addr.function),
-            d.vendor_id, d.device_id, className(d.class_code, d.subclass),
+        console.print("[info]   {d:0>2}:{d:0>2}.{d}  {x:0>4}:{x:0>4}  {s} (class {x:0>2}:{x:0>2}:{x:0>2})\n", .{
+            d.addr.bus,    @as(u8, d.addr.device), @as(u8, d.addr.function),
+            d.vendor_id,   d.device_id,            className(d.class_code, d.subclass),
+            d.class_code,  d.subclass,             d.prog_if,
         });
     }
 }

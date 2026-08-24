@@ -31,6 +31,7 @@ const ps2 = @import("../../drivers/input/ps2.zig");
 const smp = @import("../../arch/x86_64/smp.zig");
 const net = @import("../../net/net.zig");
 const hda = @import("../../drivers/audio/hda.zig");
+const xhci = @import("../../drivers/usb/xhci.zig");
 const fmt = @import("../../lib/fmt.zig");
 
 /// Try each partition until one holds a CitrusFS. Trying rather than assuming
@@ -115,6 +116,24 @@ pub fn init() !void {
         break :blk false;
     };
     if (audio) hda.report();
+
+    const usb = xhci.init() catch |e| blk: {
+        console.warn("xHCI init failed: {s}", .{@errorName(e)});
+        break :blk false;
+    };
+    if (usb) {
+        xhci.report();
+        if (xhci.commandRingWorks()) {
+            console.ok("xhci: command ring and event ring verified", .{});
+        } else {
+            console.warn("xhci: no-op command did not complete", .{});
+        }
+        xhci.enumerate();
+        const s2 = xhci.stats();
+        console.print("[ ok ] usb: {d} device(s) connected, {d} slot(s) enabled\n", .{
+            s2.connected, s2.slots,
+        });
+    }
 
     // Other processors come up last: they need the page tables, the APIC and
     // a calibrated TSC, all of which exist by now.
