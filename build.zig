@@ -90,6 +90,9 @@ pub fn build(b: *std.Build) void {
     ) orelse false;
     options.addOption(bool, "late_fault", late_fault);
 
+    const budget = b.option(bool, "budget", "Measure and report the ARCHITECTURE.md 16.2 resource budget") orelse false;
+    options.addOption(bool, "budget", budget);
+
     // ── Userland ─────────────────────────────────────────────────────────────
     // Every program links against Pulp and nothing else: no libc, no runtime,
     // static ELF, same bare-metal target as the kernel.
@@ -148,6 +151,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "ping", .path = "userland/bin/ping/main.zig" },
         .{ .name = "net", .path = "userland/bin/net/main.zig" },
         .{ .name = "fetch", .path = "userland/bin/fetch/main.zig" },
+        .{ .name = "bench", .path = "userland/bin/bench/main.zig" },
     };
 
     for (programs) |prog| {

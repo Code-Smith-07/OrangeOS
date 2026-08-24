@@ -24,6 +24,7 @@
 
 const std = @import("std");
 const percpu = @import("percpu.zig");
+const pmm = @import("../../mm/pmm.zig");
 
 pub const KERNEL_CODE: u16 = 0x08;
 pub const KERNEL_DATA: u16 = 0x10;
@@ -41,12 +42,44 @@ pub const IST_MACHINE_CHECK: u8 = 3;
 
 pub const MAX_CPUS = 32;
 
-/// Per-CPU stacks. Sized as arrays rather than allocated, so they exist before
-/// the memory manager does and cannot fail to be there when a fault arrives.
-var df_stacks: [MAX_CPUS][IST_STACK_SIZE]u8 align(16) = undefined;
-var nmi_stacks: [MAX_CPUS][IST_STACK_SIZE]u8 align(16) = undefined;
-var mc_stacks: [MAX_CPUS][IST_STACK_SIZE]u8 align(16) = undefined;
-var kernel_stacks: [MAX_CPUS][IST_STACK_SIZE]u8 align(16) = undefined;
+/// Slots within a CPU's stack block, in allocation order.
+const SLOT_KERNEL = 0;
+const SLOT_DF = 1;
+const SLOT_NMI = 2;
+const SLOT_MC = 3;
+const STACKS_PER_CPU = 4;
+const STACK_BLOCK = IST_STACK_SIZE * STACKS_PER_CPU;
+
+/// The boot processor's stacks are static, and have to be: it needs a TSS
+/// before the page allocator exists, and a fault arriving in that window has
+/// to land somewhere real.
+///
+/// Every other core is a different story. An application processor is started
+/// long after the allocator is up, so reserving MAX_CPUS worth of stacks
+/// statically bought nothing and cost 2 MiB of .bss - four 512 KiB arrays
+/// sized for 32 processors, on a machine that usually has four. That is most
+/// of a 24 MiB idle-memory budget spent on cores that do not exist.
+var bsp_stacks: [STACKS_PER_CPU][IST_STACK_SIZE]u8 align(16) = undefined;
+
+/// Base of each CPU's stack block. Null until reserveStacks() runs for it.
+var stack_base: [MAX_CPUS]?[*]u8 = .{null} ** MAX_CPUS;
+
+/// Reserve a core's stacks. Called on the boot processor before that core is
+/// started, never on the core itself: an AP that cannot get a stack must fail
+/// before it is sent a SIPI, not after it is already running on one.
+pub fn reserveStacks(index: usize) !void {
+    if (index >= MAX_CPUS) return error.TooManyCpus;
+    if (stack_base[index] != null) return;
+
+    if (index == 0) {
+        stack_base[0] = @ptrCast(&bsp_stacks);
+        return;
+    }
+
+    const pages = STACK_BLOCK / pmm.PAGE_SIZE;
+    const phys = try pmm.allocOrderZeroed(pmm.orderFor(pages));
+    stack_base[index] = @ptrFromInt(pmm.physToVirt(phys));
+}
 
 /// A standard 8-byte descriptor. In long mode base and limit are ignored for
 /// code/data, but the access and flag bits still matter.
@@ -122,14 +155,17 @@ const Gdtr = packed struct {
 var gdts: [MAX_CPUS][7]u64 align(16) = undefined;
 var tsses: [MAX_CPUS]Tss = undefined;
 
-/// Top of a stack array, 16-byte aligned. Stacks grow downward, so the CPU
-/// wants the highest address.
-fn stackTop(stack: []u8) u64 {
-    const addr = @intFromPtr(stack.ptr) + stack.len;
+/// Top of one slot in a CPU's stack block, 16-byte aligned. Stacks grow
+/// downward, so the CPU wants the highest address.
+fn stackTop(index: usize, slot: usize) u64 {
+    const base = stack_base[index] orelse
+        @panic("gdt: CPU stacks used before reserveStacks()");
+    const addr = @intFromPtr(base) + (slot + 1) * IST_STACK_SIZE;
     return addr & ~@as(u64, 0xF);
 }
 
 pub fn init() void {
+    reserveStacks(0) catch unreachable; // static storage, cannot fail
     initCpu(0);
 }
 
@@ -145,10 +181,10 @@ pub fn initCpu(index: usize) void {
     gdt[4] = @bitCast(Entry.code(3));
 
     tss.* = .{};
-    tss.rsp0 = stackTop(&kernel_stacks[index]);
-    tss.ist[IST_DOUBLE_FAULT - 1] = stackTop(&df_stacks[index]);
-    tss.ist[IST_NMI - 1] = stackTop(&nmi_stacks[index]);
-    tss.ist[IST_MACHINE_CHECK - 1] = stackTop(&mc_stacks[index]);
+    tss.rsp0 = stackTop(index, SLOT_KERNEL);
+    tss.ist[IST_DOUBLE_FAULT - 1] = stackTop(index, SLOT_DF);
+    tss.ist[IST_NMI - 1] = stackTop(index, SLOT_NMI);
+    tss.ist[IST_MACHINE_CHECK - 1] = stackTop(index, SLOT_MC);
     // No I/O permission bitmap: point past the TSS limit.
     tss.iomap_base = @sizeOf(Tss);
 

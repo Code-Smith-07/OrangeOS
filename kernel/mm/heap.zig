@@ -7,6 +7,7 @@
 //! kfree knows where to return it without the caller tracking anything.
 
 const std = @import("std");
+const spinlock = @import("../sync/spinlock.zig");
 const pmm = @import("pmm.zig");
 const slab = @import("slab.zig");
 
@@ -49,8 +50,26 @@ fn classFor(size: usize) ?usize {
     return null;
 }
 
+/// Guards the slab caches.
+///
+/// Cache.alloc pops the head of a free list and writes the new head back,
+/// with no atomics anywhere in between - the same shape of race that was
+/// corrupting the buddy allocator. The heap is reachable from every subsystem
+/// on every core, so it needs the same discipline.
+///
+/// Lock order is heap -> pmm, never the reverse: the heap falls through to the
+/// page allocator for large requests, and the page allocator never calls back
+/// into the heap.
+var lock: spinlock.SpinLock = .{};
+
 /// Allocate `size` bytes. Returns a 16-byte-aligned pointer.
 pub fn alloc(size: usize) Error![*]u8 {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    return allocUnlocked(size);
+}
+
+fn allocUnlocked(size: usize) Error![*]u8 {
     std.debug.assert(initialized);
     if (size == 0) return Error.OutOfMemory;
 
@@ -91,6 +110,12 @@ pub fn destroy(ptr: anytype) void {
 }
 
 pub fn free(ptr: [*]u8) void {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    freeUnlocked(ptr);
+}
+
+fn freeUnlocked(ptr: [*]u8) void {
     const raw = ptr - HEADER_SIZE;
     const hdr: *Header = @ptrCast(@alignCast(raw));
 
@@ -109,6 +134,9 @@ pub const Stats = struct {
 };
 
 pub fn stats() Stats {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+
     var allocated: usize = 0;
     var total: usize = 0;
     for (&caches) |*c| {

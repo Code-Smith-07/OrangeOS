@@ -197,6 +197,12 @@ pub fn init() !void {
         const target = madt.cpuApicId(i) orelse continue;
         if (target == boot_id) continue;
 
+        // Reserve this core's kernel and IST stacks here, on the boot
+        // processor, while a failure is still recoverable by simply not
+        // starting the core. Doing it inside apEntry would mean a core
+        // already running discovers it has nowhere to take a fault.
+        gdt.reserveStacks(i) catch continue;
+
         // A fresh stack per core. They never share one.
         const order = pmm.orderFor(AP_STACK_PAGES);
         const stack_phys = pmm.allocOrder(order) catch continue;

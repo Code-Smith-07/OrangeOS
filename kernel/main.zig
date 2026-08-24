@@ -28,6 +28,7 @@ const blk_test = @import("drivers/block/test.zig");
 const fs_test = @import("fs/test.zig");
 const percpu = @import("arch/x86_64/percpu.zig");
 const syscall_entry = @import("arch/x86_64/syscall_entry.zig");
+const budget = @import("debug/budget.zig");
 const fmt = @import("lib/fmt.zig");
 const panic_mod = @import("panic.zig");
 
@@ -138,9 +139,14 @@ export fn kmain() callconv(.c) noreturn {
     if (build_options.late_fault) {
         _ = sched.spawn("late-fault", lateFault, null, .batch) catch {};
     }
+    if (build_options.budget) {
+        _ = sched.spawn("budget", budgetThread, null, .batch) catch {};
+    }
     _ = sched.spawn("init", process.initThread, null, .normal) catch |e| {
         console.err("could not spawn init: {s}", .{@errorName(e)});
     };
+
+    if (build_options.budget) budget.markKernelReady();
 
     // Let the other cores into the scheduler now that the run queues exist
     // and there is work on them.
@@ -161,6 +167,23 @@ export fn kmain() callconv(.c) noreturn {
 /// Fault on purpose once the compositor owns the screen, so the panic path's
 /// ability to take it back can be checked rather than assumed. Enabled with
 /// -Dlate-fault.
+/// Report the resource budget once the system has settled.
+///
+/// Deliberately late. Measuring at the end of kmain would report a kernel
+/// that has not yet started a compositor, a shell or any userland process,
+/// and the resulting numbers would be flattering and meaningless. The budget
+/// that matters is a full desktop sitting idle.
+fn budgetThread(_: ?*anyopaque) void {
+    time.busySleepMs(8_000);
+    budget.reportAll();
+
+    // The syscall figure has to come from ring 3 to be worth anything, so the
+    // last measurement is taken by a userland program rather than here.
+    _ = process.spawnPath("/bin/bench") catch |e| {
+        console.err("budget: could not run /bin/bench: {s}", .{@errorName(e)});
+    };
+}
+
 fn lateFault(_: ?*anyopaque) void {
     time.busySleepMs(16_000);
     console.warn("late-fault: triggering a deliberate panic now", .{});

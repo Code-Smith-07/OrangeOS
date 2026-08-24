@@ -15,6 +15,7 @@
 //! searching a list.
 
 const std = @import("std");
+const spinlock = @import("../sync/spinlock.zig");
 const limine = @import("../boot/limine_req.zig");
 const console = @import("../console.zig");
 
@@ -125,8 +126,31 @@ fn listRemove(order: usize, phys: u64) void {
 
 // ── Allocation ───────────────────────────────────────────────────────────────
 
+/// Guards the free lists, the per-order bitmaps and the page counters.
+///
+/// The buddy allocator was written single-core and stayed that way through
+/// Phase 8, when three more processors started calling into it. Nothing here
+/// is atomic: listPop reads free_lists[order], follows a next pointer and
+/// writes the head back, and two cores interleaving in that window leave the
+/// list pointing at a block that is no longer free - or at a fragment of one.
+///
+/// That is not theoretical. It showed up as a page fault inside listPop with
+/// CR2 holding an address that was not even page-aligned, on two cores at
+/// once, once there were enough allocation sites to make the window easy to
+/// hit. Every entry point takes this lock with interrupts off, because an
+/// interrupt handler that allocates while the interrupted code holds the lock
+/// deadlocks the core against itself.
+var lock: spinlock.SpinLock = .{};
+
 /// Allocate 2^order contiguous pages. Returns a physical address.
 pub fn allocOrder(order: usize) Error!u64 {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    return allocOrderUnlocked(order);
+}
+
+/// The allocation itself. Callers must already hold `lock`.
+fn allocOrderUnlocked(order: usize) Error!u64 {
     if (order > MAX_ORDER) return Error.InvalidOrder;
 
     // Find the smallest order with something free.
@@ -154,6 +178,11 @@ pub fn allocPage() Error!u64 {
 }
 
 /// Allocate 2^order pages, zeroed. Page tables must be zeroed before use.
+///
+/// The zeroing happens after the lock is dropped. The block belongs to this
+/// caller by then, so nobody else can observe it, and holding a spinlock
+/// across a memset of up to 4 MiB would stall every other core for the
+/// duration of a memory-bandwidth-bound loop.
 pub fn allocOrderZeroed(order: usize) Error!u64 {
     const phys = try allocOrder(order);
     const ptr: [*]u8 = @ptrFromInt(physToVirt(phys));
@@ -167,6 +196,12 @@ pub fn allocPageZeroed() Error!u64 {
 
 /// Return a block, merging with its buddy as far up as possible.
 pub fn freeOrder(phys: u64, order: usize) void {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    freeOrderUnlocked(phys, order);
+}
+
+fn freeOrderUnlocked(phys: u64, order: usize) void {
     var addr = phys;
     var o = order;
 
@@ -330,6 +365,8 @@ pub const Stats = struct {
 };
 
 pub fn stats() Stats {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
     return .{
         .total_pages = total_pages,
         .free_pages = free_pages,
@@ -340,6 +377,9 @@ pub fn stats() Stats {
 
 /// Free blocks per order — useful for spotting fragmentation.
 pub fn freeCounts() [ORDER_COUNT]usize {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+
     var counts: [ORDER_COUNT]usize = [_]usize{0} ** ORDER_COUNT;
     var order: usize = 0;
     while (order <= MAX_ORDER) : (order += 1) {
