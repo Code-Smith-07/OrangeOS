@@ -12,8 +12,13 @@ const vfs = @import("../fs/vfs/vfs.zig");
 const serial = @import("../drivers/char/serial.zig");
 const io = @import("../arch/x86_64/io.zig");
 const process = @import("../sched/process.zig");
+const pmm = @import("../mm/pmm.zig");
 const citrusfs = @import("../fs/citrusfs/citrusfs.zig");
 const ipc = @import("../ipc/ipc.zig");
+const event = @import("../drivers/input/event.zig");
+const framebuffer = @import("../drivers/video/framebuffer.zig");
+const fbcon = @import("../drivers/video/fbcon.zig");
+const task_mod = @import("../sched/task.zig");
 
 /// Register state at the syscall boundary. Field order is the reverse of the
 /// push order in syscallEntry.
@@ -62,6 +67,9 @@ pub const Nr = enum(u64) {
     shm_create = 54,
     shm_map = 55,
     handle_close = 56,
+    fb_acquire = 70,
+    fb_map = 71,
+    input_read = 72,
     uptime = 60,
     _,
 };
@@ -105,6 +113,9 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .shm_create => sysShmCreate(frame.rdi),
         .shm_map => sysShmMap(frame.rdi, frame.rsi),
         .handle_close => sysHandleClose(frame.rdi),
+        .fb_acquire => sysFbAcquire(frame.rdi),
+        .fb_map => sysFbMap(),
+        .input_read => sysInputRead(frame.rdi, frame.rsi),
         .yield => sysYield(),
         .uptime => sysUptime(),
         else => ENOSYS,
@@ -404,6 +415,98 @@ fn sysShmMap(h: u64, writable: u64) i64 {
 fn sysHandleClose(h: u64) i64 {
     ipc.handleClose(@bitCast(h)) catch |e| return ipcErrno(e);
     return 0;
+}
+
+// ── Display and input ───────────────────────────────────────────────────────
+
+/// Framebuffer geometry, as handed to userspace.
+const FbInfo = extern struct {
+    width: u32,
+    height: u32,
+    pitch: u32,
+    bpp: u32,
+    red_shift: u8,
+    green_shift: u8,
+    blue_shift: u8,
+    reserved: u8,
+};
+
+var fb_owner: u32 = 0;
+
+/// Claim the framebuffer. Only one process may hold it: the compositor owns
+/// the screen, and the kernel console steps aside so the two do not fight over
+/// the same pixels.
+fn sysFbAcquire(info_ptr: u64) i64 {
+    const f = framebuffer.get() orelse return -19; // ENODEV
+
+    const t = sched.currentTask() orelse return EIO;
+    if (fb_owner != 0 and fb_owner != t.tid) return -16; // EBUSY
+    fb_owner = t.tid;
+
+    // Stop the kernel console drawing once a compositor is live. Panics still
+    // reach the serial line, which is the console that matters when things
+    // have gone wrong anyway.
+    fbcon.suspendOutput();
+
+    const info = FbInfo{
+        .width = @intCast(f.width),
+        .height = @intCast(f.height),
+        .pitch = @intCast(f.pitch),
+        .bpp = f.bpp,
+        .red_shift = f.red_shift,
+        .green_shift = f.green_shift,
+        .blue_shift = f.blue_shift,
+        .reserved = 0,
+    };
+
+    const pml4 = vmm.currentCr3();
+    const src: [*]const u8 = @ptrCast(&info);
+    validate.copyToUser(pml4, info_ptr, src[0..@sizeOf(FbInfo)], @sizeOf(FbInfo)) catch {
+        return EFAULT;
+    };
+    return 0;
+}
+
+/// Map the framebuffer into the caller. Requires fb_acquire first.
+fn sysFbMap() i64 {
+    const t = sched.currentTask() orelse return EIO;
+    if (fb_owner != t.tid) return -13; // EACCES
+
+    const f = framebuffer.get() orelse return -19;
+
+    const phys = pmm.virtToPhys(@intFromPtr(f.base));
+    const size = std.mem.alignForward(usize, f.pitch * f.height, vmm.PAGE_SIZE);
+
+    const base = t.shm_next;
+    var off: usize = 0;
+    while (off < size) : (off += vmm.PAGE_SIZE) {
+        vmm.mapPage(
+            t.address_space,
+            base + off,
+            phys + off,
+            vmm.PRESENT | vmm.WRITABLE | vmm.USER | vmm.NO_EXECUTE | vmm.WRITE_THROUGH,
+        ) catch return -12;
+        vmm.invalidatePage(base + off);
+    }
+    t.shm_next = base + size + vmm.PAGE_SIZE;
+
+    return @bitCast(base);
+}
+
+/// Drain pending input events into a user buffer. Returns the count.
+fn sysInputRead(buf: u64, max: u64) i64 {
+    if (max == 0) return 0;
+    const want = @min(max, 64);
+
+    var events: [64]event.Event = undefined;
+    const n = event.drain(events[0..@intCast(want)]);
+    if (n == 0) return 0;
+
+    const bytes = n * @sizeOf(event.Event);
+    const src: [*]const u8 = @ptrCast(&events);
+    const pml4 = vmm.currentCr3();
+    validate.copyToUser(pml4, buf, src[0..bytes], bytes) catch return EFAULT;
+    return @intCast(n);
 }
 
 fn sysGetpid() i64 {

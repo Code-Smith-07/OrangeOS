@@ -263,8 +263,20 @@ pub fn write(s: []const u8) void {
     for (s) |c| writeByte(c);
 }
 
+var suspended: bool = false;
+
+/// Stop drawing to the framebuffer. Called when a compositor takes the screen;
+/// two things painting the same pixels is worse than one.
+pub fn suspendOutput() void {
+    suspended = true;
+}
+
+pub fn resumeOutput() void {
+    suspended = false;
+}
+
 pub fn isReady() bool {
-    return fb != null;
+    return fb != null and !suspended;
 }
 
 pub fn dimensions() struct { cols: usize, rows: usize } {

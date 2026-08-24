@@ -27,6 +27,7 @@ const vfs = @import("../../fs/vfs/vfs.zig");
 const fmtlib = @import("../../lib/fmt.zig");
 const console = @import("../../console.zig");
 const serial = @import("../../drivers/char/serial.zig");
+const ps2 = @import("../../drivers/input/ps2.zig");
 const fmt = @import("../../lib/fmt.zig");
 
 /// Try each partition until one holds a CitrusFS. Trying rather than assuming
@@ -98,6 +99,9 @@ pub fn init() !void {
     // Serial input needs the I/O APIC routed, so it comes up after interrupts.
     serial.enableInput();
     console.ok("serial input enabled (COM1 RX on IRQ 4)", .{});
+
+    ps2.init();
+    console.ok("PS/2 keyboard and mouse online (IRQ 1, IRQ 12)", .{});
 
     // Storage comes up after interrupts, because the driver times out against
     // the TSC and wants a running clock.

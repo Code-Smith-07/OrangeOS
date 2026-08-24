@@ -29,6 +29,9 @@ pub const NR = struct {
     pub const shm_create: u64 = 54;
     pub const shm_map: u64 = 55;
     pub const handle_close: u64 = 56;
+    pub const fb_acquire: u64 = 70;
+    pub const fb_map: u64 = 71;
+    pub const input_read: u64 = 72;
     pub const uptime: u64 = 60;
 };
 
@@ -282,6 +285,59 @@ pub fn shmMap(h: i64, writable: bool) Error![*]u8 {
 
 pub fn handleClose(h: i64) void {
     _ = syscall1(NR.handle_close, @bitCast(h));
+}
+
+// ── Display and input ───────────────────────────────────────────────────────
+
+pub const FbInfo = extern struct {
+    width: u32,
+    height: u32,
+    pitch: u32,
+    bpp: u32,
+    red_shift: u8,
+    green_shift: u8,
+    blue_shift: u8,
+    reserved: u8,
+};
+
+pub const EV_KEY: u8 = 1;
+pub const EV_MOUSE: u8 = 2;
+
+pub const InputEvent = extern struct {
+    kind: u8,
+    /// key: scancode. mouse: button bitmask (1 left, 2 right, 4 middle).
+    code: u8,
+    /// key: bit 0 pressed, bit 1 extended.
+    value: u8,
+    reserved: u8,
+    dx: i32,
+    dy: i32,
+
+    pub fn isPress(self: *const InputEvent) bool {
+        return self.value & 1 != 0;
+    }
+};
+
+/// Claim the screen. Only one process may hold it.
+pub fn fbAcquire() Error!FbInfo {
+    var info: FbInfo = undefined;
+    const r = syscall1(NR.fb_acquire, @intFromPtr(&info));
+    if (r < 0) return errno(r);
+    return info;
+}
+
+/// Map the framebuffer. Requires fbAcquire first.
+pub fn fbMap() Error![*]u32 {
+    const r = syscall0(NR.fb_map);
+    if (r < 0) return errno(r);
+    return @ptrFromInt(@as(u64, @bitCast(r)));
+}
+
+/// Drain pending input events. Returns how many were read.
+pub fn inputRead(out: []InputEvent) usize {
+    const r = syscall2(NR.input_read, @intFromPtr(out.ptr), out.len);
+    if (r < 0) return 0;
+    return @intCast(r);
 }
 
 // ── Convenience output ──────────────────────────────────────────────────────

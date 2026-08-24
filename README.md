@@ -13,7 +13,7 @@
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS shell](docs/screenshots/phase6b.png)
+![Orange OS desktop](docs/screenshots/phase7.png)
 
 </div>
 
@@ -76,10 +76,10 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 6 complete.** **Seed** runs as PID 1, starts services from
-`/etc/seed.conf`, and restarts them when they exit. Processes talk to each
-other over capability-scoped IPC ports and share memory without the kernel
-copying a byte. **Juice** is the shell.
+**Phase 7a complete.** Orange OS has a desktop. **Peel** owns the framebuffer
+and composites windows with shadows, damage tracking, and a mouse cursor —
+entirely in software, with no GPU. Windows raise and drag. **Seed** supervises
+it alongside the shell, which still runs on the serial console.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -90,7 +90,8 @@ copying a byte. **Juice** is the shell.
 | 4 | Processes and scheduling | ✅ **Done** |
 | 5 | Storage and filesystems | ✅ **Done** |
 | 6 | Userland, IPC, and Seed | ✅ **Done** |
-| 7 | **Graphics — the desktop** | 🔨 In progress |
+| 7 | Graphics: input, compositor, windows | ✅ **Done** |
+| 7 | Graphics: toolkit, shell, terminal | 🔨 In progress |
 | 8 | SMP, networking, USB, audio | ⬜ Planned |
 | 9 | Real hardware | ⬜ Planned |
 

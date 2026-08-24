@@ -97,6 +97,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "uname", .path = "userland/bin/uname/main.zig" },
         .{ .name = "greetd", .path = "userland/bin/greetd/main.zig" },
         .{ .name = "greet", .path = "userland/bin/greet/main.zig" },
+        .{ .name = "peel", .path = "userland/servers/peel/main.zig" },
     };
 
     for (programs) |prog| {
