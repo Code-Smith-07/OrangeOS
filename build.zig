@@ -102,6 +102,20 @@ pub fn build(b: *std.Build) void {
     });
     libpeel_mod.addImport("pulp", pulp_mod);
 
+    const segment_mod = b.createModule(.{
+        .root_source_file = b.path("userland/libs/segment/segment.zig"),
+        .target = target,
+        .optimize = optimize,
+        .red_zone = false,
+        .pic = false,
+        .stack_protector = false,
+        .stack_check = false,
+        .sanitize_c = false,
+        .single_threaded = true,
+    });
+    segment_mod.addImport("pulp", pulp_mod);
+    segment_mod.addImport("libpeel", libpeel_mod);
+
     const UserProgram = struct { name: []const u8, path: []const u8 };
     const programs = [_]UserProgram{
         .{ .name = "init", .path = "userland/servers/seed/main.zig" },
@@ -113,6 +127,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "peel", .path = "userland/servers/peel/main.zig" },
         .{ .name = "clock", .path = "userland/bin/clock/main.zig" },
         .{ .name = "squeeze", .path = "userland/apps/squeeze/main.zig" },
+        .{ .name = "grove", .path = "userland/apps/grove/main.zig" },
+        .{ .name = "about", .path = "userland/apps/about/main.zig" },
     };
 
     for (programs) |prog| {
@@ -129,6 +145,7 @@ pub fn build(b: *std.Build) void {
         });
         mod.addImport("pulp", pulp_mod);
         mod.addImport("libpeel", libpeel_mod);
+        mod.addImport("segment", segment_mod);
 
         const exe = b.addExecutable(.{
             .name = prog.name,

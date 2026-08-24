@@ -9,11 +9,11 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-orange.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-x86__64-orange.svg)](ARCHITECTURE.md)
 [![Language](https://img.shields.io/badge/language-Zig-orange.svg)](https://ziglang.org)
-[![Status](https://img.shields.io/badge/status-Phase%207-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
+[![Status](https://img.shields.io/badge/status-Phase%208-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS desktop](docs/screenshots/phase7c.png)
+![Orange OS desktop](docs/screenshots/phase7d.png)
 
 </div>
 
@@ -76,10 +76,10 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 7c complete.** The shell runs in a window. **Squeeze** owns a
-pseudo-terminal, starts **Juice** on its slave end, and paints the output into
-a **Peel** window. Keystrokes travel from the PS/2 controller through the
-compositor and the PTY into the shell, and its output comes back the same way.
+**Phase 7 complete.** Orange OS has a working desktop. **Peel** composites,
+**Squeeze** runs the shell in a window over a pseudo-terminal, **Segment**
+provides widgets, and **Grove** launches applications — clicking a button in
+one process starts another, which asks for a window of its own.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -93,8 +93,8 @@ compositor and the PTY into the shell, and its output comes back the same way.
 | 7 | Graphics: input, compositor, windows | ✅ **Done** |
 | 7 | Graphics: client protocol | ✅ **Done** |
 | 7 | Graphics: PTY and terminal emulator | ✅ **Done** |
-| 7 | Graphics: widget toolkit and desktop shell | 🔨 In progress |
-| 8 | SMP, networking, USB, audio | ⬜ Planned |
+| 7 | Graphics: widget toolkit and desktop shell | ✅ **Done** |
+| 8 | SMP, networking, USB, audio | 🔨 Next |
 | 9 | Real hardware | ⬜ Planned |
 
 See the [full roadmap](ARCHITECTURE.md#16-development-roadmap) for what each

@@ -386,6 +386,26 @@ var drag_dy: i32 = 0;
 var buttons: u8 = 0;
 var frames: u64 = 0;
 
+/// Send an input event to a window's client, in coordinates relative to its
+/// own buffer. A client should never need to know where on screen it sits.
+fn sendInput(idx: usize, kind: u8, code: u8, value: u8, sx: i32, sy: i32) void {
+    const w = &windows[idx];
+    if (w.reply_port < 0) return;
+
+    const content = w.contentRect();
+    const msg = proto.Input{
+        .window_id = w.id,
+        .kind = kind,
+        .code = code,
+        .value = value,
+        .reserved = 0,
+        .x = sx - content.x,
+        .y = sy - content.y,
+    };
+    const bytes: [*]const u8 = @ptrCast(&msg);
+    _ = pulp.portSend(w.reply_port, proto.Op.input, bytes[0..@sizeOf(proto.Input)]) catch {};
+}
+
 fn handleMouse(e: *const pulp.InputEvent) void {
     prev_cursor_x = cursor_x;
     prev_cursor_y = cursor_y;
@@ -420,6 +440,13 @@ fn handleMouse(e: *const pulp.InputEvent) void {
         windows[idx].rect.x = cursor_x - drag_dx;
         windows[idx].rect.y = cursor_y - drag_dy;
         addDamage(windows[idx].damageRect());
+    } else if (windowAt(cursor_x, cursor_y)) |idx| {
+        // Not dragging: forward pointer activity to whichever window is under
+        // the cursor, so its client can hit-test its own widgets. Events over
+        // the title bar belong to the compositor and are not forwarded.
+        if (!windows[idx].titleBar().contains(cursor_x, cursor_y)) {
+            sendInput(idx, pulp.EV_MOUSE, buttons, 0, cursor_x, cursor_y);
+        }
     }
 
     addDamage(cursorRect(prev_cursor_x, prev_cursor_y));
@@ -439,21 +466,7 @@ fn handleKey(e: *const pulp.InputEvent) void {
     // Everything else goes to the focused window - the top of the z-order.
     // Peel does not interpret keys; it routes them.
     if (window_count == 0) return;
-    const idx = z_order[window_count - 1];
-    const w = &windows[idx];
-    if (w.reply_port < 0) return;
-
-    const msg = proto.Input{
-        .window_id = w.id,
-        .kind = e.kind,
-        .code = e.code,
-        .value = e.value,
-        .reserved = 0,
-        .x = 0,
-        .y = 0,
-    };
-    const bytes: [*]const u8 = @ptrCast(&msg);
-    _ = pulp.portSend(w.reply_port, proto.Op.input, bytes[0..@sizeOf(proto.Input)]) catch {};
+    sendInput(z_order[window_count - 1], e.kind, e.code, e.value, 0, 0);
 }
 
 // ── Entry ───────────────────────────────────────────────────────────────────
