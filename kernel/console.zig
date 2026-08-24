@@ -7,8 +7,21 @@
 const serial = @import("drivers/char/serial.zig");
 const fbcon = @import("drivers/video/fbcon.zig");
 const fmt = @import("lib/fmt.zig");
+const spinlock = @import("sync/spinlock.zig");
+
+/// Console output must be atomic per line once preemption exists. The
+/// framebuffer console keeps cursor state and scrolls by moving scanlines;
+/// two threads interleaving inside that produce visibly corrupted output.
+/// Interrupts are disabled while held, because the timer handler also prints.
+var lock: spinlock.SpinLock = .{};
 
 pub fn write(s: []const u8) void {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    writeLocked(s);
+}
+
+fn writeLocked(s: []const u8) void {
     if (serial.isInitialized()) serial.write(s);
     if (fbcon.isReady()) fbcon.write(s);
 }
@@ -17,7 +30,10 @@ pub fn write(s: []const u8) void {
 /// lines that need more than that are a design smell.
 pub fn print(comptime format: []const u8, args: anytype) void {
     var buf: [512]u8 = undefined;
-    write(fmt.bufPrint(&buf, format, args));
+    const text = fmt.bufPrint(&buf, format, args);
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    writeLocked(text);
 }
 
 // ── Log levels ───────────────────────────────────────────────────────────────
@@ -25,18 +41,25 @@ pub fn print(comptime format: []const u8, args: anytype) void {
 // scannable at a glance.
 
 fn tagged(tag: []const u8, color: u32, comptime format: []const u8, args: anytype) void {
+    // Format before taking the lock: formatting is pure and can be preempted
+    // safely, and holding the lock across it would lengthen every critical
+    // section for no reason.
+    var buf: [512]u8 = undefined;
+    const text = fmt.bufPrint(&buf, format, args);
+
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+
     if (serial.isInitialized()) {
         serial.write(tag);
-        var buf: [512]u8 = undefined;
-        serial.write(fmt.bufPrint(&buf, format, args));
+        serial.write(text);
         serial.write("\n");
     }
     if (fbcon.isReady()) {
         fbcon.setColor(color);
         fbcon.write(tag);
         fbcon.resetColor();
-        var buf: [512]u8 = undefined;
-        fbcon.write(fmt.bufPrint(&buf, format, args));
+        fbcon.write(text);
         fbcon.write("\n");
     }
 }

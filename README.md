@@ -9,11 +9,11 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-orange.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-x86__64-orange.svg)](ARCHITECTURE.md)
 [![Language](https://img.shields.io/badge/language-Zig-orange.svg)](https://ziglang.org)
-[![Status](https://img.shields.io/badge/status-Phase%204-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
+[![Status](https://img.shields.io/badge/status-Phase%205-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS booting](docs/screenshots/phase3.png)
+![Orange OS booting](docs/screenshots/phase4.png)
 
 </div>
 
@@ -76,8 +76,9 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 3 complete.** The kernel parses ACPI, drives the local and I/O APICs,
-calibrates the TSC, and runs preemptible with interrupts enabled.
+**Phase 4 complete.** The kernel preemptively schedules threads, loads ELF
+binaries into isolated address spaces, and runs real programs in ring 3 that
+talk to it through `syscall`.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -85,8 +86,8 @@ calibrates the TSC, and runs preemptible with interrupts enabled.
 | 1 | GDT, IDT, exception handling | ✅ **Done** |
 | 2 | Memory management | ✅ **Done** |
 | 3 | Interrupts and time | ✅ **Done** |
-| 4 | Processes and scheduling | 🔨 In progress |
-| 5 | Storage and filesystems | ⬜ Planned |
+| 4 | Processes and scheduling | ✅ **Done** |
+| 5 | Storage and filesystems | 🔨 In progress |
 | 6 | Userland and IPC | ⬜ Planned |
 | 7 | **Graphics — the desktop** | ⬜ Planned |
 | 8 | SMP, networking, USB, audio | ⬜ Planned |

@@ -57,6 +57,28 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "fault_test", fault_test);
     options.addOption(bool, "mm_test", mm_test);
 
+    // ── Userland: init, the first ring 3 program ─────────────────────────────
+    // Built for the same bare-metal target: no libc, no runtime, static ELF.
+    const init_mod = b.createModule(.{
+        .root_source_file = b.path("userland/init/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .red_zone = false,
+        .pic = false,
+        .stack_protector = false,
+        .stack_check = false,
+        .sanitize_c = false,
+        .single_threaded = true,
+        .strip = false,
+    });
+    const init_exe = b.addExecutable(.{
+        .name = "init.elf",
+        .root_module = init_mod,
+        .use_lld = true,
+    });
+    init_exe.setLinkerScript(b.path("userland/user.ld"));
+    init_exe.entry = .{ .symbol_name = "_start" };
+
     // ── Zest kernel ──────────────────────────────────────────────────────────
     const kernel_mod = b.createModule(.{
         .root_source_file = b.path("kernel/main.zig"),
@@ -74,6 +96,9 @@ pub fn build(b: *std.Build) void {
     });
 
     kernel_mod.addOptions("build_options", options);
+    // The init binary is embedded in the kernel image. Phase 5 loads programs
+    // from a filesystem instead.
+    kernel_mod.addAnonymousImport("init_elf", .{ .root_source_file = init_exe.getEmittedBin() });
 
     const kernel = b.addExecutable(.{
         .name = "kernel.elf",

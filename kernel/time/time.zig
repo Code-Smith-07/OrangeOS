@@ -19,6 +19,7 @@ const apic = @import("../arch/x86_64/apic.zig");
 const isr = @import("../arch/x86_64/isr.zig");
 const tsc = @import("tsc.zig");
 const pic = @import("../arch/x86_64/pic.zig");
+const sched = @import("../sched/sched.zig");
 
 pub const TICK_HZ: u32 = build_options.tick_hz;
 const NS_PER_TICK: u64 = 1_000_000_000 / TICK_HZ;
@@ -30,7 +31,14 @@ var boot_tsc: u64 = 0;
 fn tickHandler(frame: *isr.TrapFrame) void {
     _ = frame;
     ticks +%= 1;
+
+    // EOI before scheduling: switching away from here means we may not return
+    // for a long time, and the LAPIC will not deliver another interrupt at
+    // this priority until it is acknowledged.
     apic.eoi();
+
+    sched.tick();
+    sched.preemptIfNeeded();
 }
 
 /// The spurious vector fires when an interrupt is withdrawn mid-delivery.

@@ -17,6 +17,11 @@ const mm_test = @import("mm/test.zig");
 const platform = @import("dev/acpi/init.zig");
 const time = @import("time/time.zig");
 const tsc = @import("time/tsc.zig");
+const sched = @import("sched/sched.zig");
+const sched_test = @import("sched/test.zig");
+const process = @import("sched/process.zig");
+const percpu = @import("arch/x86_64/percpu.zig");
+const syscall_entry = @import("arch/x86_64/syscall_entry.zig");
 const fmt = @import("lib/fmt.zig");
 const panic_mod = @import("panic.zig");
 
@@ -91,11 +96,30 @@ export fn kmain() callconv(.c) noreturn {
         io.hang();
     };
 
-    console.write("\n");
-    console.ok("Phase 3 complete - Zest keeps time.", .{});
-    console.info("next: tasks, context switch, scheduler, ring 3 (Phase 4)", .{});
+    // ── 8. Scheduler. From here the kernel runs as threads. ─────────────────
+    sched.init() catch |e| {
+        console.err("scheduler init failed: {s}", .{@errorName(e)});
+        io.hang();
+    };
+    console.ok("scheduler: MLFQ, 4 levels, idle thread created", .{});
 
-    heartbeat();
+    // ── 9. Syscall gate and per-CPU data, needed before any ring 3 code. ────
+    percpu.init();
+    syscall_entry.init();
+    console.ok("syscall gate armed (SYSCALL/SYSRET, per-CPU block via GS)", .{});
+
+    console.write("\n");
+    console.ok("Phase 4 complete - Zest runs user processes.", .{});
+    console.info("next: PCI, block devices, VFS, CitrusFS (Phase 5)", .{});
+
+    sched_test.spawnAll();
+    _ = sched.spawn("init", process.initThread, null, .normal) catch |e| {
+        console.err("could not spawn init: {s}", .{@errorName(e)});
+    };
+
+    // Hand the boot context to the scheduler. This never returns: the boot
+    // stack is abandoned and every subsequent instruction runs on a thread.
+    sched.start();
 
     // A deliberate breakpoint proves the IDT actually routes and returns.
     selfTest();

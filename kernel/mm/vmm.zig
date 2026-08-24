@@ -319,6 +319,76 @@ pub fn init() !void {
     loadCr3(kernel_pml4_phys);
 }
 
+/// Create a fresh address space for a user process.
+///
+/// The upper half (PML4 entries 256-511) is shared with the kernel by copying
+/// its top-level entries. That means a syscall or interrupt taken while a user
+/// process is running finds the kernel already mapped, with no CR3 switch —
+/// which is what makes syscalls cheap. The lower half starts empty, so one
+/// process cannot see another's memory.
+pub fn createAddressSpace() Error!u64 {
+    const phys = pmm.allocPageZeroed() catch return Error.OutOfMemory;
+    const new_table = tableAt(phys);
+    const kernel_table = tableAt(kernel_pml4_phys);
+
+    var i: usize = 256;
+    while (i < 512) : (i += 1) new_table[i] = kernel_table[i];
+
+    return phys;
+}
+
+/// Free a user address space: every lower-half mapping and the tables that
+/// held them. Upper-half entries are the kernel's and are left alone.
+pub fn destroyAddressSpace(pml4_phys: u64) void {
+    const pml4 = tableAt(pml4_phys);
+
+    var l4: usize = 0;
+    while (l4 < 256) : (l4 += 1) {
+        const e3 = pml4[l4];
+        if (e3 & PRESENT == 0) continue;
+        const pdpt = tableAt(e3);
+
+        var l3: usize = 0;
+        while (l3 < 512) : (l3 += 1) {
+            const e2 = pdpt[l3];
+            if (e2 & PRESENT == 0 or e2 & HUGE != 0) continue;
+            const pd = tableAt(e2);
+
+            var l2: usize = 0;
+            while (l2 < 512) : (l2 += 1) {
+                const e1 = pd[l2];
+                if (e1 & PRESENT == 0 or e1 & HUGE != 0) continue;
+                const pt = tableAt(e1);
+
+                var l1: usize = 0;
+                while (l1 < 512) : (l1 += 1) {
+                    const e0 = pt[l1];
+                    if (e0 & PRESENT == 0) continue;
+                    pmm.freePage(e0 & ADDR_MASK);
+                }
+                pmm.freePage(e1 & ADDR_MASK);
+            }
+            pmm.freePage(e2 & ADDR_MASK);
+        }
+        pmm.freePage(e3 & ADDR_MASK);
+    }
+
+    pmm.freePage(pml4_phys);
+}
+
+/// Allocate a physical page and map it into `pml4` at `virt`.
+pub fn allocAndMap(pml4_phys: u64, virt: u64, flags: u64) Error!u64 {
+    const phys = pmm.allocPageZeroed() catch return Error.OutOfMemory;
+    try mapPage(pml4_phys, virt, phys, flags);
+    return phys;
+}
+
+pub fn currentCr3() u64 {
+    return asm volatile ("movq %%cr3, %[out]"
+        : [out] "=r" (-> u64),
+    );
+}
+
 /// Map a physical MMIO range into the HHDM window and return its virtual
 /// address. Device registers must be uncached: the CPU caching a status
 /// register would read stale values forever.
