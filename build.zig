@@ -244,4 +244,11 @@ pub fn build(b: *std.Build) void {
     }));
     trace.step.dependOn(iso_step);
     b.step("trace", "Boot with interrupt and fault tracing").dependOn(&trace.step);
+
+    // Boot the single USB image under UEFI firmware, which is how a real
+    // machine starts. Worth keeping as a build target rather than a one-off
+    // command: it exercises a different firmware path, a far more fragmented
+    // memory map, and ACPI's XSDT instead of the RSDT.
+    const uefi = b.addSystemCommand(&.{ "sh", "scripts/run-uefi.sh" });
+    b.step("uefi", "Boot the USB image under UEFI firmware").dependOn(&uefi.step);
 }

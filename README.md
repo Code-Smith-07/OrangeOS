@@ -13,7 +13,7 @@
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS desktop](docs/screenshots/phase8g.png)
+![Orange OS desktop](docs/screenshots/phase9a.png)
 
 </div>
 
@@ -76,10 +76,10 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 8 complete.** USB HID works end to end — with PS/2 disabled entirely,
-a USB keyboard and mouse drive the desktop. Every subsystem runs together:
-4 processors, SATA, CitrusFS, networking with DHCP and TCP, audio, USB, and
-the full graphical desktop.
+**Phase 9a complete.** Orange OS boots under **UEFI** from a single disk image
+— the same image that would be written to a USB stick. Firmware loads the
+bootloader from the ESP, the kernel mounts its root partition off the same
+disk, and the whole system comes up: desktop, shell, networking and USB.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -99,7 +99,8 @@ the full graphical desktop.
 | 8 | Audio: Intel HD Audio | ✅ **Done** |
 | 8 | USB: xHCI, control transfers, enumeration | ✅ **Done** |
 | 8 | USB: HID input | ✅ **Done** |
-| 9 | Real hardware | 🔨 Next |
+| 9 | UEFI boot from a single USB image | ✅ **Done** |
+| 9 | Booting physical hardware | 🔨 Next |
 
 See the [full roadmap](ARCHITECTURE.md#16-development-roadmap) for what each
 phase contains and honest time estimates.

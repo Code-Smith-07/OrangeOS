@@ -201,8 +201,12 @@ pub fn orderFor(pages: usize) usize {
 // ── Initialization ───────────────────────────────────────────────────────────
 
 /// Add a usable range, carving it into the largest aligned blocks that fit.
+///
+/// Physical page 0 is never added. Keeping it out of the allocator is what
+/// lets the null page stay unmapped, which is what makes a null dereference a
+/// fault rather than a silent read of whatever the firmware left there.
 fn addRange(start: u64, end: u64) void {
-    var addr = std.mem.alignForward(u64, start, PAGE_SIZE);
+    var addr = std.mem.alignForward(u64, @max(start, PAGE_SIZE), PAGE_SIZE);
     const stop = std.mem.alignBackward(u64, end, PAGE_SIZE);
 
     while (addr < stop) {
@@ -253,17 +257,34 @@ pub fn init() !void {
 
     // Pass 3: bootstrap. Carve bitmap storage out of the first usable region
     // large enough, before any free list exists.
+    //
+    // Two things to be careful about, both of which only bite on UEFI:
+    //
+    // A "found" flag rather than testing bitmap_phys against zero. UEFI
+    // reports a usable region starting at physical address 0, so a zero
+    // sentinel turns a perfectly good region into a failure. BIOS happened to
+    // start its first region higher, which is why this never showed up there.
+    //
+    // Skipping the first page keeps physical page 0 out of the allocator, so
+    // the null page stays unmapped and a null dereference still faults.
     var bitmap_phys: u64 = 0;
+    var found_bootstrap = false;
     i = 0;
     while (i < mm.entry_count) : (i += 1) {
         const e = mm.entries[i];
         if (e.type != .usable) continue;
-        if (e.length >= bitmap_pages * PAGE_SIZE) {
-            bitmap_phys = e.base;
+
+        const start = @max(e.base, PAGE_SIZE);
+        if (start >= e.base + e.length) continue;
+        const usable_len = e.base + e.length - start;
+
+        if (usable_len >= bitmap_pages * PAGE_SIZE) {
+            bitmap_phys = std.mem.alignForward(u64, start, PAGE_SIZE);
+            found_bootstrap = true;
             break;
         }
     }
-    if (bitmap_phys == 0) return error.NoBootstrapRegion;
+    if (!found_bootstrap) return error.NoBootstrapRegion;
 
     const bitmap_all: [*]u8 = @ptrFromInt(physToVirt(bitmap_phys));
     @memset(bitmap_all[0 .. bitmap_pages * PAGE_SIZE], 0);
