@@ -23,13 +23,20 @@ mkdir -p "$ROOTFS/etc" "$ROOTFS/sbin" "$ROOTFS/bin"
 echo "Welcome to Orange OS." > "$ROOTFS/etc/motd"
 printf 'NAME="Orange OS"\nVERSION="0.1.0"\nKERNEL="Zest"\n' > "$ROOTFS/etc/os-release"
 
+cat > "$ROOTFS/etc/seed.conf" <<'CONF'
+# Orange OS service configuration
+# <name> <path> <policy>   policy: once | respawn | essential
+greetd /bin/greetd respawn
+juice  /bin/juice  essential
+CONF
+
 if [ ! -f zig-out/bin/init ]; then
     echo "mkdisk: ERROR - zig-out/bin/init not found; run 'zig build' first" >&2
     exit 1
 fi
 
 cp zig-out/bin/init "$ROOTFS/sbin/init"
-for prog in juice echo uname; do
+for prog in juice echo uname greetd greet; do
     if [ -f "zig-out/bin/$prog" ]; then
         cp "zig-out/bin/$prog" "$ROOTFS/bin/$prog"
     fi

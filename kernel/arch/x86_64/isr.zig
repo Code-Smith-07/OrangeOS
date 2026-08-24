@@ -109,8 +109,28 @@ export fn isrCommon() callconv(.naked) void {
         \\ pushq %r14
         \\ pushq %r15
         \\
+        \\ # If this trap came from ring 3, GS still holds the user's value.
+        \\ # Kernel code - the scheduler above all - requires GS_BASE to point
+        \\ # at the per-CPU block, so swap here. Without this, a timer
+        \\ # interrupt during user code leaves every subsequently scheduled
+        \\ # thread running on a null GS, and the next syscall faults writing
+        \\ # to gs:8.
+        \\ #
+        \\ # CS sits at 144(%rsp): 15 saved registers, then the vector and
+        \\ # error code, then rip.
+        \\ testb $3, 144(%rsp)
+        \\ jz 1f
+        \\ swapgs
+        \\ 1:
+        \\
         \\ movq %rsp, %rdi
         \\ callq isrDispatch
+        \\
+        \\ # Swap back only if we are returning to ring 3.
+        \\ testb $3, 144(%rsp)
+        \\ jz 2f
+        \\ swapgs
+        \\ 2:
         \\
         \\ popq %r15
         \\ popq %r14

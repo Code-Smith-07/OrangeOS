@@ -53,8 +53,11 @@ fn builtinLs(args: [][]const u8, n: usize) void {
     const path = if (n > 1) args[1] else cwd();
 
     var entries: [32]pulp.DirEntry = undefined;
-    const count = pulp.readdir(path, &entries) catch |e| {
-        pulp.print("ls: {s}: {s}\n", .{ path, @errorName(e) });
+    const count = pulp.readdir(path, &entries) catch {
+        // No @errorName here: it needs the compiler-emitted error name table,
+        // which a freestanding binary linked with a custom script does not
+        // reliably get, and reading it dereferences null.
+        pulp.puts("ls: cannot read directory\n");
         return;
     };
 
@@ -77,8 +80,8 @@ fn builtinCat(args: [][]const u8, n: usize) void {
         return;
     }
 
-    const fd = pulp.open(args[1]) catch |e| {
-        pulp.print("cat: {s}: {s}\n", .{ args[1], @errorName(e) });
+    const fd = pulp.open(args[1]) catch {
+        pulp.puts("cat: cannot open file\n");
         return;
     };
     defer pulp.close(fd);

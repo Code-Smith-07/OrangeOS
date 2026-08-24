@@ -91,10 +91,12 @@ pub fn build(b: *std.Build) void {
 
     const UserProgram = struct { name: []const u8, path: []const u8 };
     const programs = [_]UserProgram{
-        .{ .name = "init", .path = "userland/init/main.zig" },
+        .{ .name = "init", .path = "userland/servers/seed/main.zig" },
         .{ .name = "juice", .path = "userland/bin/juice/main.zig" },
         .{ .name = "echo", .path = "userland/bin/echo/main.zig" },
         .{ .name = "uname", .path = "userland/bin/uname/main.zig" },
+        .{ .name = "greetd", .path = "userland/bin/greetd/main.zig" },
+        .{ .name = "greet", .path = "userland/bin/greet/main.zig" },
     };
 
     for (programs) |prog| {

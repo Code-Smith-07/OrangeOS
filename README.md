@@ -13,7 +13,7 @@
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS shell](docs/screenshots/phase6.png)
+![Orange OS shell](docs/screenshots/phase6b.png)
 
 </div>
 
@@ -76,9 +76,10 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 6a complete.** Orange OS has an interactive shell. `init` runs as PID 1
-and supervises **Juice**, which reads commands over the serial console, runs
-builtins, and spawns programs from `/bin` — each in its own address space.
+**Phase 6 complete.** **Seed** runs as PID 1, starts services from
+`/etc/seed.conf`, and restarts them when they exit. Processes talk to each
+other over capability-scoped IPC ports and share memory without the kernel
+copying a byte. **Juice** is the shell.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -88,9 +89,8 @@ builtins, and spawns programs from `/bin` — each in its own address space.
 | 3 | Interrupts and time | ✅ **Done** |
 | 4 | Processes and scheduling | ✅ **Done** |
 | 5 | Storage and filesystems | ✅ **Done** |
-| 6 | Userland: Pulp libc + Juice shell | ✅ **Done** |
-| 6 | IPC, ports, and Seed | 🔨 In progress |
-| 7 | **Graphics — the desktop** | ⬜ Planned |
+| 6 | Userland, IPC, and Seed | ✅ **Done** |
+| 7 | **Graphics — the desktop** | 🔨 In progress |
 | 8 | SMP, networking, USB, audio | ⬜ Planned |
 | 9 | Real hardware | ⬜ Planned |
 

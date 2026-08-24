@@ -213,6 +213,17 @@ pub fn tick() void {
     const t = current orelse return;
     t.ticks_used += 1;
 
+    // Catch a kernel stack overrun at the first tick after it happens, while
+    // the cause is still on the stack, rather than letting it surface later as
+    // a jump through a corrupted pointer.
+    if (!task_mod.stackIntact(t)) {
+        @branchHint(.cold);
+        console.err("kernel stack overflow in task \"{s}\" (tid {d})", .{
+            t.nameSlice(), t.tid,
+        });
+        @panic("kernel stack overflow");
+    }
+
     if (t.quantum_left > 0) t.quantum_left -= 1;
 
     // Anti-starvation: periodically lift everything back to interactive.

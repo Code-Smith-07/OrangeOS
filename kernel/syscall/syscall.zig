@@ -13,6 +13,7 @@ const serial = @import("../drivers/char/serial.zig");
 const io = @import("../arch/x86_64/io.zig");
 const process = @import("../sched/process.zig");
 const citrusfs = @import("../fs/citrusfs/citrusfs.zig");
+const ipc = @import("../ipc/ipc.zig");
 
 /// Register state at the syscall boundary. Field order is the reverse of the
 /// push order in syscallEntry.
@@ -49,10 +50,18 @@ pub const Nr = enum(u64) {
     yield = 7,
     spawn = 8,
     wait = 9,
+    sleep_ms = 61,
     open = 20,
     close = 21,
     read = 22,
     readdir = 34,
+    port_create = 50,
+    port_connect = 51,
+    port_send = 52,
+    port_recv = 53,
+    shm_create = 54,
+    shm_map = 55,
+    handle_close = 56,
     uptime = 60,
     _,
 };
@@ -84,10 +93,18 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .close => sysClose(frame.rdi),
         .read => sysRead(frame.rdi, frame.rsi, frame.rdx),
         .spawn => sysSpawn(frame.rdi, frame.rsi),
-        .wait => sysWait(frame.rdi),
+        .wait => sysWait(frame.rdi, frame.rsi),
+        .sleep_ms => sysSleepMs(frame.rdi),
         // Fourth argument is in r10, not rcx: the syscall instruction
         // clobbers rcx with the return address.
         .readdir => sysReaddir(frame.rdi, frame.rsi, frame.rdx, frame.r10),
+        .port_create => sysPortCreate(frame.rdi, frame.rsi),
+        .port_connect => sysPortConnect(frame.rdi, frame.rsi),
+        .port_send => sysPortSend(frame.rdi, frame.rsi, frame.rdx, frame.r10),
+        .port_recv => sysPortRecv(frame.rdi, frame.rsi, frame.rdx, frame.r10),
+        .shm_create => sysShmCreate(frame.rdi),
+        .shm_map => sysShmMap(frame.rdi, frame.rsi),
+        .handle_close => sysHandleClose(frame.rdi),
         .yield => sysYield(),
         .uptime => sysUptime(),
         else => ENOSYS,
@@ -211,15 +228,23 @@ fn sysSpawn(path_ptr: u64, path_len: u64) i64 {
 
 /// Wait for a task to become a zombie and return its exit code.
 ///
-/// Polls via yield rather than a wait queue. A proper implementation blocks
-/// the parent and has exit() wake it; that needs per-process parent tracking,
-/// which arrives with fork in Phase 6b.
-fn sysWait(pid: u64) i64 {
+/// `flags` bit 0 is WNOHANG: return -EAGAIN immediately if the task is still
+/// running. A supervisor with more than one service needs this — blocking on
+/// each in turn means a long-running service prevents noticing that any other
+/// one died.
+pub const WNOHANG: u64 = 1;
+
+fn sysWait(pid: u64, flags: u64) i64 {
     const tid: u32 = @truncate(pid);
     const t = sched.findByTid(tid) orelse return ECHILD;
 
-    // Same reason as sysRead: we arrive with IF clear, and the child needs
-    // timer interrupts to be scheduled at all.
+    if (flags & WNOHANG != 0) {
+        if (t.state != .zombie) return EAGAIN;
+        return t.exit_code;
+    }
+
+    // We arrive with IF clear, and the child needs timer interrupts to be
+    // scheduled at all.
     io.sti();
     defer io.cli();
 
@@ -227,6 +252,24 @@ fn sysWait(pid: u64) i64 {
         sched.yield();
     }
     return t.exit_code;
+}
+
+/// Sleep for `ms` milliseconds. Yields rather than spinning, so other work
+/// runs while a supervisor is idle between polls.
+fn sysSleepMs(ms: u64) i64 {
+    if (ms == 0) {
+        sched.yield();
+        return 0;
+    }
+    io.sti();
+    defer io.cli();
+
+    const time = @import("../time/time.zig");
+    const deadline = time.monotonicNs() + ms * 1_000_000;
+    while (time.monotonicNs() < deadline) {
+        sched.yield();
+    }
+    return 0;
 }
 
 /// One entry as handed to userspace. Must match pulp.DirEntry.
@@ -275,6 +318,92 @@ fn sysReaddir(path_ptr: u64, path_len: u64, out: u64, max: u64) i64 {
     validate.copyToUser(pml4, out, src[0..bytes], bytes) catch return EFAULT;
 
     return @intCast(ctx.count);
+}
+
+// ── IPC ─────────────────────────────────────────────────────────────────────
+
+const EEXIST: i64 = -17;
+const EAGAIN: i64 = -11;
+const EINVAL: i64 = -22;
+const EMSGSIZE: i64 = -90;
+
+fn ipcErrno(e: ipc.Error) i64 {
+    return switch (e) {
+        ipc.Error.NoSuchPort => ENOENT,
+        ipc.Error.NameTaken => EEXIST,
+        ipc.Error.NameTooLong => ENAMETOOLONG,
+        ipc.Error.BadHandle, ipc.Error.WrongType => EBADF,
+        ipc.Error.QueueFull, ipc.Error.QueueEmpty => EAGAIN,
+        ipc.Error.MessageTooLarge => EMSGSIZE,
+        ipc.Error.TooManyHandles => EMFILE,
+        ipc.Error.OutOfMemory => -12,
+    };
+}
+
+fn copyName(ptr: u64, len: u64, out: []u8) ?[]const u8 {
+    if (len == 0 or len > out.len) return null;
+    const pml4 = vmm.currentCr3();
+    validate.copyFromUser(pml4, out, ptr, @intCast(len)) catch return null;
+    return out[0..@intCast(len)];
+}
+
+fn sysPortCreate(name_ptr: u64, name_len: u64) i64 {
+    var buf: [32]u8 = undefined;
+    const name = copyName(name_ptr, name_len, &buf) orelse return EFAULT;
+    return ipc.portCreate(name) catch |e| ipcErrno(e);
+}
+
+fn sysPortConnect(name_ptr: u64, name_len: u64) i64 {
+    var buf: [32]u8 = undefined;
+    const name = copyName(name_ptr, name_len, &buf) orelse return EFAULT;
+    return ipc.portConnect(name) catch |e| ipcErrno(e);
+}
+
+fn sysPortSend(h: u64, opcode: u64, payload_ptr: u64, payload_len: u64) i64 {
+    if (payload_len > ipc.MAX_PAYLOAD) return EMSGSIZE;
+
+    const pml4 = vmm.currentCr3();
+    var buf: [ipc.MAX_PAYLOAD]u8 = undefined;
+    if (payload_len > 0) {
+        validate.copyFromUser(pml4, &buf, payload_ptr, @intCast(payload_len)) catch return EFAULT;
+    }
+
+    const seq = ipc.portSend(
+        @bitCast(h),
+        @truncate(opcode),
+        buf[0..@intCast(payload_len)],
+    ) catch |e| return ipcErrno(e);
+
+    return @intCast(seq);
+}
+
+fn sysPortRecv(h: u64, buf_ptr: u64, buf_len: u64, blocking: u64) i64 {
+    if (buf_len > ipc.MAX_PAYLOAD) return EMSGSIZE;
+
+    var kbuf: [ipc.MAX_PAYLOAD]u8 = undefined;
+    const r = ipc.portRecv(
+        @bitCast(h),
+        kbuf[0..@intCast(buf_len)],
+        blocking != 0,
+    ) catch |e| return ipcErrno(e);
+
+    const pml4 = vmm.currentCr3();
+    validate.copyToUser(pml4, buf_ptr, kbuf[0..r.len], r.len) catch return EFAULT;
+    return @intCast(r.len);
+}
+
+fn sysShmCreate(size: u64) i64 {
+    return ipc.shmCreate(@intCast(size)) catch |e| ipcErrno(e);
+}
+
+fn sysShmMap(h: u64, writable: u64) i64 {
+    const addr = ipc.shmMap(@bitCast(h), writable != 0) catch |e| return ipcErrno(e);
+    return @bitCast(addr);
+}
+
+fn sysHandleClose(h: u64) i64 {
+    ipc.handleClose(@bitCast(h)) catch |e| return ipcErrno(e);
+    return 0;
 }
 
 fn sysGetpid() i64 {

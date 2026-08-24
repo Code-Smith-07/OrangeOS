@@ -17,10 +17,18 @@ pub const NR = struct {
     pub const yield: u64 = 7;
     pub const spawn: u64 = 8;
     pub const wait: u64 = 9;
+    pub const sleep_ms: u64 = 61;
     pub const open: u64 = 20;
     pub const close: u64 = 21;
     pub const read: u64 = 22;
     pub const readdir: u64 = 34;
+    pub const port_create: u64 = 50;
+    pub const port_connect: u64 = 51;
+    pub const port_send: u64 = 52;
+    pub const port_recv: u64 = 53;
+    pub const shm_create: u64 = 54;
+    pub const shm_map: u64 = 55;
+    pub const handle_close: u64 = 56;
     pub const uptime: u64 = 60;
 };
 
@@ -137,11 +145,26 @@ pub fn spawn(path: []const u8) Error!i64 {
     return r;
 }
 
-/// Wait for a pid, returning its exit code.
+/// Wait for a pid, returning its exit code. Blocks.
 pub fn wait(pid: i64) Error!i64 {
-    const r = syscall1(NR.wait, @bitCast(pid));
+    const r = syscall2(NR.wait, @bitCast(pid), 0);
     if (r < 0) return errno(r);
     return r;
+}
+
+/// Non-blocking wait. Returns null if the process is still running.
+///
+/// A supervisor with several services must use this: blocking on each in turn
+/// means one long-running service stops it noticing that any other has died.
+pub fn waitNoHang(pid: i64) Error!?i64 {
+    const r = syscall2(NR.wait, @bitCast(pid), 1);
+    if (r == -11) return null; // EAGAIN: still running
+    if (r < 0) return errno(r);
+    return r;
+}
+
+pub fn sleepMs(ms: u64) void {
+    _ = syscall1(NR.sleep_ms, ms);
 }
 
 // ── I/O ─────────────────────────────────────────────────────────────────────
@@ -194,6 +217,71 @@ pub fn readdir(path: []const u8, out: []DirEntry) Error!usize {
     );
     if (r < 0) return errno(r);
     return @intCast(r);
+}
+
+// ── IPC ─────────────────────────────────────────────────────────────────────
+//
+// Handles are capabilities: opaque integers, valid only in the process holding
+// them, with nothing to guess or forge. A process starts with none.
+
+pub const MAX_PAYLOAD: usize = 4096;
+
+/// Create a named port. Returns a handle.
+pub fn portCreate(name: []const u8) Error!i64 {
+    const r = syscall2(NR.port_create, @intFromPtr(name.ptr), name.len);
+    if (r < 0) return errno(r);
+    return r;
+}
+
+/// Obtain a handle to an existing port.
+pub fn portConnect(name: []const u8) Error!i64 {
+    const r = syscall2(NR.port_connect, @intFromPtr(name.ptr), name.len);
+    if (r < 0) return errno(r);
+    return r;
+}
+
+/// Queue a message. Returns its sequence number.
+pub fn portSend(h: i64, opcode: u32, payload: []const u8) Error!u64 {
+    const r = syscall4(
+        NR.port_send,
+        @bitCast(h),
+        opcode,
+        @intFromPtr(payload.ptr),
+        payload.len,
+    );
+    if (r < 0) return errno(r);
+    return @intCast(r);
+}
+
+/// Receive a message. Blocks by default; pass blocking=false to poll.
+pub fn portRecv(h: i64, buf: []u8, blocking: bool) Error!usize {
+    const r = syscall4(
+        NR.port_recv,
+        @bitCast(h),
+        @intFromPtr(buf.ptr),
+        buf.len,
+        if (blocking) 1 else 0,
+    );
+    if (r < 0) return errno(r);
+    return @intCast(r);
+}
+
+/// Allocate shared memory. Returns a handle.
+pub fn shmCreate(size: usize) Error!i64 {
+    const r = syscall1(NR.shm_create, size);
+    if (r < 0) return errno(r);
+    return r;
+}
+
+/// Map shared memory into this process. Returns the address.
+pub fn shmMap(h: i64, writable: bool) Error![*]u8 {
+    const r = syscall2(NR.shm_map, @bitCast(h), if (writable) 1 else 0);
+    if (r < 0) return errno(r);
+    return @ptrFromInt(@as(u64, @bitCast(r)));
+}
+
+pub fn handleClose(h: i64) void {
+    _ = syscall1(NR.handle_close, @bitCast(h));
 }
 
 // ── Convenience output ──────────────────────────────────────────────────────

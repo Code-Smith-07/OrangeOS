@@ -8,8 +8,21 @@ const heap = @import("../mm/heap.zig");
 const pmm = @import("../mm/pmm.zig");
 const context = @import("../arch/x86_64/context.zig");
 const vmm = @import("../mm/vmm.zig");
+const handle = @import("../ipc/handle.zig");
 
-pub const KSTACK_SIZE: usize = 16 * 1024;
+/// 32 KiB. The syscall and filesystem paths put several 4 KiB buffers on the
+/// kernel stack (a block buffer, an IPC payload), and interrupts nest on top
+/// of whatever is already there. 16 KiB was demonstrably too tight.
+pub const KSTACK_SIZE: usize = 32 * 1024;
+
+/// Written at the very bottom of every kernel stack. The timer tick checks it,
+/// so an overflow becomes an immediate, named panic instead of a wild jump
+/// through whatever the corruption happened to overwrite.
+pub const STACK_CANARY: u64 = 0x0C0F_FEE0_0DEF_ACED;
+
+/// Where shared-memory mappings land in a process's address space. Well clear
+/// of the program image, the heap, and the stack.
+pub const SHM_REGION_BASE: u64 = 0x0000_6000_0000_0000;
 pub const NAME_LEN: usize = 32;
 
 pub const Error = error{OutOfMemory};
@@ -70,6 +83,14 @@ pub const Task = struct {
     entry: *const fn (?*anyopaque) void,
     arg: ?*anyopaque,
 
+    /// Capabilities this task holds. Empty at creation: a process starts with
+    /// no authority and receives handles explicitly.
+    handles: handle.Table = .{},
+
+    /// Next free virtual address for shared-memory mappings. Grows upward
+    /// through a region reserved for the purpose.
+    shm_next: u64 = SHM_REGION_BASE,
+
     /// Physical address of this task's PML4. Kernel threads share the kernel's.
     /// The scheduler reloads CR3 on any switch that changes it — without that,
     /// a thread resumes on whatever address space ran last, which presents as
@@ -125,6 +146,10 @@ pub fn create(
     next_tid += 1;
 
     @memcpy(task.name[0..task.name_len], name[0..task.name_len]);
+
+    const canary: *u64 = @ptrFromInt(stack_base);
+    canary.* = STACK_CANARY;
+
     return task;
 }
 
@@ -133,6 +158,12 @@ pub fn destroy(task: *Task) void {
     const order = pmm.orderFor(pages);
     pmm.freeOrder(pmm.virtToPhys(task.kstack_base), order);
     heap.destroy(task);
+}
+
+/// True if this task's kernel stack has been overrun.
+pub fn stackIntact(t: *const Task) bool {
+    const canary: *const u64 = @ptrFromInt(t.kstack_base);
+    return canary.* == STACK_CANARY;
 }
 
 /// Top of a task's kernel stack, for TSS.rsp0 when user mode arrives.
