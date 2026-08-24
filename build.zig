@@ -89,6 +89,19 @@ pub fn build(b: *std.Build) void {
         .single_threaded = true,
     });
 
+    const libpeel_mod = b.createModule(.{
+        .root_source_file = b.path("userland/libs/libpeel/libpeel.zig"),
+        .target = target,
+        .optimize = optimize,
+        .red_zone = false,
+        .pic = false,
+        .stack_protector = false,
+        .stack_check = false,
+        .sanitize_c = false,
+        .single_threaded = true,
+    });
+    libpeel_mod.addImport("pulp", pulp_mod);
+
     const UserProgram = struct { name: []const u8, path: []const u8 };
     const programs = [_]UserProgram{
         .{ .name = "init", .path = "userland/servers/seed/main.zig" },
@@ -98,6 +111,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "greetd", .path = "userland/bin/greetd/main.zig" },
         .{ .name = "greet", .path = "userland/bin/greet/main.zig" },
         .{ .name = "peel", .path = "userland/servers/peel/main.zig" },
+        .{ .name = "clock", .path = "userland/bin/clock/main.zig" },
     };
 
     for (programs) |prog| {
@@ -113,6 +127,7 @@ pub fn build(b: *std.Build) void {
             .single_threaded = true,
         });
         mod.addImport("pulp", pulp_mod);
+        mod.addImport("libpeel", libpeel_mod);
 
         const exe = b.addExecutable(.{
             .name = prog.name,

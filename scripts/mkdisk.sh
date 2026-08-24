@@ -28,6 +28,7 @@ cat > "$ROOTFS/etc/seed.conf" <<'CONF'
 # <name> <path> <policy>   policy: once | respawn | essential
 peel   /bin/peel   respawn
 greetd /bin/greetd respawn
+clock  /bin/clock  respawn
 juice  /bin/juice  essential
 CONF
 
@@ -37,7 +38,7 @@ if [ ! -f zig-out/bin/init ]; then
 fi
 
 cp zig-out/bin/init "$ROOTFS/sbin/init"
-for prog in juice echo uname greetd greet peel; do
+for prog in juice echo uname greetd greet peel clock; do
     if [ -f "zig-out/bin/$prog" ]; then
         cp "zig-out/bin/$prog" "$ROOTFS/bin/$prog"
     fi

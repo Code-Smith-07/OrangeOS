@@ -65,6 +65,7 @@ pub const Nr = enum(u64) {
     port_send = 52,
     port_recv = 53,
     shm_create = 54,
+    shm_open = 57,
     shm_map = 55,
     handle_close = 56,
     fb_acquire = 70,
@@ -110,7 +111,8 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .port_connect => sysPortConnect(frame.rdi, frame.rsi),
         .port_send => sysPortSend(frame.rdi, frame.rsi, frame.rdx, frame.r10),
         .port_recv => sysPortRecv(frame.rdi, frame.rsi, frame.rdx, frame.r10),
-        .shm_create => sysShmCreate(frame.rdi),
+        .shm_create => sysShmCreate(frame.rdi, frame.rsi, frame.rdx),
+        .shm_open => sysShmOpen(frame.rdi, frame.rsi),
         .shm_map => sysShmMap(frame.rdi, frame.rsi),
         .handle_close => sysHandleClose(frame.rdi),
         .fb_acquire => sysFbAcquire(frame.rdi),
@@ -388,6 +390,9 @@ fn sysPortSend(h: u64, opcode: u64, payload_ptr: u64, payload_len: u64) i64 {
     return @intCast(seq);
 }
 
+/// Returns `(opcode << 32) | length`. Packing them into one value avoids a
+/// second out-parameter; payloads are capped at 4096 so the length always fits
+/// in the low half.
 fn sysPortRecv(h: u64, buf_ptr: u64, buf_len: u64, blocking: u64) i64 {
     if (buf_len > ipc.MAX_PAYLOAD) return EMSGSIZE;
 
@@ -400,11 +405,24 @@ fn sysPortRecv(h: u64, buf_ptr: u64, buf_len: u64, blocking: u64) i64 {
 
     const pml4 = vmm.currentCr3();
     validate.copyToUser(pml4, buf_ptr, kbuf[0..r.len], r.len) catch return EFAULT;
-    return @intCast(r.len);
+
+    const packed_result: u64 = (@as(u64, r.header.opcode) << 32) | @as(u64, r.len);
+    return @bitCast(packed_result);
 }
 
-fn sysShmCreate(size: u64) i64 {
-    return ipc.shmCreate(@intCast(size)) catch |e| ipcErrno(e);
+fn sysShmCreate(name_ptr: u64, name_len: u64, size: u64) i64 {
+    var buf: [32]u8 = undefined;
+    var name: []const u8 = buf[0..0];
+    if (name_len > 0) {
+        name = copyName(name_ptr, name_len, &buf) orelse return EFAULT;
+    }
+    return ipc.shmCreate(name, @intCast(size)) catch |e| ipcErrno(e);
+}
+
+fn sysShmOpen(name_ptr: u64, name_len: u64) i64 {
+    var buf: [32]u8 = undefined;
+    const name = copyName(name_ptr, name_len, &buf) orelse return EFAULT;
+    return ipc.shmOpen(name) catch |e| ipcErrno(e);
 }
 
 fn sysShmMap(h: u64, writable: u64) i64 {

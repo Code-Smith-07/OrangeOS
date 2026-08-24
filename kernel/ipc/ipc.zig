@@ -109,10 +109,18 @@ pub fn portRecv(h: i64, out: []u8, blocking: bool) Error!Received {
     }
 }
 
-/// Allocate a shared memory object and return a handle.
-pub fn shmCreate(size: usize) Error!i64 {
+/// Allocate a named shared memory object and return a handle.
+/// An empty name makes it anonymous and unfindable by anyone else.
+pub fn shmCreate(name: []const u8, size: usize) Error!i64 {
     if (size == 0 or size > 4 * 1024 * 1024) return Error.OutOfMemory;
-    const obj = try object.createShm(size);
+    const obj = try object.createShm(name, size);
+    const table = try currentTable();
+    return table.insert(obj);
+}
+
+/// Get a handle to an existing named shared buffer.
+pub fn shmOpen(name: []const u8) Error!i64 {
+    const obj = object.findShm(name) orelse return Error.NoSuchPort;
     const table = try currentTable();
     return table.insert(obj);
 }

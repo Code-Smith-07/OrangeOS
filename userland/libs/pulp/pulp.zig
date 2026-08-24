@@ -29,6 +29,7 @@ pub const NR = struct {
     pub const shm_create: u64 = 54;
     pub const shm_map: u64 = 55;
     pub const handle_close: u64 = 56;
+    pub const shm_open: u64 = 57;
     pub const fb_acquire: u64 = 70;
     pub const fb_map: u64 = 71;
     pub const input_read: u64 = 72;
@@ -256,8 +257,13 @@ pub fn portSend(h: i64, opcode: u32, payload: []const u8) Error!u64 {
     return @intCast(r);
 }
 
-/// Receive a message. Blocks by default; pass blocking=false to poll.
-pub fn portRecv(h: i64, buf: []u8, blocking: bool) Error!usize {
+pub const Received = struct {
+    opcode: u32,
+    len: usize,
+};
+
+/// Receive a message with its opcode. Blocks by default.
+pub fn portRecvMsg(h: i64, buf: []u8, blocking: bool) Error!Received {
     const r = syscall4(
         NR.port_recv,
         @bitCast(h),
@@ -266,12 +272,26 @@ pub fn portRecv(h: i64, buf: []u8, blocking: bool) Error!usize {
         if (blocking) 1 else 0,
     );
     if (r < 0) return errno(r);
-    return @intCast(r);
+    const v: u64 = @bitCast(r);
+    return .{ .opcode = @truncate(v >> 32), .len = @intCast(v & 0xFFFF_FFFF) };
 }
 
-/// Allocate shared memory. Returns a handle.
-pub fn shmCreate(size: usize) Error!i64 {
-    const r = syscall1(NR.shm_create, size);
+/// Receive, discarding the opcode.
+pub fn portRecv(h: i64, buf: []u8, blocking: bool) Error!usize {
+    const r = try portRecvMsg(h, buf, blocking);
+    return r.len;
+}
+
+/// Allocate a named shared buffer. An empty name makes it private.
+pub fn shmCreate(name: []const u8, size: usize) Error!i64 {
+    const r = syscall3(NR.shm_create, @intFromPtr(name.ptr), name.len, size);
+    if (r < 0) return errno(r);
+    return r;
+}
+
+/// Get a handle to a shared buffer someone else created.
+pub fn shmOpen(name: []const u8) Error!i64 {
+    const r = syscall2(NR.shm_open, @intFromPtr(name.ptr), name.len);
     if (r < 0) return errno(r);
     return r;
 }

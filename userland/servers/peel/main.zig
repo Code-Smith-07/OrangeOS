@@ -11,6 +11,8 @@
 //! retrofitting it.
 
 const pulp = @import("pulp");
+const libpeel = @import("libpeel");
+const proto = libpeel.proto;
 const gfx = @import("gfx.zig");
 const font = @import("font.zig");
 
@@ -40,10 +42,39 @@ const MAX_WINDOWS = 8;
 
 const Window = struct {
     rect: Rect,
-    title: []const u8,
-    body: []const u8,
+    title_buf: [48]u8 = undefined,
+    title_len: usize = 0,
     accent: Color,
     visible: bool = true,
+
+    /// A client-backed window owns a shared buffer the client renders into.
+    /// Peel only ever reads it. A window with no buffer is drawn by Peel
+    /// itself, which is how the boot placeholder works before any client
+    /// has connected.
+    pixels: ?[*]const u32 = null,
+    client_w: i32 = 0,
+    client_h: i32 = 0,
+    reply_port: i64 = -1,
+    id: u32 = 0,
+
+    fn title(self: *const Window) []const u8 {
+        return self.title_buf[0..self.title_len];
+    }
+
+    fn setTitle(self: *Window, t: []const u8) void {
+        self.title_len = @min(t.len, self.title_buf.len);
+        @memcpy(self.title_buf[0..self.title_len], t[0..self.title_len]);
+    }
+
+    /// Where the client's content sits inside the frame.
+    fn contentRect(self: *const Window) Rect {
+        return .{
+            .x = self.rect.x + BORDER_W,
+            .y = self.rect.y + TITLE_H,
+            .w = self.rect.w - BORDER_W * 2,
+            .h = self.rect.h - TITLE_H - BORDER_W,
+        };
+    }
 
     fn titleBar(self: *const Window) Rect {
         return .{ .x = self.rect.x, .y = self.rect.y, .w = self.rect.w, .h = TITLE_H };
@@ -66,11 +97,17 @@ var window_count: usize = 0;
 /// Back to front. The last entry is on top and has focus.
 var z_order: [MAX_WINDOWS]usize = undefined;
 
-fn addWindow(r: Rect, title: []const u8, body: []const u8, accent: Color) void {
-    if (window_count >= MAX_WINDOWS) return;
-    windows[window_count] = .{ .rect = r, .title = title, .body = body, .accent = accent };
-    z_order[window_count] = window_count;
+var next_window_id: u32 = 1;
+
+fn addWindow(r: Rect, title: []const u8, accent: Color) usize {
+    if (window_count >= MAX_WINDOWS) return 0;
+    const idx = window_count;
+    windows[idx] = .{ .rect = r, .accent = accent, .id = next_window_id };
+    windows[idx].setTitle(title);
+    next_window_id += 1;
+    z_order[idx] = idx;
     window_count += 1;
+    return idx;
 }
 
 /// Move a window to the top of the stack.
@@ -174,14 +211,32 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
     // Accent stripe along the top of the title bar.
     screen.fill(.{ .x = w.rect.x, .y = w.rect.y, .w = w.rect.w, .h = 2 }, w.accent);
 
-    font.drawText(&screen, w.title, w.rect.x + 10, w.rect.y + 9, 1, if (active) TEXT else TEXT_DIM);
+    font.drawText(&screen, w.title(), w.rect.x + 10, w.rect.y + 9, 1, if (active) TEXT else TEXT_DIM);
 
     // Close button.
-    const bx = w.rect.right() - 18;
-    const by = w.rect.y + 9;
-    font.drawChar(&screen, 'x', bx, by, 1, TEXT_DIM);
+    font.drawChar(&screen, 'x', w.rect.right() - 18, w.rect.y + 9, 1, TEXT_DIM);
 
-    font.drawText(&screen, w.body, w.rect.x + 12, w.rect.y + TITLE_H + 14, 1, TEXT_DIM);
+    // Client content: copy the client's buffer into place. Peel never draws
+    // inside a client window, and the client never touches the screen.
+    if (w.pixels) |src| {
+        const content = w.contentRect();
+        const area = Rect.intersect(content, clip);
+        if (!area.isEmpty()) {
+            var y = area.y;
+            while (y < area.bottom()) : (y += 1) {
+                const sy = y - content.y;
+                if (sy < 0 or sy >= w.client_h) continue;
+                var x = area.x;
+                while (x < area.right()) : (x += 1) {
+                    const sx = x - content.x;
+                    if (sx < 0 or sx >= w.client_w) continue;
+                    screen.put(x, y, src[@intCast(sy * w.client_w + sx)]);
+                }
+            }
+        }
+    } else {
+        font.drawText(&screen, "waiting for a client...", w.rect.x + 12, w.rect.y + TITLE_H + 14, 1, TEXT_DIM);
+    }
 }
 
 fn paintPanel(clip: Rect) void {
@@ -212,6 +267,108 @@ fn composite(area: Rect) void {
 }
 
 // ── Input ───────────────────────────────────────────────────────────────────
+
+var server_port: i64 = -1;
+
+// ── Client protocol ─────────────────────────────────────────────────────────
+
+const ACCENTS = [_]Color{ ORANGE, 0x60A0E0, 0x70C070, 0xD070C0, 0xE0B040 };
+
+fn handleCreateWindow(payload: []const u8) void {
+    if (payload.len < @sizeOf(proto.CreateWindow)) return;
+    const req: *align(1) const proto.CreateWindow = @ptrCast(payload.ptr);
+
+    const w: i32 = @intCast(req.width);
+    const h: i32 = @intCast(req.height);
+    if (w <= 0 or h <= 0 or w > 2000 or h > 2000) return;
+
+    const title_len = @min(req.title_len, 48);
+    const name_len = @min(req.shm_name_len, 32);
+
+    // Map the client's buffer. Peel takes it read-only in spirit: it copies
+    // out of it and never writes back, so a misbehaving client can corrupt
+    // its own window and nothing else.
+    const shm = pulp.shmOpen(req.shm_name[0..name_len]) catch {
+        pulp.puts("peel: client buffer not found\n");
+        return;
+    };
+    const pixels = pulp.shmMap(shm, false) catch {
+        pulp.puts("peel: cannot map client buffer\n");
+        return;
+    };
+
+    const frame_w = w + BORDER_W * 2;
+    const frame_h = h + TITLE_H + BORDER_W;
+    const idx = addWindow(
+        .{ .x = req.x, .y = req.y, .w = frame_w, .h = frame_h },
+        req.title[0..title_len],
+        ACCENTS[window_count % ACCENTS.len],
+    );
+
+    windows[idx].pixels = @ptrCast(@alignCast(pixels));
+    windows[idx].client_w = w;
+    windows[idx].client_h = h;
+
+    // Answer on the client's own reply port. A shared reply port would deliver
+    // one client's answer to whichever client happened to read first.
+    var name_buf: [32]u8 = undefined;
+    const reply_name = proto.replyPortName(&name_buf, req.pid);
+    if (pulp.portConnect(reply_name)) |reply| {
+        windows[idx].reply_port = reply;
+        const created = proto.Created{
+            .window_id = windows[idx].id,
+            .width = req.width,
+            .height = req.height,
+        };
+        const bytes: [*]const u8 = @ptrCast(&created);
+        _ = pulp.portSend(reply, proto.Op.created, bytes[0..@sizeOf(proto.Created)]) catch {};
+    } else |_| {
+        pulp.puts("peel: client has no reply port\n");
+    }
+
+    pulp.print("peel: window {d} \"{s}\" {d}x{d} for pid {d}\n", .{
+        windows[idx].id, windows[idx].title(), w, h, req.pid,
+    });
+
+    addDamage(windows[idx].damageRect());
+}
+
+fn handleCommit(payload: []const u8) void {
+    if (payload.len < @sizeOf(proto.Commit)) return;
+    const c: *align(1) const proto.Commit = @ptrCast(payload.ptr);
+
+    var i: usize = 0;
+    while (i < window_count) : (i += 1) {
+        if (windows[i].id != c.window_id) continue;
+        const content = windows[i].contentRect();
+        // Client coordinates are relative to its own buffer; translate into
+        // screen space before damaging.
+        addDamage(.{
+            .x = content.x + c.x,
+            .y = content.y + c.y,
+            .w = c.w,
+            .h = c.h,
+        });
+        return;
+    }
+}
+
+fn pumpClients() void {
+    if (server_port < 0) return;
+
+    var buf: [1024]u8 = undefined;
+    // Non-blocking: the compositor must keep drawing whether or not a client
+    // has anything to say.
+    while (true) {
+        const m = pulp.portRecvMsg(server_port, &buf, false) catch return;
+        if (m.len == 0) return;
+        switch (m.opcode) {
+            proto.Op.create_window => handleCreateWindow(buf[0..m.len]),
+            proto.Op.commit => handleCommit(buf[0..m.len]),
+            else => {},
+        }
+    }
+}
 
 var dragging: ?usize = null;
 var drag_dx: i32 = 0;
@@ -299,24 +456,11 @@ export fn _start() callconv(.c) noreturn {
     prev_cursor_x = cursor_x;
     prev_cursor_y = cursor_y;
 
-    addWindow(
-        .{ .x = 90, .y = 90, .w = 380, .h = 210 },
-        "Welcome to Orange OS",
-        "Drag me by the title bar.",
-        ORANGE,
-    );
-    addWindow(
-        .{ .x = 330, .y = 220, .w = 400, .h = 240 },
-        "Peel - compositor",
-        "Software composited. No GPU.",
-        0x60A0E0,
-    );
-    addWindow(
-        .{ .x = 620, .y = 130, .w = 340, .h = 190 },
-        "Zest - kernel",
-        "Written from scratch.",
-        0x70C070,
-    );
+    server_port = pulp.portCreate(proto.PORT) catch {
+        pulp.puts("peel: cannot create the client port\n");
+        pulp.exit(1);
+    };
+    pulp.print("peel: serving clients on port \"{s}\"\n", .{proto.PORT});
 
     // First frame: everything.
     composite(.{ .x = 0, .y = 0, .w = screen.width, .h = screen.height });
@@ -324,6 +468,8 @@ export fn _start() callconv(.c) noreturn {
 
     var events: [32]pulp.InputEvent = undefined;
     while (true) {
+        pumpClients();
+
         const n = pulp.inputRead(&events);
 
         var i: usize = 0;

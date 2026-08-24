@@ -96,6 +96,17 @@ pub const Shm = struct {
     order: usize,
     size: usize,
     refs: u32,
+
+    /// Shared buffers are named so a second process can find one without the
+    /// first having to pass a handle through a message. Handle transfer is the
+    /// better answer and arrives later; a name is enough to build the display
+    /// protocol on now.
+    name: [MAX_NAME]u8,
+    name_len: usize,
+
+    pub fn nameSlice(self: *const Shm) []const u8 {
+        return self.name[0..self.name_len];
+    }
 };
 
 pub const Object = struct {
@@ -145,7 +156,20 @@ pub fn findPort(name: []const u8) ?*Object {
     return null;
 }
 
-pub fn createShm(size: usize) Error!*Object {
+pub fn findShm(name: []const u8) ?*Object {
+    var i: usize = 0;
+    while (i < object_count) : (i += 1) {
+        const obj = objects[i] orelse continue;
+        if (obj.kind != .shm) continue;
+        if (std.mem.eql(u8, obj.data.shm.nameSlice(), name)) return obj;
+    }
+    return null;
+}
+
+pub fn createShm(name: []const u8, size: usize) Error!*Object {
+    if (name.len > MAX_NAME) return Error.NameTooLong;
+    if (name.len > 0 and findShm(name) != null) return Error.NameTaken;
+
     const pages = (size + pmm.PAGE_SIZE - 1) / pmm.PAGE_SIZE;
     const order = pmm.orderFor(pages);
     const phys = pmm.allocOrderZeroed(order) catch return Error.OutOfMemory;
@@ -162,8 +186,11 @@ pub fn createShm(size: usize) Error!*Object {
             .order = order,
             .size = pages * pmm.PAGE_SIZE,
             .refs = 1,
+            .name = undefined,
+            .name_len = name.len,
         } },
     };
+    if (name.len > 0) @memcpy(obj.data.shm.name[0..name.len], name);
     return obj;
 }
 

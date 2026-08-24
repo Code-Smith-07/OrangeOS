@@ -36,7 +36,7 @@ export fn _start() callconv(.c) noreturn {
     // Shared memory: write through one mapping, read back through a second.
     // If the kernel were copying instead of sharing frames, the second mapping
     // would not see the write.
-    const shm = pulp.shmCreate(4096) catch {
+    const shm = pulp.shmCreate("greet.demo", 4096) catch {
         pulp.puts("greet: shm_create failed\n");
         pulp.exit(1);
     };
