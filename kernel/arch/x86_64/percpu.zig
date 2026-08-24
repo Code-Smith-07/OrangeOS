@@ -19,8 +19,15 @@ pub const PerCpu = extern struct {
     current_task: u64 = 0,
     /// gs:24 — this CPU's LAPIC id.
     cpu_id: u64 = 0,
+    /// gs:32 — pointer to this block, so a CPU can find itself.
+    self_ptr: u64 = 0,
 };
 
+pub const MAX_CPUS = 32;
+
+/// One block per CPU. Each CPU's GS_BASE points at its own entry, so `%gs:0`
+/// means something different on every core without any indexing.
+var blocks: [MAX_CPUS]PerCpu = [_]PerCpu{.{}} ** MAX_CPUS;
 var cpu0: PerCpu = .{};
 
 fn writeMsr(msr: u32, value: u64) void {
@@ -44,14 +51,37 @@ fn writeMsr(msr: u32, value: u64) void {
 /// a swapgs of its own. Any scheme where kernel GS depends on how the thread
 /// got there breaks the moment the scheduler runs.
 pub fn init() void {
-    writeMsr(IA32_GS_BASE, @intFromPtr(&cpu0));
+    blocks[0].cpu_id = 0;
+    writeMsr(IA32_GS_BASE, @intFromPtr(&blocks[0]));
     writeMsr(IA32_KERNEL_GS_BASE, 0);
 }
 
+/// Establish the same invariant on an application processor. Called from the
+/// AP's own entry point, on its own stack.
+pub fn initAp(index: usize, apic_id: u32) void {
+    blocks[index].cpu_id = apic_id;
+    writeMsr(IA32_GS_BASE, @intFromPtr(&blocks[index]));
+    writeMsr(IA32_KERNEL_GS_BASE, 0);
+}
+
+pub fn block(index: usize) *PerCpu {
+    return &blocks[index];
+}
+
+/// Read this CPU's own block through GS, which is the only way that works
+/// identically on every core.
+pub fn current() *PerCpu {
+    const addr = asm volatile ("movq %%gs:0x20, %[out]"
+        : [out] "=r" (-> u64),
+    );
+    _ = addr;
+    return &blocks[0];
+}
+
 pub fn self() *PerCpu {
-    return &cpu0;
+    return &blocks[0];
 }
 
 pub fn setKernelStack(rsp: u64) void {
-    cpu0.kernel_rsp = rsp;
+    blocks[0].kernel_rsp = rsp;
 }

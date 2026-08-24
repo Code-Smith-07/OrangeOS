@@ -161,6 +161,12 @@ pub fn lapicAddress() u64 {
     return lapic_address;
 }
 
+/// LAPIC id of the Nth enabled processor.
+pub fn cpuApicId(index: usize) ?u8 {
+    if (index >= cpu_count) return null;
+    return cpu_apic_ids[index];
+}
+
 pub fn cpuCount() usize {
     return cpu_count;
 }

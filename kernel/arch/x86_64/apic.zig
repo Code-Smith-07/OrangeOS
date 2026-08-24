@@ -141,6 +141,28 @@ pub fn stopTimer() void {
     write(REG_TIMER_INIT, 0);
 }
 
+pub fn writeIcrHigh(value: u32) void {
+    write(0x310, value);
+}
+
+pub fn writeIcrLow(value: u32) void {
+    write(0x300, value);
+}
+
+pub fn readIcrLow() u32 {
+    return read(0x300);
+}
+
+/// Software-enable this CPU's local APIC. Called on each application
+/// processor: the enable bit is per-CPU, not global.
+pub fn initAp() void {
+    write(REG_TPR, 0);
+    write(REG_SPURIOUS, SPURIOUS_ENABLE | VECTOR_SPURIOUS);
+    write(REG_LVT_LINT0, LVT_MASKED);
+    write(REG_LVT_LINT1, LVT_MASKED);
+    write(REG_LVT_ERROR, VECTOR_ERROR);
+}
+
 pub fn id() u32 {
     return read(REG_ID) >> 24;
 }

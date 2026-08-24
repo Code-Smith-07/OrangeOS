@@ -28,6 +28,7 @@ const fmtlib = @import("../../lib/fmt.zig");
 const console = @import("../../console.zig");
 const serial = @import("../../drivers/char/serial.zig");
 const ps2 = @import("../../drivers/input/ps2.zig");
+const smp = @import("../../arch/x86_64/smp.zig");
 const fmt = @import("../../lib/fmt.zig");
 
 /// Try each partition until one holds a CitrusFS. Trying rather than assuming
@@ -102,6 +103,12 @@ pub fn init() !void {
 
     ps2.init();
     console.ok("PS/2 keyboard and mouse online (IRQ 1, IRQ 12)", .{});
+
+    // Other processors come up last: they need the page tables, the APIC and
+    // a calibrated TSC, all of which exist by now.
+    smp.init() catch |e| {
+        console.warn("SMP bring-up failed: {s}", .{@errorName(e)});
+    };
 
     // Storage comes up after interrupts, because the driver times out against
     // the TSC and wants a running clock.

@@ -13,7 +13,7 @@
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS desktop](docs/screenshots/phase7d.png)
+![Orange OS desktop](docs/screenshots/phase8a.png)
 
 </div>
 
@@ -76,10 +76,10 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 7 complete.** Orange OS has a working desktop. **Peel** composites,
-**Squeeze** runs the shell in a window over a pseudo-terminal, **Segment**
-provides widgets, and **Grove** launches applications — clicking a button in
-one process starts another, which asks for a window of its own.
+**Phase 8a complete.** Orange OS boots every processor. The application
+processors are brought up from real mode through to 64-bit long mode and run
+kernel code on their own stacks with their own per-CPU state, alongside the
+full desktop.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -94,7 +94,8 @@ one process starts another, which asks for a window of its own.
 | 7 | Graphics: client protocol | ✅ **Done** |
 | 7 | Graphics: PTY and terminal emulator | ✅ **Done** |
 | 7 | Graphics: widget toolkit and desktop shell | ✅ **Done** |
-| 8 | SMP, networking, USB, audio | 🔨 Next |
+| 8 | SMP: multiprocessor bring-up | ✅ **Done** |
+| 8 | Networking, USB, audio | 🔨 In progress |
 | 9 | Real hardware | ⬜ Planned |
 
 See the [full roadmap](ARCHITECTURE.md#16-development-roadmap) for what each
@@ -131,6 +132,8 @@ Then fetch the bootloader, create a disk, and build:
 | `zig build -Dtick-hz=100` | Lower the scheduler tick rate |
 | `zig build -Dblk-test run` | Run block device read/write tests |
 | `zig build -Dfs-test run` | Run filesystem tests |
+
+Add `-smp 4` to the QEMU command line to boot with four processors.
 
 > **A note on timer accuracy under emulation.** The scheduler tick is
 > best-effort; timekeeping is not. QEMU's TCG emulation on a non-x86 host

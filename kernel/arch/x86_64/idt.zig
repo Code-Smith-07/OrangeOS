@@ -74,7 +74,9 @@ pub fn init() void {
     load();
 }
 
-fn load() void {
+/// Load the (already built) IDT on this CPU. Every core needs its own IDTR
+/// even though the table itself is shared.
+pub fn load() void {
     const idtr = Idtr{
         .limit = @sizeOf(@TypeOf(idt)) - 1,
         .base = @intFromPtr(&idt),
