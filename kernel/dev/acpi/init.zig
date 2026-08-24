@@ -130,8 +130,8 @@ pub fn init() !void {
         }
         xhci.enumerate();
         const s2 = xhci.stats();
-        console.print("[ ok ] usb: {d} device(s) connected, {d} slot(s) enabled\n", .{
-            s2.connected, s2.slots,
+        console.print("[ ok ] usb: {d} connected, {d} slot(s), {d} addressed\n", .{
+            s2.connected, s2.slots, s2.addressed,
         });
     }
 

@@ -67,8 +67,14 @@ const IR_ERSTBA: usize = 0x10;
 const IR_ERDP: usize = 0x18;
 
 // TRB types.
+const TRB_NORMAL: u32 = 1;
+const TRB_SETUP_STAGE: u32 = 2;
+const TRB_DATA_STAGE: u32 = 3;
+const TRB_STATUS_STAGE: u32 = 4;
 const TRB_LINK: u32 = 6;
 const TRB_ENABLE_SLOT: u32 = 9;
+const TRB_ADDRESS_DEVICE: u32 = 11;
+const TRB_CONFIGURE_ENDPOINT: u32 = 12;
 const TRB_NOOP_CMD: u32 = 23;
 const TRB_TRANSFER_EVENT: u32 = 32;
 const TRB_COMMAND_COMPLETE: u32 = 33;
@@ -116,6 +122,64 @@ var event_cycle: u32 = 1;
 
 var ports_connected: usize = 0;
 var slots_enabled: usize = 0;
+var devices_addressed: usize = 0;
+
+// ── Device state ────────────────────────────────────────────────────────────
+
+pub const MAX_DEVICES = 8;
+
+/// USB standard descriptor, as it arrives on the wire.
+pub const DeviceDescriptor = extern struct {
+    length: u8,
+    descriptor_type: u8,
+    usb_version: u16 align(1),
+    device_class: u8,
+    device_subclass: u8,
+    device_protocol: u8,
+    max_packet_size0: u8,
+    vendor_id: u16 align(1),
+    product_id: u16 align(1),
+    device_version: u16 align(1),
+    manufacturer_index: u8,
+    product_index: u8,
+    serial_index: u8,
+    num_configurations: u8,
+};
+
+const Device = struct {
+    used: bool = false,
+    slot: u8 = 0,
+    port: u8 = 0,
+    speed: u8 = 0,
+
+    /// Physical addresses of the structures the controller reads.
+    input_ctx_phys: u64 = 0,
+    device_ctx_phys: u64 = 0,
+    ep0_ring_phys: u64 = 0,
+    ep0_ring: [*]volatile Trb = undefined,
+    ep0_enqueue: usize = 0,
+    ep0_cycle: u32 = 1,
+
+    /// A page the controller DMAs descriptor data into.
+    buffer_phys: u64 = 0,
+    buffer_virt: u64 = 0,
+
+    descriptor: DeviceDescriptor = undefined,
+    has_descriptor: bool = false,
+
+    /// Taken from the first interface descriptor. A composite device reports
+    /// class 0 at device level and the real class per interface.
+    interface_class: u8 = 0,
+    interface_subclass: u8 = 0,
+    interface_protocol: u8 = 0,
+    /// Address and packet size of the first IN interrupt endpoint, which is
+    /// how a HID device delivers reports.
+    interrupt_ep: u8 = 0,
+    interrupt_max_packet: u16 = 0,
+};
+
+var devices: [MAX_DEVICES]Device = [_]Device{.{}} ** MAX_DEVICES;
+var device_count: usize = 0;
 
 inline fn r32(base: u64, off: usize) u32 {
     return @as(*volatile u32, @ptrFromInt(base + off)).*;
@@ -327,6 +391,235 @@ fn waitCommand(timeout_us: u64) ?Event {
     return null;
 }
 
+// ── Contexts and control transfers ──────────────────────────────────────────
+//
+// A device is described to the controller by a Device Context: a slot context
+// followed by one endpoint context per endpoint. Software never writes it
+// directly. Instead it fills in an Input Context - an add/drop bitmap followed
+// by the same layout - and hands that to a command, which tells the controller
+// which entries to consult.
+//
+// Context entries are `context_size` bytes apart, which is 32 or 64 depending
+// on HCCPARAMS1. Indexing them with a fixed stride is the single easiest way
+// to build something the hardware reads at the wrong offsets.
+
+inline fn ctxAt(base: u64, index: usize) [*]volatile u32 {
+    return @ptrFromInt(base + index * context_size);
+}
+
+/// Maximum packet size for endpoint 0, which is fixed by the device's speed.
+fn ep0MaxPacket(speed: u8) u16 {
+    return switch (speed) {
+        1 => 8, // full speed: 8 until the real value is read
+        2 => 8, // low speed
+        3 => 64, // high speed
+        else => 512, // super speed and above
+    };
+}
+
+/// Build the Input Context for Address Device and issue the command.
+fn addressDevice(dev: *Device) bool {
+    const input_virt = pmm.physToVirt(dev.input_ctx_phys);
+    const device_virt = pmm.physToVirt(dev.device_ctx_phys);
+
+    // Zero both: the controller reads fields we do not set.
+    const iv: [*]volatile u8 = @ptrFromInt(input_virt);
+    var i: usize = 0;
+    while (i < context_size * 3) : (i += 1) iv[i] = 0;
+    const dv: [*]volatile u8 = @ptrFromInt(device_virt);
+    i = 0;
+    while (i < context_size * 2) : (i += 1) dv[i] = 0;
+
+    // Input Control Context: add the slot context and endpoint 0.
+    const icc = ctxAt(input_virt, 0);
+    icc[1] = 0b11; // A0 (slot) and A1 (EP0)
+
+    // Slot context: one context entry, the device's speed, and which root hub
+    // port it is behind.
+    const slot_ctx = ctxAt(input_virt, 1);
+    slot_ctx[0] = (@as(u32, 1) << 27) | (@as(u32, dev.speed) << 20);
+    slot_ctx[1] = @as(u32, dev.port) << 16;
+
+    // Endpoint 0 context: control endpoint, three retries, max packet size,
+    // and where its transfer ring starts.
+    const ep0 = ctxAt(input_virt, 2);
+    ep0[1] = (3 << 1) | (4 << 3) | (@as(u32, ep0MaxPacket(dev.speed)) << 16);
+    ep0[2] = @truncate(dev.ep0_ring_phys | 1); // dequeue cycle state
+    ep0[3] = @truncate(dev.ep0_ring_phys >> 32);
+    ep0[4] = 8; // average TRB length
+
+    dcbaa[dev.slot] = dev.device_ctx_phys;
+
+    submitCommand(dev.input_ctx_phys, 0, TRB_ADDRESS_DEVICE | (@as(u32, dev.slot) << 14));
+    const e = waitCommand(1_000_000) orelse return false;
+    return e.completion_code == 1;
+}
+
+/// Put one TRB on an endpoint's transfer ring.
+fn enqueueTransfer(dev: *Device, param: u64, status: u32, control: u32) void {
+    dev.ep0_ring[dev.ep0_enqueue] = .{
+        .param_lo = @truncate(param),
+        .param_hi = @truncate(param >> 32),
+        .status = status,
+        .control = control | dev.ep0_cycle,
+    };
+
+    dev.ep0_enqueue += 1;
+    if (dev.ep0_enqueue == RING_SIZE - 1) {
+        dev.ep0_ring[RING_SIZE - 1].control =
+            (TRB_LINK << 10) | (1 << 1) | dev.ep0_cycle;
+        dev.ep0_enqueue = 0;
+        dev.ep0_cycle ^= 1;
+    }
+}
+
+/// A control transfer is three TRBs: a setup stage carrying the eight-byte
+/// request, an optional data stage, and a status stage in the opposite
+/// direction that acknowledges it.
+fn controlIn(dev: *Device, request_type: u8, request: u8, value: u16, index: u16, length: u16) bool {
+    const setup: u64 = @as(u64, request_type) |
+        (@as(u64, request) << 8) |
+        (@as(u64, value) << 16) |
+        (@as(u64, index) << 32) |
+        (@as(u64, length) << 48);
+
+    // Transfer type 3 = IN data stage. IDT means the parameter field *is* the
+    // data rather than a pointer to it.
+    const setup_ctrl = (TRB_SETUP_STAGE << 10) | (1 << 6) | (@as(u32, 3) << 16);
+    enqueueTransfer(dev, setup, 8, setup_ctrl);
+
+    if (length > 0) {
+        const data_ctrl = (TRB_DATA_STAGE << 10) | (1 << 16); // DIR = IN
+        enqueueTransfer(dev, dev.buffer_phys, length, data_ctrl);
+    }
+
+    // Status stage runs opposite to the data stage, and asks for an event.
+    const status_ctrl = (TRB_STATUS_STAGE << 10) | (1 << 5); // IOC
+    enqueueTransfer(dev, 0, 0, status_ctrl);
+
+    // Doorbell target 1 is endpoint 0.
+    ringDoorbell(dev.slot, 1);
+
+    const deadline = tsc.microsSinceBoot() + 1_000_000;
+    while (tsc.microsSinceBoot() < deadline) {
+        if (pollEvent()) |e| {
+            if (e.trb_type != TRB_TRANSFER_EVENT) continue;
+            // 1 = success, 13 = short packet, which is fine for a descriptor
+            // read that returned less than the maximum requested.
+            return e.completion_code == 1 or e.completion_code == 13;
+        }
+        asm volatile ("pause");
+    }
+    return false;
+}
+
+fn readDeviceDescriptor(dev: *Device) bool {
+    // 0x80: device to host, standard, device. Request 6 = GET_DESCRIPTOR,
+    // value 0x0100 = device descriptor, index 0.
+    if (!controlIn(dev, 0x80, 6, 0x0100, 0, 18)) return false;
+
+    const src: *align(1) const DeviceDescriptor = @ptrFromInt(dev.buffer_virt);
+    dev.descriptor = src.*;
+    dev.has_descriptor = dev.descriptor.length >= 18 and dev.descriptor.descriptor_type == 1;
+    return dev.has_descriptor;
+}
+
+/// Read the configuration descriptor and walk the descriptors that follow it.
+///
+/// They arrive as a single blob of variable-length records, each starting with
+/// its own length, so walking means stepping by whatever each one declares.
+/// A zero length would loop forever, which is why it is checked.
+fn readConfiguration(dev: *Device) bool {
+    // First nine bytes give wTotalLength, so the full read can be sized.
+    if (!controlIn(dev, 0x80, 6, 0x0200, 0, 9)) return false;
+
+    const head: [*]const u8 = @ptrFromInt(dev.buffer_virt);
+    const total: u16 = @as(u16, head[2]) | (@as(u16, head[3]) << 8);
+    if (total < 9 or total > 512) return false;
+
+    if (!controlIn(dev, 0x80, 6, 0x0200, 0, total)) return false;
+
+    const buf: [*]const u8 = @ptrFromInt(dev.buffer_virt);
+    var off: usize = 0;
+    var found_interface = false;
+
+    while (off + 2 <= total) {
+        const len = buf[off];
+        const dtype = buf[off + 1];
+        if (len == 0) break;
+
+        switch (dtype) {
+            0x04 => { // interface
+                if (!found_interface and off + 9 <= total) {
+                    dev.interface_class = buf[off + 5];
+                    dev.interface_subclass = buf[off + 6];
+                    dev.interface_protocol = buf[off + 7];
+                    found_interface = true;
+                }
+            },
+            0x05 => { // endpoint
+                if (off + 7 <= total) {
+                    const addr = buf[off + 2];
+                    const attrs = buf[off + 3];
+                    // Bit 7 of the address means IN; attribute bits 0-1 of 3
+                    // means interrupt.
+                    if (addr & 0x80 != 0 and attrs & 0x03 == 0x03 and dev.interrupt_ep == 0) {
+                        dev.interrupt_ep = addr;
+                        dev.interrupt_max_packet =
+                            @as(u16, buf[off + 4]) | (@as(u16, buf[off + 5]) << 8);
+                    }
+                }
+            },
+            else => {},
+        }
+
+        off += len;
+    }
+
+    return found_interface;
+}
+
+fn allocDevice(slot: u8, port: u8, speed: u8) ?*Device {
+    if (device_count >= MAX_DEVICES) return null;
+
+    const d = &devices[device_count];
+    d.* = .{ .used = true, .slot = slot, .port = port, .speed = speed };
+
+    d.input_ctx_phys = pmm.allocPageZeroed() catch return null;
+    d.device_ctx_phys = pmm.allocPageZeroed() catch return null;
+    d.ep0_ring_phys = pmm.allocPageZeroed() catch return null;
+    d.buffer_phys = pmm.allocPageZeroed() catch return null;
+
+    d.ep0_ring = @ptrFromInt(pmm.physToVirt(d.ep0_ring_phys));
+    d.buffer_virt = pmm.physToVirt(d.buffer_phys);
+    linkRing(d.ep0_ring, d.ep0_ring_phys, true);
+
+    device_count += 1;
+    return d;
+}
+
+/// Describe a device from whichever class field actually carries meaning.
+fn describe(dev: *const Device) []const u8 {
+    const class = if (dev.descriptor.device_class != 0)
+        dev.descriptor.device_class
+    else
+        dev.interface_class;
+
+    return switch (class) {
+        0x03 => switch (dev.interface_protocol) {
+            1 => "HID keyboard",
+            2 => "HID mouse",
+            else => "HID device",
+        },
+        0x08 => "mass storage",
+        0x09 => "hub",
+        0x01 => "audio",
+        0x02 => "communications",
+        0xFF => "vendor specific",
+        else => "device",
+    };
+}
+
 // ── Ports ───────────────────────────────────────────────────────────────────
 
 /// Reset a port and wait for it to enable. USB 2 devices need an explicit
@@ -382,9 +675,35 @@ pub fn enumerate() void {
 
         if (enableSlot()) |slot| {
             slots_enabled += 1;
-            console.print("[ ok ] usb: port {d} device at slot {d}, speed {d}\n", .{
-                port, slot, speed,
-            });
+
+            const dev = allocDevice(slot, port, @truncate(speed)) orelse {
+                console.print("[warn] usb: port {d} out of device slots\n", .{port});
+                continue;
+            };
+
+            if (!addressDevice(dev)) {
+                console.print("[warn] usb: port {d} slot {d} would not address\n", .{ port, slot });
+                continue;
+            }
+            devices_addressed += 1;
+
+            if (readDeviceDescriptor(dev)) {
+                _ = readConfiguration(dev);
+                const d = &dev.descriptor;
+                console.print("[ ok ] usb: port {d} slot {d}  {x:0>4}:{x:0>4}  USB {x}.{x}  {s}\n", .{
+                    port,          slot,
+                    d.vendor_id,   d.product_id,
+                    (d.usb_version >> 8) & 0xFF, (d.usb_version >> 4) & 0x0F,
+                    describe(dev),
+                });
+                if (dev.interrupt_ep != 0) {
+                    console.print("[info]   interrupt endpoint 0x{x}, {d}-byte reports\n", .{
+                        dev.interrupt_ep, dev.interrupt_max_packet,
+                    });
+                }
+            } else {
+                console.print("[warn] usb: port {d} slot {d} addressed but no descriptor\n", .{ port, slot });
+            }
         } else {
             console.print("[warn] usb: port {d} enabled but slot request failed\n", .{port});
         }
@@ -416,6 +735,14 @@ pub fn report() void {
     });
 }
 
-pub fn stats() struct { connected: usize, slots: usize } {
-    return .{ .connected = ports_connected, .slots = slots_enabled };
+pub fn stats() struct { connected: usize, slots: usize, addressed: usize } {
+    return .{
+        .connected = ports_connected,
+        .slots = slots_enabled,
+        .addressed = devices_addressed,
+    };
+}
+
+pub fn deviceList() []const Device {
+    return devices[0..device_count];
 }

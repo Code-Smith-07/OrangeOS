@@ -76,9 +76,11 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 8g in progress.** The xHCI controller is up: command and event rings
-verified, ports reset, and device slots allocated. Every subsystem now runs
-together — 4 CPUs, SATA, CitrusFS, networking, audio, USB and the desktop.
+**Phase 8g in progress.** USB devices are fully enumerated: control transfers,
+device and configuration descriptors, and interface identification — the OS
+recognises a HID keyboard and mouse and finds their interrupt endpoints. Every
+subsystem runs together: 4 CPUs, SATA, CitrusFS, networking, audio, USB and
+the desktop.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -96,8 +98,8 @@ together — 4 CPUs, SATA, CitrusFS, networking, audio, USB and the desktop.
 | 8 | SMP: bring-up and cross-CPU scheduling | ✅ **Done** |
 | 8 | Networking: e1000, IPv4, ICMP, UDP, DHCP, DNS, TCP | ✅ **Done** |
 | 8 | Audio: Intel HD Audio | ✅ **Done** |
-| 8 | USB: xHCI bring-up and enumeration | ✅ **Done** |
-| 8 | USB: device descriptors, HID, storage | 🔨 In progress |
+| 8 | USB: xHCI, control transfers, enumeration | ✅ **Done** |
+| 8 | USB: HID input, mass storage | 🔨 In progress |
 | 9 | Real hardware | ⬜ Planned |
 
 See the [full roadmap](ARCHITECTURE.md#16-development-roadmap) for what each
