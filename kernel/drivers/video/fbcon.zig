@@ -97,8 +97,132 @@ fn scroll(f: *const framebuffer.Fb) void {
     f.fillRect(0, top + (rows - 1) * CELL_H, f.width, CELL_H, color_bg);
 }
 
+/// Minimal ANSI escape handling.
+///
+/// Userland writes colour codes, and a console that prints them literally is
+/// worse than one with no colour at all. Only what programs here actually
+/// emit is supported: SGR colour/reset, erase-display, and cursor-home.
+const EscState = enum { none, esc, csi };
+
+var esc_state: EscState = .none;
+var esc_params: [8]u32 = undefined;
+var esc_param_count: usize = 0;
+var esc_current: u32 = 0;
+var esc_has_digit: bool = false;
+
+fn sgr256(index: u32) u32 {
+    const f = fb orelse return 0;
+    // The 6x6x6 colour cube occupies 16..231; the grey ramp runs 232..255.
+    if (index >= 16 and index <= 231) {
+        const i = index - 16;
+        const levels = [_]u8{ 0, 95, 135, 175, 215, 255 };
+        return f.rgb(levels[(i / 36) % 6], levels[(i / 6) % 6], levels[i % 6]);
+    }
+    if (index >= 232) {
+        const v: u8 = @intCast(8 + (index - 232) * 10);
+        return f.rgb(v, v, v);
+    }
+    return switch (index) {
+        1, 9 => f.rgb(0xE0, 0x50, 0x40),
+        2, 10 => f.rgb(0x60, 0xC0, 0x60),
+        3, 11 => f.rgb(0xE0, 0xB0, 0x40),
+        4, 12 => f.rgb(0x60, 0x90, 0xE0),
+        5, 13 => f.rgb(0xC0, 0x70, 0xD0),
+        6, 14 => f.rgb(0x50, 0xC0, 0xC0),
+        else => theme.fg,
+    };
+}
+
+fn applySgr() void {
+    if (esc_param_count == 0) {
+        resetColor();
+        return;
+    }
+    var i: usize = 0;
+    while (i < esc_param_count) : (i += 1) {
+        const p = esc_params[i];
+        if (p == 0) {
+            resetColor();
+        } else if (p == 38 and i + 2 < esc_param_count and esc_params[i + 1] == 5) {
+            // 38;5;N — 256-colour foreground.
+            setColor(sgr256(esc_params[i + 2]));
+            i += 2;
+        } else if (p >= 30 and p <= 37) {
+            setColor(sgr256(p - 30));
+        } else if (p >= 90 and p <= 97) {
+            setColor(sgr256(p - 90 + 8));
+        }
+    }
+}
+
+fn pushParam() void {
+    if (esc_param_count < esc_params.len) {
+        esc_params[esc_param_count] = esc_current;
+        esc_param_count += 1;
+    }
+    esc_current = 0;
+    esc_has_digit = false;
+}
+
+/// Returns true if the byte was consumed as part of an escape sequence.
+fn handleEscape(c: u8) bool {
+    switch (esc_state) {
+        .none => {
+            if (c != 0x1B) return false;
+            esc_state = .esc;
+            return true;
+        },
+        .esc => {
+            if (c == '[') {
+                esc_state = .csi;
+                esc_param_count = 0;
+                esc_current = 0;
+                esc_has_digit = false;
+            } else {
+                esc_state = .none; // sequence we do not implement
+            }
+            return true;
+        },
+        .csi => {
+            if (c >= '0' and c <= '9') {
+                esc_current = esc_current * 10 + (c - '0');
+                esc_has_digit = true;
+                return true;
+            }
+            if (c == ';') {
+                pushParam();
+                return true;
+            }
+            if (esc_has_digit) pushParam();
+
+            switch (c) {
+                'm' => applySgr(),
+                'J' => clearScreen(),
+                'H' => home(),
+                else => {},
+            }
+            esc_state = .none;
+            return true;
+        },
+    }
+}
+
+fn clearScreen() void {
+    const f = fb orelse return;
+    f.clear(color_bg);
+    cx = 0;
+    cy = 0;
+}
+
+fn home() void {
+    cx = 0;
+    cy = 0;
+}
+
 pub fn writeByte(c: u8) void {
     const f = fb orelse return;
+
+    if (handleEscape(c)) return;
 
     switch (c) {
         '\n' => {
@@ -107,6 +231,14 @@ pub fn writeByte(c: u8) void {
         },
         '\r' => cx = 0,
         '\t' => cx = (cx + 4) & ~@as(usize, 3),
+        // Backspace: move left one cell and blank it, so the shell's line
+        // editing erases visibly rather than leaving the old glyph behind.
+        0x08 => {
+            if (cx > 0) {
+                cx -= 1;
+                f.fillRect(MARGIN + cx * CELL_W, MARGIN + cy * CELL_H, CELL_W, CELL_H, color_bg);
+            }
+        },
         else => {
             if (cx >= cols) {
                 cx = 0;

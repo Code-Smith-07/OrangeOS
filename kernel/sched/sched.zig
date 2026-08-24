@@ -23,6 +23,7 @@ const io = @import("../arch/x86_64/io.zig");
 const time = @import("../time/time.zig");
 const gdt = @import("../arch/x86_64/gdt.zig");
 const percpu = @import("../arch/x86_64/percpu.zig");
+const vmm = @import("../mm/vmm.zig");
 const task_mod_kstack = @import("task.zig");
 
 pub const Task = task_mod.Task;
@@ -71,6 +72,28 @@ var last_boost_tick: u64 = 0;
 
 var total_switches: u64 = 0;
 
+/// Every task ever created, so a pid can be looked up after it exits.
+/// A real system reaps and recycles these; Phase 6 keeps them.
+const MAX_TASKS = 64;
+var all_tasks: [MAX_TASKS]?*Task = [_]?*Task{null} ** MAX_TASKS;
+var all_count: usize = 0;
+
+fn registerTask(t: *Task) void {
+    if (all_count >= MAX_TASKS) return;
+    all_tasks[all_count] = t;
+    all_count += 1;
+}
+
+pub fn findByTid(tid: u32) ?*Task {
+    var i: usize = 0;
+    while (i < all_count) : (i += 1) {
+        if (all_tasks[i]) |t| {
+            if (t.tid == tid) return t;
+        }
+    }
+    return null;
+}
+
 /// Where a freshly created thread begins. It calls the thread's entry point
 /// and cleans up if that ever returns.
 export fn threadTrampoline() callconv(.c) void {
@@ -113,6 +136,7 @@ pub fn spawn(
     defer spinlock.releaseIrqRestore(&lock, state);
 
     queues[@intFromEnum(priority)].push(t);
+    registerTask(t);
     task_count += 1;
     return t;
 }
@@ -156,6 +180,12 @@ fn switchTo(next: *Task) void {
     const top = task_mod_kstack.kstackTop(next);
     gdt.setKernelStack(top);
     percpu.setKernelStack(top);
+
+    // Switch address spaces if they differ. Reloading CR3 flushes the TLB, so
+    // it is worth skipping when both threads share one.
+    if (next.address_space != 0 and next.address_space != prev.address_space) {
+        vmm.loadCr3(next.address_space);
+    }
 
     context.contextSwitch(&prev.rsp, next.rsp);
 }
@@ -237,6 +267,13 @@ pub fn exit(code: i32) noreturn {
     const next = pickNext();
     next.state = .running;
     current = next;
+
+    const top = task_mod_kstack.kstackTop(next);
+    gdt.setKernelStack(top);
+    percpu.setKernelStack(top);
+    if (next.address_space != 0 and next.address_space != t.address_space) {
+        vmm.loadCr3(next.address_space);
+    }
 
     // The dying thread's stack is still in use until we leave it, so it is
     // freed by whoever reaps it, not here.

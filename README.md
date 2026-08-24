@@ -9,11 +9,11 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-orange.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-x86__64-orange.svg)](ARCHITECTURE.md)
 [![Language](https://img.shields.io/badge/language-Zig-orange.svg)](https://ziglang.org)
-[![Status](https://img.shields.io/badge/status-Phase%206-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
+[![Status](https://img.shields.io/badge/status-Phase%207-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS booting](docs/screenshots/phase5b.png)
+![Orange OS shell](docs/screenshots/phase6.png)
 
 </div>
 
@@ -76,9 +76,9 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 5 complete.** The kernel enumerates PCI, drives a SATA disk, parses
-GPT, mounts its own filesystem, and loads `/sbin/init` from disk. A user
-process in ring 3 can `cat /etc/motd`.
+**Phase 6a complete.** Orange OS has an interactive shell. `init` runs as PID 1
+and supervises **Juice**, which reads commands over the serial console, runs
+builtins, and spawns programs from `/bin` — each in its own address space.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -88,7 +88,8 @@ process in ring 3 can `cat /etc/motd`.
 | 3 | Interrupts and time | ✅ **Done** |
 | 4 | Processes and scheduling | ✅ **Done** |
 | 5 | Storage and filesystems | ✅ **Done** |
-| 6 | Userland and IPC | 🔨 In progress |
+| 6 | Userland: Pulp libc + Juice shell | ✅ **Done** |
+| 6 | IPC, ports, and Seed | 🔨 In progress |
 | 7 | **Graphics — the desktop** | ⬜ Planned |
 | 8 | SMP, networking, USB, audio | ⬜ Planned |
 | 9 | Real hardware | ⬜ Planned |

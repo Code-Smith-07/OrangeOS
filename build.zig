@@ -63,10 +63,22 @@ pub fn build(b: *std.Build) void {
     const fs_test = b.option(bool, "fs-test", "Run filesystem tests at boot") orelse false;
     options.addOption(bool, "fs_test", fs_test);
 
-    // ── Userland: init, the first ring 3 program ─────────────────────────────
-    // Built for the same bare-metal target: no libc, no runtime, static ELF.
-    const init_mod = b.createModule(.{
-        .root_source_file = b.path("userland/init/main.zig"),
+    const sched_test_opt = b.option(
+        bool,
+        "sched-test",
+        "Run scheduler tests at boot. Off by default: the test threads spin " ++
+            "at interactive priority and starve real work.",
+    ) orelse false;
+    options.addOption(bool, "sched_test", sched_test_opt);
+
+    const verbose_exec = b.option(bool, "verbose-exec", "Log every process load") orelse false;
+    options.addOption(bool, "verbose_exec", verbose_exec);
+
+    // ── Userland ─────────────────────────────────────────────────────────────
+    // Every program links against Pulp and nothing else: no libc, no runtime,
+    // static ELF, same bare-metal target as the kernel.
+    const pulp_mod = b.createModule(.{
+        .root_source_file = b.path("userland/libs/pulp/pulp.zig"),
         .target = target,
         .optimize = optimize,
         .red_zone = false,
@@ -75,15 +87,39 @@ pub fn build(b: *std.Build) void {
         .stack_check = false,
         .sanitize_c = false,
         .single_threaded = true,
-        .strip = false,
     });
-    const init_exe = b.addExecutable(.{
-        .name = "init.elf",
-        .root_module = init_mod,
-        .use_lld = true,
-    });
-    init_exe.setLinkerScript(b.path("userland/user.ld"));
-    init_exe.entry = .{ .symbol_name = "_start" };
+
+    const UserProgram = struct { name: []const u8, path: []const u8 };
+    const programs = [_]UserProgram{
+        .{ .name = "init", .path = "userland/init/main.zig" },
+        .{ .name = "juice", .path = "userland/bin/juice/main.zig" },
+        .{ .name = "echo", .path = "userland/bin/echo/main.zig" },
+        .{ .name = "uname", .path = "userland/bin/uname/main.zig" },
+    };
+
+    for (programs) |prog| {
+        const mod = b.createModule(.{
+            .root_source_file = b.path(prog.path),
+            .target = target,
+            .optimize = optimize,
+            .red_zone = false,
+            .pic = false,
+            .stack_protector = false,
+            .stack_check = false,
+            .sanitize_c = false,
+            .single_threaded = true,
+        });
+        mod.addImport("pulp", pulp_mod);
+
+        const exe = b.addExecutable(.{
+            .name = prog.name,
+            .root_module = mod,
+            .use_lld = true,
+        });
+        exe.setLinkerScript(b.path("userland/user.ld"));
+        exe.entry = .{ .symbol_name = "_start" };
+        b.installArtifact(exe);
+    }
 
     // ── Zest kernel ──────────────────────────────────────────────────────────
     const kernel_mod = b.createModule(.{
@@ -102,11 +138,9 @@ pub fn build(b: *std.Build) void {
     });
 
     kernel_mod.addOptions("build_options", options);
-    // init is NOT embedded in the kernel. It is written to the CitrusFS image
-    // by scripts/mkdisk.sh and loaded from disk at boot, which is the whole
-    // point of having a filesystem. The artifact is installed so mkdisk can
-    // find it.
-    b.installArtifact(init_exe);
+    // Userland is NOT embedded in the kernel. scripts/mkdisk.sh copies the
+    // installed binaries onto the CitrusFS image, and they are loaded from
+    // disk at runtime.
 
     const kernel = b.addExecutable(.{
         .name = "kernel.elf",

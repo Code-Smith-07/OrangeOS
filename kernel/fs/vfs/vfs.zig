@@ -96,8 +96,15 @@ pub fn readAt(node: *const Node, offset: u64, buf: []u8) Error!usize {
 }
 
 // ── File descriptors ─────────────────────────────────────────────────────────
-// A single global table for now. It becomes per-process in Phase 6, when fork
+// A single global table for now. It becomes per-process in Phase 6b, when fork
 // has to decide what a child inherits.
+//
+// Descriptors start at 3. 0, 1 and 2 belong to stdin, stdout and stderr, and
+// handing a file descriptor 0 makes read() route to the console instead of the
+// file - which presents as a process hanging forever on a disk read.
+
+/// First descriptor available for files.
+pub const FD_BASE: i32 = 3;
 
 pub fn open(path: []const u8) Error!i32 {
     const node = try resolve(path);
@@ -106,7 +113,7 @@ pub fn open(path: []const u8) Error!i32 {
     while (i < MAX_OPEN) : (i += 1) {
         if (open_files[i].used) continue;
         open_files[i] = .{ .used = true, .node = node, .offset = 0 };
-        return @intCast(i);
+        return @as(i32, @intCast(i)) + FD_BASE;
     }
     return Error.TooManyOpen;
 }
@@ -135,10 +142,12 @@ pub fn statSize(fd: i32) Error!u64 {
 }
 
 fn checkFd(fd: i32) Error!usize {
-    if (fd < 0 or fd >= MAX_OPEN) return Error.BadFd;
-    const i: usize = @intCast(fd);
-    if (!open_files[i].used) return Error.BadFd;
-    return i;
+    if (fd < FD_BASE) return Error.BadFd; // 0/1/2 are the standard streams
+    const i: i32 = fd - FD_BASE;
+    if (i >= MAX_OPEN) return Error.BadFd;
+    const idx: usize = @intCast(i);
+    if (!open_files[idx].used) return Error.BadFd;
+    return idx;
 }
 
 // ── Directory listing ────────────────────────────────────────────────────────
@@ -167,6 +176,17 @@ pub fn listDir(path: []const u8) Error!void {
     console.print("[info] {s}:\n", .{path});
     var ctx = ListCtx{ .indent = 0 };
     root_fs.iterate(&node.inode, &ctx, printEntry) catch return Error.IoError;
+}
+
+/// Walk a directory, handing each entry to `visit`.
+pub fn iterateDir(
+    path: []const u8,
+    ctx: *anyopaque,
+    visit: *const fn (ctx: *anyopaque, name: []const u8, ino: u32, dtype: u8) bool,
+) Error!void {
+    const node = try resolve(path);
+    if (!node.isDir()) return Error.NotDirectory;
+    root_fs.iterate(&node.inode, ctx, visit) catch return Error.IoError;
 }
 
 /// Read a whole file into `buf`. Returns the byte count.

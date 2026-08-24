@@ -117,7 +117,7 @@ export fn kmain() callconv(.c) noreturn {
     if (build_options.blk_test) blk_test.run();
     if (build_options.fs_test) fs_test.run();
 
-    sched_test.spawnAll();
+    if (build_options.sched_test) sched_test.spawnAll();
     _ = sched.spawn("init", process.initThread, null, .normal) catch |e| {
         console.err("could not spawn init: {s}", .{@errorName(e)});
     };

@@ -14,6 +14,7 @@ const percpu = @import("../arch/x86_64/percpu.zig");
 const task_mod = @import("task.zig");
 const sched = @import("sched.zig");
 const console = @import("../console.zig");
+const build_options = @import("build_options");
 const vfs = @import("../fs/vfs/vfs.zig");
 const heap = @import("../mm/heap.zig");
 
@@ -49,15 +50,66 @@ pub fn execImage(image: []const u8) Error!noreturn {
     gdt.setKernelStack(kstack_top);
     percpu.setKernelStack(kstack_top);
 
-    console.print("[ ok ] loaded ELF: entry 0x{x}, brk 0x{x}\n", .{ loaded.entry, loaded.brk });
-    console.print("[ ok ] user stack: {d} KiB at 0x{x}\n", .{
-        USER_STACK_PAGES * vmm.PAGE_SIZE / 1024,
-        USER_STACK_TOP - USER_STACK_PAGES * vmm.PAGE_SIZE,
-    });
-    console.info("entering ring 3...", .{});
+    // Per-spawn detail is noise once a shell is driving the system. Build with
+    // -Dverbose-exec to get it back.
+    if (build_options.verbose_exec) {
+        console.print("[ ok ] loaded ELF: entry 0x{x}, brk 0x{x}\n", .{ loaded.entry, loaded.brk });
+        console.print("[ ok ] user stack: {d} KiB at 0x{x}\n", .{
+            USER_STACK_PAGES * vmm.PAGE_SIZE / 1024,
+            USER_STACK_TOP - USER_STACK_PAGES * vmm.PAGE_SIZE,
+        });
+        console.info("entering ring 3...", .{});
+    }
 
+    // Record it on the task before loading, so the scheduler restores this
+    // address space whenever it switches back to this thread.
+    t.address_space = pml4;
     vmm.loadCr3(pml4);
     user.enter(loaded.entry, USER_STACK_TOP);
+}
+
+/// A pending program: the image is read in the spawning process's context and
+/// handed to the new thread, which loads and enters it.
+pub const SpawnRequest = struct {
+    image: []u8,
+};
+
+/// Read a program off disk and start it as a new task. Returns its tid.
+/// The caller keeps running; use wait() to synchronise.
+pub fn spawnPath(path: []const u8) !u32 {
+    if (!vfs.isMounted()) return error.NotMounted;
+
+    const node = vfs.resolve(path) catch return error.NotFound;
+    const size: usize = @intCast(node.size());
+    if (size == 0 or size > 8 * 1024 * 1024) return error.BadImage;
+
+    const buf = heap.alloc(size) catch return error.OutOfMemory;
+    errdefer heap.free(buf);
+
+    const n = vfs.readAt(&node, 0, buf[0..size]) catch return error.IoError;
+    if (n != size) return error.IoError;
+
+    const req = heap.create(SpawnRequest) catch return error.OutOfMemory;
+    req.* = .{ .image = buf[0..size] };
+
+    // Name the task after the last path component, so `ps` is readable.
+    var name: []const u8 = path;
+    if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| name = path[i + 1 ..];
+
+    const t = sched.spawn(name, spawnThread, req, .normal) catch return error.OutOfMemory;
+    return t.tid;
+}
+
+/// Thread body for a spawned program.
+fn spawnThread(arg: ?*anyopaque) void {
+    const req: *SpawnRequest = @ptrCast(@alignCast(arg.?));
+    const image = req.image;
+    heap.destroy(req);
+
+    execImage(image) catch |e| {
+        console.err("exec failed: {s}", .{@errorName(e)});
+        sched.exit(1);
+    };
 }
 
 /// Thread body: load /sbin/init off the filesystem and run it.

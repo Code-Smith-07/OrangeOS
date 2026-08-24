@@ -32,11 +32,20 @@ fn writeMsr(msr: u32, value: u64) void {
     );
 }
 
-/// Point KERNEL_GS_BASE at this CPU's block. GS_BASE stays zero: user code
-/// owns it, and `swapgs` on entry brings the kernel's value into place.
+/// Establish the GS invariant:
+///
+///     in KERNEL mode:  GS_BASE = &percpu,  KERNEL_GS_BASE = user's gs
+///     in USER mode:    GS_BASE = user's gs, KERNEL_GS_BASE = &percpu
+///
+/// `swapgs` at each ring boundary moves between the two. The important half is
+/// that GS_BASE is &percpu for ALL kernel code, including kernel threads that
+/// never came from userspace — the syscall path can switch threads (sys_wait
+/// yields), so a thread can arrive in kernel context without having executed
+/// a swapgs of its own. Any scheme where kernel GS depends on how the thread
+/// got there breaks the moment the scheduler runs.
 pub fn init() void {
-    writeMsr(IA32_KERNEL_GS_BASE, @intFromPtr(&cpu0));
-    writeMsr(IA32_GS_BASE, 0);
+    writeMsr(IA32_GS_BASE, @intFromPtr(&cpu0));
+    writeMsr(IA32_KERNEL_GS_BASE, 0);
 }
 
 pub fn self() *PerCpu {

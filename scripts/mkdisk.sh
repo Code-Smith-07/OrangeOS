@@ -23,17 +23,18 @@ mkdir -p "$ROOTFS/etc" "$ROOTFS/sbin" "$ROOTFS/bin"
 echo "Welcome to Orange OS." > "$ROOTFS/etc/motd"
 printf 'NAME="Orange OS"\nVERSION="0.1.0"\nKERNEL="Zest"\n' > "$ROOTFS/etc/os-release"
 
-if [ -f zig-out/bin/init.elf ]; then
-    INIT=zig-out/bin/init.elf
-else
-    INIT=$(find .zig-cache -name 'init.elf' -type f 2>/dev/null | head -1)
+if [ ! -f zig-out/bin/init ]; then
+    echo "mkdisk: ERROR - zig-out/bin/init not found; run 'zig build' first" >&2
+    exit 1
 fi
-if [ -n "$INIT" ]; then
-    cp "$INIT" "$ROOTFS/sbin/init"
-    echo "mkdisk: placed init from $INIT"
-else
-    echo "mkdisk: WARNING - init.elf not found; run 'zig build' first" >&2
-fi
+
+cp zig-out/bin/init "$ROOTFS/sbin/init"
+for prog in juice echo uname; do
+    if [ -f "zig-out/bin/$prog" ]; then
+        cp "zig-out/bin/$prog" "$ROOTFS/bin/$prog"
+    fi
+done
+echo "mkdisk: staged /sbin/init and $(ls "$ROOTFS/bin" | tr '\n' ' ')"
 
 # ── Build the filesystem and the partitioned disk ────────────────────────────
 python3 tools/mkcitrusfs/mkcitrusfs.py "$FSIMG" "$ROOTFS" 32

@@ -7,6 +7,7 @@ const std = @import("std");
 const heap = @import("../mm/heap.zig");
 const pmm = @import("../mm/pmm.zig");
 const context = @import("../arch/x86_64/context.zig");
+const vmm = @import("../mm/vmm.zig");
 
 pub const KSTACK_SIZE: usize = 16 * 1024;
 pub const NAME_LEN: usize = 32;
@@ -69,6 +70,12 @@ pub const Task = struct {
     entry: *const fn (?*anyopaque) void,
     arg: ?*anyopaque,
 
+    /// Physical address of this task's PML4. Kernel threads share the kernel's.
+    /// The scheduler reloads CR3 on any switch that changes it — without that,
+    /// a thread resumes on whatever address space ran last, which presents as
+    /// a user process faulting on its own perfectly valid code.
+    address_space: u64 = 0,
+
     /// Run-queue link.
     next: ?*Task = null,
 
@@ -113,6 +120,7 @@ pub fn create(
         .kstack_size = KSTACK_SIZE,
         .entry = entry,
         .arg = arg,
+        .address_space = vmm.kernelPml4(),
     };
     next_tid += 1;
 

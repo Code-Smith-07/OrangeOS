@@ -5,6 +5,9 @@
 //! flow through here.
 
 const io = @import("../../arch/x86_64/io.zig");
+const isr = @import("../../arch/x86_64/isr.zig");
+const apic = @import("../../arch/x86_64/apic.zig");
+const ioapic = @import("../../arch/x86_64/ioapic.zig");
 
 const COM1: u16 = 0x3F8;
 
@@ -17,6 +20,22 @@ const MODEM_CTRL = 4;
 const LINE_STATUS = 5;
 
 const LSR_TX_EMPTY: u8 = 0x20;
+const LSR_DATA_READY: u8 = 0x01;
+
+const IER_RX_AVAILABLE: u8 = 0x01;
+
+/// COM1 sits on ISA IRQ 4. The MADT may have remapped it, which is why the
+/// routing goes through madt.gsiForIrq rather than assuming GSI 4.
+const COM1_IRQ: u8 = 4;
+pub const VECTOR_SERIAL: u8 = 0x24;
+
+/// Input ring. Sized generously: a paste into the terminal arrives far faster
+/// than a reader drains it, and dropping characters looks like flaky hardware.
+const RX_CAPACITY = 1024;
+
+var rx_buf: [RX_CAPACITY]u8 = undefined;
+var rx_head: usize = 0;
+var rx_tail: usize = 0;
 
 var initialized: bool = false;
 
@@ -61,4 +80,69 @@ pub fn write(s: []const u8) void {
 
 pub fn isInitialized() bool {
     return initialized;
+}
+
+// ── Input ────────────────────────────────────────────────────────────────────
+
+inline fn rxEmpty() bool {
+    return rx_head == rx_tail;
+}
+
+fn rxPush(c: u8) void {
+    const next = (rx_head + 1) % RX_CAPACITY;
+    // Full: drop the newest rather than overwrite unread input. Losing the
+    // most recent keystroke is less confusing than losing the oldest.
+    if (next == rx_tail) return;
+    rx_buf[rx_head] = c;
+    rx_head = next;
+}
+
+/// Take one byte, or null if nothing is buffered.
+pub fn readByte() ?u8 {
+    const was = interruptsEnabled();
+    io.cli();
+    defer if (was) io.sti();
+
+    if (rxEmpty()) return null;
+    const c = rx_buf[rx_tail];
+    rx_tail = (rx_tail + 1) % RX_CAPACITY;
+    return c;
+}
+
+pub fn hasInput() bool {
+    return !rxEmpty();
+}
+
+fn interruptsEnabled() bool {
+    const flags = asm volatile (
+        \\ pushfq
+        \\ popq %[out]
+        : [out] "=r" (-> u64),
+    );
+    return flags & (1 << 9) != 0;
+}
+
+fn rxHandler(frame: *isr.TrapFrame) void {
+    _ = frame;
+    // Drain the FIFO: the UART raises one interrupt for a burst, so stopping
+    // after a single byte would leave the rest sitting there until the next
+    // keystroke.
+    while (io.inb(COM1 + LINE_STATUS) & LSR_DATA_READY != 0) {
+        rxPush(io.inb(COM1 + DATA));
+    }
+    apic.eoi();
+}
+
+/// Turn on receive interrupts and route COM1's IRQ to this CPU.
+/// Called after the APICs are up.
+pub fn enableInput() void {
+    isr.register(VECTOR_SERIAL, rxHandler);
+    io.outb(COM1 + INT_ENABLE, IER_RX_AVAILABLE);
+    ioapic.routeIrq(COM1_IRQ, VECTOR_SERIAL, 0);
+    ioapic.setMasked(madtGsi(), false);
+}
+
+fn madtGsi() u32 {
+    const madt = @import("../../dev/acpi/madt.zig");
+    return madt.gsiForIrq(COM1_IRQ);
 }

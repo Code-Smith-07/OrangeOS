@@ -47,10 +47,11 @@ comptime {
         \\    xorq %r14, %r14
         \\    xorq %r15, %r15
         \\
-        \\    # No swapgs here. Kernel code already runs with GS_BASE = 0 and
-        \\    # KERNEL_GS_BASE = &percpu. Swapping now would hand the percpu
-        \\    # pointer to userspace AND leave KERNEL_GS_BASE zero, so the
-        \\    # first syscall's swapgs would load a null gs and fault on gs:0.
+        \\    # Kernel runs with GS_BASE = &percpu. Crossing into ring 3 has to
+        \\    # move that into KERNEL_GS_BASE so the next syscall's swapgs
+        \\    # finds it. Without this, the first syscall from a freshly
+        \\    # spawned process faults writing to gs:8 with a null GS.
+        \\    swapgs
         \\    iretq
         \\.size enterUserMode, . - enterUserMode
     );

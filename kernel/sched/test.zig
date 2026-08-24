@@ -139,8 +139,12 @@ fn reportIfDone() void {
 }
 
 fn uptimeLoop() void {
+    // Sleep between samples. Spinning on yield() here burned tens of millions
+    // of context switches a minute and starved everything at lower priority -
+    // including init.
     var last: u64 = 0;
     while (true) {
+        time.busySleepMs(1000);
         const secs = time.millisSinceBoot() / 1000;
         if (secs != last and secs % 5 == 0) {
             last = secs;
@@ -148,7 +152,6 @@ fn uptimeLoop() void {
                 secs, sched.switchCount(), sched.taskCount(),
             });
         }
-        sched.yield();
     }
 }
 
