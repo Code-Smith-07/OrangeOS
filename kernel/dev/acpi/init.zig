@@ -30,6 +30,7 @@ const serial = @import("../../drivers/char/serial.zig");
 const ps2 = @import("../../drivers/input/ps2.zig");
 const smp = @import("../../arch/x86_64/smp.zig");
 const net = @import("../../net/net.zig");
+const hda = @import("../../drivers/audio/hda.zig");
 const fmt = @import("../../lib/fmt.zig");
 
 /// Try each partition until one holds a CitrusFS. Trying rather than assuming
@@ -108,6 +109,12 @@ pub fn init() !void {
     net.init() catch |e| {
         console.warn("network init failed: {s}", .{@errorName(e)});
     };
+
+    const audio = hda.init() catch |e| blk: {
+        console.warn("HD Audio init failed: {s}", .{@errorName(e)});
+        break :blk false;
+    };
+    if (audio) hda.report();
 
     // Other processors come up last: they need the page tables, the APIC and
     // a calibrated TSC, all of which exist by now.

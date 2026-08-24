@@ -76,9 +76,9 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 8e complete.** Orange OS fetches web pages. The full stack — e1000
-driver, ARP, IPv4, ICMP, UDP, DHCP, DNS and TCP — is written from scratch, and
-`fetch` retrieves a real page from a real server over a real handshake.
+**Phase 8f complete.** Orange OS makes sound. An Intel HD Audio driver walks
+the codec graph, configures a stream, and plays a tone — verified by recording
+the output and measuring it at 440.2 Hz with 0.994 correlation to a pure sine.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -95,7 +95,8 @@ driver, ARP, IPv4, ICMP, UDP, DHCP, DNS and TCP — is written from scratch, and
 | 7 | Graphics: widget toolkit and desktop shell | ✅ **Done** |
 | 8 | SMP: bring-up and cross-CPU scheduling | ✅ **Done** |
 | 8 | Networking: e1000, IPv4, ICMP, UDP, DHCP, DNS, TCP | ✅ **Done** |
-| 8 | USB, audio | 🔨 In progress |
+| 8 | Audio: Intel HD Audio | ✅ **Done** |
+| 8 | USB | 🔨 In progress |
 | 9 | Real hardware | ⬜ Planned |
 
 See the [full roadmap](ARCHITECTURE.md#16-development-roadmap) for what each
@@ -133,8 +134,10 @@ Then fetch the bootloader, create a disk, and build:
 | `zig build -Dblk-test run` | Run block device read/write tests |
 | `zig build -Dfs-test run` | Run filesystem tests |
 
-Add `-smp 4` to the QEMU command line to boot with four processors, and
-`-netdev user,id=n0 -device e1000,netdev=n0` for networking.
+Add `-smp 4` to the QEMU command line to boot with four processors,
+`-netdev user,id=n0 -device e1000,netdev=n0` for networking, and
+`-audiodev wav,id=snd0,path=out.wav -device intel-hda -device hda-output,audiodev=snd0`
+to record what the machine plays.
 
 > **A note on timer accuracy under emulation.** The scheduler tick is
 > best-effort; timekeeping is not. QEMU's TCG emulation on a non-x86 host

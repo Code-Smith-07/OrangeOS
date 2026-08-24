@@ -20,6 +20,7 @@ const tsc = @import("time/tsc.zig");
 const sched = @import("sched/sched.zig");
 const smp = @import("arch/x86_64/smp.zig");
 const net = @import("net/net.zig");
+const hda = @import("drivers/audio/hda.zig");
 const sched_test = @import("sched/test.zig");
 const process = @import("sched/process.zig");
 const blk_test = @import("drivers/block/test.zig");
@@ -131,6 +132,7 @@ export fn kmain() callconv(.c) noreturn {
     // needing a userland tool for it.
     _ = sched.spawn("cpu-report", cpuReport, null, .batch) catch {};
     _ = sched.spawn("net-test", netTest, null, .normal) catch {};
+    _ = sched.spawn("audio-test", audioTest, null, .batch) catch {};
     _ = sched.spawn("init", process.initThread, null, .normal) catch |e| {
         console.err("could not spawn init: {s}", .{@errorName(e)});
     };
@@ -149,6 +151,33 @@ export fn kmain() callconv(.c) noreturn {
     if (build_options.fault_test) faultTest();
 
     io.hang();
+}
+
+/// Play a tone and confirm the DMA engine actually advances through the
+/// buffer. Position moving is the only proof available without ears.
+fn audioTest(_: ?*anyopaque) void {
+    if (!hda.isPresent()) return;
+    time.busySleepMs(6000);
+
+    console.write("\n");
+    console.info("audio self-test: playing 440 Hz...", .{});
+
+    const before = hda.position();
+    hda.playTone(440, 0);
+
+    time.busySleepMs(1500);
+    const mid = hda.position();
+    time.busySleepMs(1500);
+    const after = hda.position();
+
+    hda.stop();
+
+    console.print("[info] stream position: {d} -> {d} -> {d}\n", .{ before, mid, after });
+    if (mid != before or after != mid) {
+        console.ok("audio: DMA engine is consuming samples", .{});
+    } else {
+        console.warn("audio: stream position never advanced", .{});
+    }
 }
 
 /// Resolve the gateway and ping it. Proves the whole path: descriptor rings,
