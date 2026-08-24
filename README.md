@@ -13,7 +13,7 @@
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS desktop](docs/screenshots/phase8c.png)
+![Orange OS desktop](docs/screenshots/phase8d.png)
 
 </div>
 
@@ -76,8 +76,9 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 8c complete.** Orange OS is on the network. An e1000 driver, ARP, IPv4
-and ICMP written from scratch — `ping` runs from the shell and gets replies.
+**Phase 8d complete.** Orange OS configures itself over DHCP and resolves
+hostnames. An e1000 driver, ARP, IPv4, ICMP, UDP, DHCP and DNS — all written
+from scratch. `net` resolves real names against a real resolver.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -93,7 +94,7 @@ and ICMP written from scratch — `ping` runs from the shell and gets replies.
 | 7 | Graphics: PTY and terminal emulator | ✅ **Done** |
 | 7 | Graphics: widget toolkit and desktop shell | ✅ **Done** |
 | 8 | SMP: bring-up and cross-CPU scheduling | ✅ **Done** |
-| 8 | Networking: e1000, ARP, IPv4, ICMP | ✅ **Done** |
+| 8 | Networking: e1000, IPv4, ICMP, UDP, DHCP, DNS | ✅ **Done** |
 | 8 | USB, audio | 🔨 In progress |
 | 9 | Real hardware | ⬜ Planned |
 

@@ -284,6 +284,150 @@ pub fn ping(dst_ip: Ipv4Addr, seq: u16, timeout_ms: u64) ?u64 {
     return null;
 }
 
+// ── UDP ─────────────────────────────────────────────────────────────────────
+
+pub const MAX_DATAGRAM: usize = 1024;
+
+pub const Datagram = struct {
+    src_ip: Ipv4Addr,
+    src_port: u16,
+    len: usize,
+    data: [MAX_DATAGRAM]u8,
+};
+
+const MAX_SOCKETS = 8;
+
+const Socket = struct {
+    used: bool = false,
+    port: u16 = 0,
+    /// One-deep receive queue. A datagram arriving while one is pending
+    /// replaces it: for the request/response traffic this serves, the newest
+    /// answer is the interesting one.
+    pending: bool = false,
+    dgram: Datagram = undefined,
+};
+
+var sockets: [MAX_SOCKETS]Socket = [_]Socket{.{}} ** MAX_SOCKETS;
+var ephemeral_next: u16 = 49152;
+
+pub fn socketOpen(port: u16) ?usize {
+    var chosen = port;
+    if (chosen == 0) {
+        chosen = ephemeral_next;
+        ephemeral_next +%= 1;
+        if (ephemeral_next < 49152) ephemeral_next = 49152;
+    }
+
+    for (&sockets, 0..) |*s, i| {
+        if (s.used) continue;
+        s.* = .{ .used = true, .port = chosen };
+        return i;
+    }
+    return null;
+}
+
+pub fn socketClose(index: usize) void {
+    if (index >= MAX_SOCKETS) return;
+    sockets[index].used = false;
+}
+
+pub fn socketPort(index: usize) u16 {
+    if (index >= MAX_SOCKETS or !sockets[index].used) return 0;
+    return sockets[index].port;
+}
+
+/// UDP's checksum covers a pseudo-header of addresses and protocol as well as
+/// the datagram itself, so a packet delivered to the wrong host or protocol
+/// fails the check rather than being silently accepted.
+fn udpChecksum(src: Ipv4Addr, dst: Ipv4Addr, udp: []const u8) u16 {
+    var sum: u32 = 0;
+
+    sum += (@as(u32, src[0]) << 8) | src[1];
+    sum += (@as(u32, src[2]) << 8) | src[3];
+    sum += (@as(u32, dst[0]) << 8) | dst[1];
+    sum += (@as(u32, dst[2]) << 8) | dst[3];
+    sum += PROTO_UDP;
+    sum += @as(u32, @intCast(udp.len));
+
+    var i: usize = 0;
+    while (i + 1 < udp.len) : (i += 2) {
+        sum += (@as(u32, udp[i]) << 8) | udp[i + 1];
+    }
+    if (i < udp.len) sum += @as(u32, udp[i]) << 8;
+
+    while (sum >> 16 != 0) sum = (sum & 0xFFFF) + (sum >> 16);
+    const result: u16 = @truncate(~sum);
+    // Zero means "no checksum" on the wire, so a computed zero is sent as all
+    // ones, which is numerically equivalent in one's complement.
+    return if (result == 0) 0xFFFF else result;
+}
+
+pub fn sendTo(index: usize, dst_ip: Ipv4Addr, dst_port: u16, payload: []const u8) Error!void {
+    if (index >= MAX_SOCKETS or !sockets[index].used) return Error.NoRoute;
+    if (payload.len > MAX_DATAGRAM) return Error.TooLarge;
+
+    // Anything off-net goes via the gateway; anything local goes direct.
+    const via = if (sameSubnet(dst_ip)) dst_ip else gateway_ip;
+    const dst_mac = if (std.mem.eql(u8, &dst_ip, &BROADCAST_IP))
+        BROADCAST
+    else
+        resolve(via, 1000) orelse return Error.NoRoute;
+
+    var udp: [8 + MAX_DATAGRAM]u8 = undefined;
+    putBe16(&udp, 0, sockets[index].port);
+    putBe16(&udp, 2, dst_port);
+    putBe16(&udp, 4, @intCast(8 + payload.len));
+    putBe16(&udp, 6, 0);
+    @memcpy(udp[8 .. 8 + payload.len], payload);
+
+    const total_udp = 8 + payload.len;
+    const sum = udpChecksum(local_ip, dst_ip, udp[0..total_udp]);
+    putBe16(&udp, 6, sum);
+
+    var frame: [1518]u8 = undefined;
+    const n = buildIpv4(&frame, dst_mac, dst_ip, PROTO_UDP, udp[0..total_udp]);
+    try e1000.send(frame[0..n]);
+}
+
+/// Take a pending datagram, if one has arrived.
+pub fn recvFrom(index: usize) ?*const Datagram {
+    if (index >= MAX_SOCKETS or !sockets[index].used) return null;
+    if (!sockets[index].pending) return null;
+    sockets[index].pending = false;
+    return &sockets[index].dgram;
+}
+
+pub const BROADCAST_IP: Ipv4Addr = .{ 255, 255, 255, 255 };
+
+fn sameSubnet(ip: Ipv4Addr) bool {
+    var i: usize = 0;
+    while (i < 4) : (i += 1) {
+        if ((ip[i] & netmask[i]) != (local_ip[i] & netmask[i])) return false;
+    }
+    return true;
+}
+
+fn handleUdp(payload: []const u8, src_ip: Ipv4Addr) void {
+    if (payload.len < 8) return;
+
+    const src_port = be16(payload, 0);
+    const dst_port = be16(payload, 2);
+    const length = be16(payload, 4);
+    if (length < 8 or length > payload.len) return;
+
+    const data = payload[8..length];
+
+    for (&sockets) |*s| {
+        if (!s.used or s.port != dst_port) continue;
+        s.dgram.src_ip = src_ip;
+        s.dgram.src_port = src_port;
+        s.dgram.len = @min(data.len, MAX_DATAGRAM);
+        @memcpy(s.dgram.data[0..s.dgram.len], data[0..s.dgram.len]);
+        s.pending = true;
+        return;
+    }
+}
+
 // ── Receive path ────────────────────────────────────────────────────────────
 
 var rx_buf: [2048]u8 = undefined;
@@ -303,11 +447,15 @@ fn handleIpv4(frame: []const u8) void {
 
     var dst_ip: Ipv4Addr = undefined;
     @memcpy(&dst_ip, ip[16..20]);
-    if (!std.mem.eql(u8, &dst_ip, &local_ip)) return;
+    // Accept our own address and broadcast. Broadcast matters during DHCP,
+    // when we do not have an address yet and the server answers to everyone.
+    if (!std.mem.eql(u8, &dst_ip, &local_ip) and
+        !std.mem.eql(u8, &dst_ip, &BROADCAST_IP)) return;
 
     const payload = ip[ihl..total_len];
     switch (ip[9]) {
         PROTO_ICMP => handleIcmp(payload, src_ip),
+        PROTO_UDP => handleUdp(payload, src_ip),
         else => {},
     }
 }
@@ -332,6 +480,16 @@ pub fn init() !void {
         return;
     }
     e1000.report();
+
+    // Ask the network what our address should be rather than asserting one.
+    const dhcp = @import("dhcp.zig");
+    if (dhcp.configure(3000)) {
+        console.print("[ ok ] dhcp: leased {d}.{d}.{d}.{d}\n", .{
+            local_ip[0], local_ip[1], local_ip[2], local_ip[3],
+        });
+    } else {
+        console.warn("dhcp: no lease, using the built-in address", .{});
+    }
     console.print("[ ok ] net: {d}.{d}.{d}.{d}/24, gateway {d}.{d}.{d}.{d}\n", .{
         local_ip[0],   local_ip[1],   local_ip[2],   local_ip[3],
         gateway_ip[0], gateway_ip[1], gateway_ip[2], gateway_ip[3],
@@ -345,3 +503,15 @@ pub fn isUp() bool {
 pub fn gateway() Ipv4Addr {
     return gateway_ip;
 }
+
+pub fn setAddress(ip: Ipv4Addr, gw: Ipv4Addr, mask: Ipv4Addr) void {
+    local_ip = ip;
+    gateway_ip = gw;
+    netmask = mask;
+}
+
+pub fn dnsServer() Ipv4Addr {
+    return dns_ip;
+}
+
+pub var dns_ip: Ipv4Addr = .{ 10, 0, 2, 3 };

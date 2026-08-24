@@ -75,6 +75,11 @@ pub const Nr = enum(u64) {
     spawn_pty = 83,
     net_ping = 90,
     net_info = 91,
+    net_resolve = 92,
+    udp_open = 93,
+    udp_send = 94,
+    udp_recv = 95,
+    udp_close = 96,
     shm_map = 55,
     handle_close = 56,
     fb_acquire = 70,
@@ -128,6 +133,11 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .spawn_pty => sysSpawnPty(frame.rdi, frame.rsi, frame.rdx),
         .net_ping => sysNetPing(frame.rdi, frame.rsi, frame.rdx),
         .net_info => sysNetInfo(frame.rdi),
+        .net_resolve => sysNetResolve(frame.rdi, frame.rsi),
+        .udp_open => sysUdpOpen(frame.rdi),
+        .udp_send => sysUdpSend(frame.rdi, frame.rsi, frame.rdx, frame.r10),
+        .udp_recv => sysUdpRecv(frame.rdi, frame.rsi, frame.rdx),
+        .udp_close => sysUdpClose(frame.rdi),
         .shm_map => sysShmMap(frame.rdi, frame.rsi),
         .handle_close => sysHandleClose(frame.rdi),
         .fb_acquire => sysFbAcquire(frame.rdi),
@@ -676,6 +686,59 @@ fn sysNetInfo(out: u64) i64 {
     const pml4 = vmm.currentCr3();
     const src: [*]const u8 = @ptrCast(&info);
     validate.copyToUser(pml4, out, src[0..@sizeOf(NetInfo)], @sizeOf(NetInfo)) catch return EFAULT;
+    return 0;
+}
+
+/// Resolve a hostname. Returns the address packed into the low 32 bits.
+fn sysNetResolve(name_ptr: u64, name_len: u64) i64 {
+    if (!net.isUp()) return -19;
+    if (name_len == 0 or name_len > 255) return EINVAL;
+
+    const pml4 = vmm.currentCr3();
+    var name: [256]u8 = undefined;
+    validate.copyFromUser(pml4, &name, name_ptr, @intCast(name_len)) catch return EFAULT;
+
+    const dns = @import("../net/dns.zig");
+    const ip = dns.resolve(name[0..@intCast(name_len)], 3000) orelse return -2;
+    return @intCast(packIp(ip));
+}
+
+fn sysUdpOpen(port: u64) i64 {
+    if (!net.isUp()) return -19;
+    const idx = net.socketOpen(@truncate(port)) orelse return EMFILE;
+    return @intCast(idx);
+}
+
+fn sysUdpSend(sock: u64, dst: u64, port: u64, buf_and_len: u64) i64 {
+    // Pointer in the low 48 bits, length in the top 16. Six arguments is one
+    // more than the syscall ABI has registers to spare here.
+    const ptr = buf_and_len & 0x0000_FFFF_FFFF_FFFF;
+    const len = buf_and_len >> 48;
+    if (len > net.MAX_DATAGRAM) return EMSGSIZE;
+
+    const pml4 = vmm.currentCr3();
+    var kbuf: [net.MAX_DATAGRAM]u8 = undefined;
+    validate.copyFromUser(pml4, &kbuf, ptr, @intCast(len)) catch return EFAULT;
+
+    const ip = [4]u8{
+        @truncate(dst), @truncate(dst >> 8), @truncate(dst >> 16), @truncate(dst >> 24),
+    };
+    net.sendTo(@intCast(sock), ip, @truncate(port), kbuf[0..@intCast(len)]) catch return EIO;
+    return @intCast(len);
+}
+
+fn sysUdpRecv(sock: u64, buf: u64, len: u64) i64 {
+    net.poll();
+    const d = net.recvFrom(@intCast(sock)) orelse return EAGAIN;
+
+    const n = @min(len, d.len);
+    const pml4 = vmm.currentCr3();
+    validate.copyToUser(pml4, buf, d.data[0..@intCast(n)], @intCast(n)) catch return EFAULT;
+    return @intCast(n);
+}
+
+fn sysUdpClose(sock: u64) i64 {
+    net.socketClose(@intCast(sock));
     return 0;
 }
 

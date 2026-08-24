@@ -36,6 +36,11 @@ pub const NR = struct {
     pub const spawn_pty: u64 = 83;
     pub const net_ping: u64 = 90;
     pub const net_info: u64 = 91;
+    pub const net_resolve: u64 = 92;
+    pub const udp_open: u64 = 93;
+    pub const udp_send: u64 = 94;
+    pub const udp_recv: u64 = 95;
+    pub const udp_close: u64 = 96;
     pub const fb_acquire: u64 = 70;
     pub const fb_map: u64 = 71;
     pub const input_read: u64 = 72;
@@ -423,6 +428,40 @@ pub fn ping(ip: [4]u8, seq: u16, timeout_ms: u64) ?u64 {
     const r = syscall3(NR.net_ping, packed_ip, seq, timeout_ms);
     if (r < 0) return null;
     return @intCast(r);
+}
+
+/// Resolve a hostname to an IPv4 address.
+pub fn resolve(name: []const u8) ?[4]u8 {
+    const r = syscall2(NR.net_resolve, @intFromPtr(name.ptr), name.len);
+    if (r < 0) return null;
+    return unpackIp(@truncate(@as(u64, @bitCast(r))));
+}
+
+pub fn udpOpen(port: u16) Error!i64 {
+    const r = syscall1(NR.udp_open, port);
+    if (r < 0) return errno(r);
+    return r;
+}
+
+pub fn udpSend(sock: i64, dst: [4]u8, port: u16, data: []const u8) Error!usize {
+    const ip: u64 = @as(u64, dst[0]) | (@as(u64, dst[1]) << 8) |
+        (@as(u64, dst[2]) << 16) | (@as(u64, dst[3]) << 24);
+    // Pointer and length share one argument: the syscall ABI is out of
+    // registers at this arity.
+    const packed_buf = @intFromPtr(data.ptr) | (data.len << 48);
+    const r = syscall4(NR.udp_send, @bitCast(sock), ip, port, packed_buf);
+    if (r < 0) return errno(r);
+    return @intCast(r);
+}
+
+pub fn udpRecv(sock: i64, buf: []u8) ?usize {
+    const r = syscall3(NR.udp_recv, @bitCast(sock), @intFromPtr(buf.ptr), buf.len);
+    if (r < 0) return null;
+    return @intCast(r);
+}
+
+pub fn udpClose(sock: i64) void {
+    _ = syscall1(NR.udp_close, @bitCast(sock));
 }
 
 pub fn unpackIp(v: u32) [4]u8 {
