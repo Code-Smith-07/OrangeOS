@@ -41,6 +41,10 @@ pub const NR = struct {
     pub const udp_send: u64 = 94;
     pub const udp_recv: u64 = 95;
     pub const udp_close: u64 = 96;
+    pub const tcp_connect: u64 = 97;
+    pub const tcp_send: u64 = 98;
+    pub const tcp_recv: u64 = 99;
+    pub const tcp_close: u64 = 100;
     pub const fb_acquire: u64 = 70;
     pub const fb_map: u64 = 71;
     pub const input_read: u64 = 72;
@@ -108,6 +112,10 @@ pub inline fn syscall4(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64) i64 {
 // ── Errors ──────────────────────────────────────────────────────────────────
 
 pub const Error = error{
+    ConnectionReset,
+    NotConnected,
+    TimedOut,
+    ConnectionRefused,
     NotFound,
     IoError,
     BadFd,
@@ -121,6 +129,10 @@ pub const Error = error{
 
 fn errno(v: i64) Error {
     return switch (-v) {
+        104 => Error.ConnectionReset,
+        107 => Error.NotConnected,
+        110 => Error.TimedOut,
+        111 => Error.ConnectionRefused,
         2 => Error.NotFound,
         5 => Error.IoError,
         9 => Error.BadFd,
@@ -462,6 +474,32 @@ pub fn udpRecv(sock: i64, buf: []u8) ?usize {
 
 pub fn udpClose(sock: i64) void {
     _ = syscall1(NR.udp_close, @bitCast(sock));
+}
+
+/// Open a TCP connection. Blocks until the handshake completes.
+pub fn tcpConnect(ip: [4]u8, port: u16, timeout_ms: u64) Error!i64 {
+    const packed_ip: u64 = @as(u64, ip[0]) | (@as(u64, ip[1]) << 8) |
+        (@as(u64, ip[2]) << 16) | (@as(u64, ip[3]) << 24);
+    const r = syscall3(NR.tcp_connect, packed_ip, port, timeout_ms);
+    if (r < 0) return errno(r);
+    return r;
+}
+
+pub fn tcpSend(sock: i64, data: []const u8) Error!usize {
+    const r = syscall3(NR.tcp_send, @bitCast(sock), @intFromPtr(data.ptr), data.len);
+    if (r < 0) return errno(r);
+    return @intCast(r);
+}
+
+/// Read from a connection. Returns 0 at end of stream or on timeout.
+pub fn tcpRecv(sock: i64, buf: []u8, timeout_ms: u64) Error!usize {
+    const r = syscall4(NR.tcp_recv, @bitCast(sock), @intFromPtr(buf.ptr), buf.len, timeout_ms);
+    if (r < 0) return errno(r);
+    return @intCast(r);
+}
+
+pub fn tcpClose(sock: i64) void {
+    _ = syscall1(NR.tcp_close, @bitCast(sock));
 }
 
 pub fn unpackIp(v: u32) [4]u8 {

@@ -80,6 +80,10 @@ pub const Nr = enum(u64) {
     udp_send = 94,
     udp_recv = 95,
     udp_close = 96,
+    tcp_connect = 97,
+    tcp_send = 98,
+    tcp_recv = 99,
+    tcp_close = 100,
     shm_map = 55,
     handle_close = 56,
     fb_acquire = 70,
@@ -138,6 +142,10 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .udp_send => sysUdpSend(frame.rdi, frame.rsi, frame.rdx, frame.r10),
         .udp_recv => sysUdpRecv(frame.rdi, frame.rsi, frame.rdx),
         .udp_close => sysUdpClose(frame.rdi),
+        .tcp_connect => sysTcpConnect(frame.rdi, frame.rsi, frame.rdx),
+        .tcp_send => sysTcpSend(frame.rdi, frame.rsi, frame.rdx),
+        .tcp_recv => sysTcpRecv(frame.rdi, frame.rsi, frame.rdx, frame.r10),
+        .tcp_close => sysTcpClose(frame.rdi),
         .shm_map => sysShmMap(frame.rdi, frame.rsi),
         .handle_close => sysHandleClose(frame.rdi),
         .fb_acquire => sysFbAcquire(frame.rdi),
@@ -739,6 +747,62 @@ fn sysUdpRecv(sock: u64, buf: u64, len: u64) i64 {
 
 fn sysUdpClose(sock: u64) i64 {
     net.socketClose(@intCast(sock));
+    return 0;
+}
+
+const tcp = @import("../net/tcp.zig");
+
+fn tcpErrno(e: tcp.Error) i64 {
+    return switch (e) {
+        tcp.Error.NoSockets => EMFILE,
+        tcp.Error.NotConnected => -107, // ENOTCONN
+        tcp.Error.Refused => -111, // ECONNREFUSED
+        tcp.Error.Timeout => -110, // ETIMEDOUT
+        tcp.Error.TooLarge => EMSGSIZE,
+        tcp.Error.Reset => -104, // ECONNRESET
+    };
+}
+
+fn sysTcpConnect(addr: u64, port: u64, timeout_ms: u64) i64 {
+    if (!net.isUp()) return -19;
+    const ip = [4]u8{
+        @truncate(addr), @truncate(addr >> 8), @truncate(addr >> 16), @truncate(addr >> 24),
+    };
+    const idx = tcp.connect(ip, @truncate(port), @min(timeout_ms, 10_000)) catch |e| {
+        return tcpErrno(e);
+    };
+    return @intCast(idx);
+}
+
+fn sysTcpSend(sock: u64, buf: u64, len: u64) i64 {
+    if (len == 0) return 0;
+    if (len > 1400) return EMSGSIZE;
+
+    const pml4 = vmm.currentCr3();
+    var kbuf: [1400]u8 = undefined;
+    validate.copyFromUser(pml4, &kbuf, buf, @intCast(len)) catch return EFAULT;
+
+    const n = tcp.send(@intCast(sock), kbuf[0..@intCast(len)]) catch |e| return tcpErrno(e);
+    return @intCast(n);
+}
+
+fn sysTcpRecv(sock: u64, buf: u64, len: u64, timeout_ms: u64) i64 {
+    if (len == 0) return 0;
+
+    var kbuf: [2048]u8 = undefined;
+    const want = @min(len, kbuf.len);
+    const n = tcp.recv(@intCast(sock), kbuf[0..@intCast(want)], @min(timeout_ms, 10_000)) catch |e| {
+        return tcpErrno(e);
+    };
+    if (n == 0) return 0;
+
+    const pml4 = vmm.currentCr3();
+    validate.copyToUser(pml4, buf, kbuf[0..n], n) catch return EFAULT;
+    return @intCast(n);
+}
+
+fn sysTcpClose(sock: u64) i64 {
+    tcp.close(@intCast(sock));
     return 0;
 }
 

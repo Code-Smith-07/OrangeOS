@@ -131,6 +131,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "about", .path = "userland/apps/about/main.zig" },
         .{ .name = "ping", .path = "userland/bin/ping/main.zig" },
         .{ .name = "net", .path = "userland/bin/net/main.zig" },
+        .{ .name = "fetch", .path = "userland/bin/fetch/main.zig" },
     };
 
     for (programs) |prog| {

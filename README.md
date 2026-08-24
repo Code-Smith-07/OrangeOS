@@ -13,7 +13,7 @@
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS desktop](docs/screenshots/phase8d.png)
+![Orange OS desktop](docs/screenshots/phase8e.png)
 
 </div>
 
@@ -76,9 +76,9 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 8d complete.** Orange OS configures itself over DHCP and resolves
-hostnames. An e1000 driver, ARP, IPv4, ICMP, UDP, DHCP and DNS — all written
-from scratch. `net` resolves real names against a real resolver.
+**Phase 8e complete.** Orange OS fetches web pages. The full stack — e1000
+driver, ARP, IPv4, ICMP, UDP, DHCP, DNS and TCP — is written from scratch, and
+`fetch` retrieves a real page from a real server over a real handshake.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -94,7 +94,7 @@ from scratch. `net` resolves real names against a real resolver.
 | 7 | Graphics: PTY and terminal emulator | ✅ **Done** |
 | 7 | Graphics: widget toolkit and desktop shell | ✅ **Done** |
 | 8 | SMP: bring-up and cross-CPU scheduling | ✅ **Done** |
-| 8 | Networking: e1000, IPv4, ICMP, UDP, DHCP, DNS | ✅ **Done** |
+| 8 | Networking: e1000, IPv4, ICMP, UDP, DHCP, DNS, TCP | ✅ **Done** |
 | 8 | USB, audio | 🔨 In progress |
 | 9 | Real hardware | ⬜ Planned |
 

@@ -34,6 +34,7 @@ const ETHERTYPE_ARP: u16 = 0x0806;
 
 const PROTO_ICMP: u8 = 1;
 const PROTO_UDP: u8 = 17;
+const PROTO_TCP: u8 = 6;
 
 // ── Byte order helpers ──────────────────────────────────────────────────────
 
@@ -428,6 +429,19 @@ fn handleUdp(payload: []const u8, src_ip: Ipv4Addr) void {
     }
 }
 
+/// Send a raw IPv4 payload with the given protocol number. Used by TCP, which
+/// builds its own segments.
+pub fn sendRaw(dst_ip: Ipv4Addr, proto: u8, payload: []const u8) Error!void {
+    const via = if (sameSubnet(dst_ip)) dst_ip else gateway_ip;
+    const dst_mac = resolve(via, 1000) orelse return Error.NoRoute;
+
+    var frame: [1600]u8 = undefined;
+    if (payload.len + ETH_HEADER_LEN + 20 > frame.len) return Error.TooLarge;
+
+    const n = buildIpv4(&frame, dst_mac, dst_ip, proto, payload);
+    try e1000.send(frame[0..n]);
+}
+
 // ── Receive path ────────────────────────────────────────────────────────────
 
 var rx_buf: [2048]u8 = undefined;
@@ -456,6 +470,7 @@ fn handleIpv4(frame: []const u8) void {
     switch (ip[9]) {
         PROTO_ICMP => handleIcmp(payload, src_ip),
         PROTO_UDP => handleUdp(payload, src_ip),
+        PROTO_TCP => @import("tcp.zig").input(payload, src_ip),
         else => {},
     }
 }
