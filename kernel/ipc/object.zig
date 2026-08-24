@@ -9,6 +9,7 @@
 const std = @import("std");
 const heap = @import("../mm/heap.zig");
 const pmm = @import("../mm/pmm.zig");
+const pty_mod = @import("pty.zig");
 
 pub const Error = error{
     OutOfMemory,
@@ -30,6 +31,7 @@ pub const QUEUE_DEPTH = 16;
 pub const Kind = enum(u8) {
     port,
     shm,
+    pty,
 };
 
 /// Message header. Mirrors kernel/include/ipc_abi.h and pulp's Message.
@@ -115,6 +117,7 @@ pub const Object = struct {
     data: union {
         port: Port,
         shm: Shm,
+        pty: pty_mod.Pty,
     },
 };
 
@@ -191,6 +194,12 @@ pub fn createShm(name: []const u8, size: usize) Error!*Object {
         } },
     };
     if (name.len > 0) @memcpy(obj.data.shm.name[0..name.len], name);
+    return obj;
+}
+
+pub fn createPty() Error!*Object {
+    const obj = try allocObject();
+    obj.* = .{ .kind = .pty, .refs = 1, .data = .{ .pty = .{} } };
     return obj;
 }
 

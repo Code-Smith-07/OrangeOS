@@ -112,6 +112,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "greet", .path = "userland/bin/greet/main.zig" },
         .{ .name = "peel", .path = "userland/servers/peel/main.zig" },
         .{ .name = "clock", .path = "userland/bin/clock/main.zig" },
+        .{ .name = "squeeze", .path = "userland/apps/squeeze/main.zig" },
     };
 
     for (programs) |prog| {

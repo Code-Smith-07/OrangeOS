@@ -13,7 +13,7 @@
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS desktop](docs/screenshots/phase7b.png)
+![Orange OS desktop](docs/screenshots/phase7c.png)
 
 </div>
 
@@ -76,10 +76,10 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 7b complete.** Orange OS has a display protocol. Applications ask
-**Peel** for a window, render into a shared buffer, and commit damage — the
-compositor never sees a pixel through the kernel. Windows raise and drag while
-their clients keep drawing.
+**Phase 7c complete.** The shell runs in a window. **Squeeze** owns a
+pseudo-terminal, starts **Juice** on its slave end, and paints the output into
+a **Peel** window. Keystrokes travel from the PS/2 controller through the
+compositor and the PTY into the shell, and its output comes back the same way.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -92,7 +92,8 @@ their clients keep drawing.
 | 6 | Userland, IPC, and Seed | ✅ **Done** |
 | 7 | Graphics: input, compositor, windows | ✅ **Done** |
 | 7 | Graphics: client protocol | ✅ **Done** |
-| 7 | Graphics: toolkit, terminal, shell | 🔨 In progress |
+| 7 | Graphics: PTY and terminal emulator | ✅ **Done** |
+| 7 | Graphics: widget toolkit and desktop shell | 🔨 In progress |
 | 8 | SMP, networking, USB, audio | ⬜ Planned |
 | 9 | Real hardware | ⬜ Planned |
 

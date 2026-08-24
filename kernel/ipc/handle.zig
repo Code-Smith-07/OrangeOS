@@ -49,6 +49,12 @@ pub const Table = struct {
         return obj;
     }
 
+    pub fn getPty(self: *Table, handle: i64) Error!*object.Object {
+        const obj = try self.get(handle);
+        if (obj.kind != .pty) return Error.WrongType;
+        return obj;
+    }
+
     pub fn close(self: *Table, handle: i64) Error!void {
         if (handle < HANDLE_BASE) return Error.BadHandle;
         const i = handle - HANDLE_BASE;

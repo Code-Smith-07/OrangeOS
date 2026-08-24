@@ -15,6 +15,8 @@ const process = @import("../sched/process.zig");
 const pmm = @import("../mm/pmm.zig");
 const citrusfs = @import("../fs/citrusfs/citrusfs.zig");
 const ipc = @import("../ipc/ipc.zig");
+const pty_mod = @import("../ipc/pty.zig");
+const ipc_object = @import("../ipc/object.zig");
 const event = @import("../drivers/input/event.zig");
 const framebuffer = @import("../drivers/video/framebuffer.zig");
 const fbcon = @import("../drivers/video/fbcon.zig");
@@ -66,6 +68,10 @@ pub const Nr = enum(u64) {
     port_recv = 53,
     shm_create = 54,
     shm_open = 57,
+    pty_create = 80,
+    pty_read = 81,
+    pty_write = 82,
+    spawn_pty = 83,
     shm_map = 55,
     handle_close = 56,
     fb_acquire = 70,
@@ -113,6 +119,10 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .port_recv => sysPortRecv(frame.rdi, frame.rsi, frame.rdx, frame.r10),
         .shm_create => sysShmCreate(frame.rdi, frame.rsi, frame.rdx),
         .shm_open => sysShmOpen(frame.rdi, frame.rsi),
+        .pty_create => sysPtyCreate(),
+        .pty_read => sysPtyRead(frame.rdi, frame.rsi, frame.rdx),
+        .pty_write => sysPtyWrite(frame.rdi, frame.rsi, frame.rdx),
+        .spawn_pty => sysSpawnPty(frame.rdi, frame.rsi, frame.rdx),
         .shm_map => sysShmMap(frame.rdi, frame.rsi),
         .handle_close => sysHandleClose(frame.rdi),
         .fb_acquire => sysFbAcquire(frame.rdi),
@@ -139,6 +149,13 @@ fn sysWrite(fd: u64, buf: u64, len: u64) i64 {
 
     var kbuf: [4096]u8 = undefined;
     validate.copyFromUser(pml4, &kbuf, buf, @intCast(len)) catch return EFAULT;
+
+    // A task with a PTY writes into it rather than to the console. That is
+    // what puts a shell's output in a terminal window without the shell
+    // knowing anything about windows.
+    if (currentPty()) |obj| {
+        return @intCast(pty_mod.slaveWrite(&obj.data.pty, kbuf[0..@intCast(len)]));
+    }
 
     console.write(kbuf[0..@intCast(len)]);
     return @intCast(len);
@@ -184,6 +201,20 @@ fn sysRead(fd: u64, buf: u64, len: u64) i64 {
     if (fd == 0) {
         var kbuf: [256]u8 = undefined;
         const want = @min(len, kbuf.len);
+
+        // Bound to a PTY: block on that instead of the serial line.
+        if (currentPty()) |obj| {
+            io.sti();
+            defer io.cli();
+
+            var n: usize = 0;
+            while (n == 0) {
+                n = pty_mod.slaveRead(&obj.data.pty, kbuf[0..@intCast(want)]);
+                if (n == 0) sched.yield();
+            }
+            validate.copyToUser(pml4, buf, kbuf[0..n], n) catch return EFAULT;
+            return @intCast(n);
+        }
 
         // MSR_FMASK clears IF on syscall entry, so we arrive with interrupts
         // disabled. That is right for the fast path, but a blocking read has
@@ -525,6 +556,72 @@ fn sysInputRead(buf: u64, max: u64) i64 {
     const pml4 = vmm.currentCr3();
     validate.copyToUser(pml4, buf, src[0..bytes], bytes) catch return EFAULT;
     return @intCast(n);
+}
+
+// ── Pseudo-terminals ────────────────────────────────────────────────────────
+
+fn currentPty() ?*ipc_object.Object {
+    const t = sched.currentTask() orelse return null;
+    const p = t.pty orelse return null;
+    return @ptrCast(@alignCast(p));
+}
+
+fn sysPtyCreate() i64 {
+    const obj = ipc_object.createPty() catch |e| return ipcErrno(e);
+    const t = sched.currentTask() orelse return EIO;
+    return t.handles.insert(obj) catch |e| ipcErrno(e);
+}
+
+/// Master side: read what the shell has written.
+fn sysPtyRead(h: u64, buf: u64, len: u64) i64 {
+    if (len == 0) return 0;
+    const t = sched.currentTask() orelse return EIO;
+    const obj = t.handles.getPty(@bitCast(h)) catch |e| return ipcErrno(e);
+
+    var kbuf: [1024]u8 = undefined;
+    const want = @min(len, kbuf.len);
+    const n = pty_mod.masterRead(&obj.data.pty, kbuf[0..@intCast(want)]);
+    if (n == 0) return 0;
+
+    const pml4 = vmm.currentCr3();
+    validate.copyToUser(pml4, buf, kbuf[0..n], n) catch return EFAULT;
+    return @intCast(n);
+}
+
+/// Master side: supply input the shell will read from fd 0.
+fn sysPtyWrite(h: u64, buf: u64, len: u64) i64 {
+    if (len == 0) return 0;
+    const t = sched.currentTask() orelse return EIO;
+    const obj = t.handles.getPty(@bitCast(h)) catch |e| return ipcErrno(e);
+
+    var kbuf: [1024]u8 = undefined;
+    const want = @min(len, kbuf.len);
+    const pml4 = vmm.currentCr3();
+    validate.copyFromUser(pml4, &kbuf, buf, @intCast(want)) catch return EFAULT;
+
+    return @intCast(pty_mod.masterWrite(&obj.data.pty, kbuf[0..@intCast(want)]));
+}
+
+/// Spawn a program with its stdio bound to a PTY's slave end.
+fn sysSpawnPty(path_ptr: u64, path_len: u64, h: u64) i64 {
+    if (path_len == 0 or path_len > vfs.MAX_PATH) return ENAMETOOLONG;
+
+    const t = sched.currentTask() orelse return EIO;
+    const obj = t.handles.getPty(@bitCast(h)) catch |e| return ipcErrno(e);
+
+    const pml4 = vmm.currentCr3();
+    var path: [vfs.MAX_PATH]u8 = undefined;
+    validate.copyFromUser(pml4, &path, path_ptr, @intCast(path_len)) catch return EFAULT;
+
+    const tid = process.spawnPathWithPty(path[0..@intCast(path_len)], obj) catch |e| {
+        return switch (e) {
+            error.NotFound, error.NotMounted => ENOENT,
+            error.OutOfMemory => -12,
+            error.BadImage => ENOEXEC,
+            else => EIO,
+        };
+    };
+    return @intCast(tid);
 }
 
 fn sysGetpid() i64 {

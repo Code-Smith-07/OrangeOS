@@ -83,6 +83,11 @@ pub const Task = struct {
     entry: *const fn (?*anyopaque) void,
     arg: ?*anyopaque,
 
+    /// When set, fd 0/1/2 route to this PTY's slave end instead of the serial
+    /// console. Inherited by anything this task spawns, so a shell started in
+    /// a terminal keeps its children in the same terminal.
+    pty: ?*anyopaque = null,
+
     /// Capabilities this task holds. Empty at creation: a process starts with
     /// no authority and receives handles explicitly.
     handles: handle.Table = .{},

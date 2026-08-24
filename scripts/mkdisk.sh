@@ -26,10 +26,11 @@ printf 'NAME="Orange OS"\nVERSION="0.1.0"\nKERNEL="Zest"\n' > "$ROOTFS/etc/os-re
 cat > "$ROOTFS/etc/seed.conf" <<'CONF'
 # Orange OS service configuration
 # <name> <path> <policy>   policy: once | respawn | essential
-peel   /bin/peel   respawn
-greetd /bin/greetd respawn
-clock  /bin/clock  respawn
-juice  /bin/juice  essential
+peel    /bin/peel    essential
+greetd  /bin/greetd  respawn
+clock   /bin/clock   respawn
+squeeze /bin/squeeze respawn
+juice   /bin/juice   essential
 CONF
 
 if [ ! -f zig-out/bin/init ]; then
@@ -38,7 +39,7 @@ if [ ! -f zig-out/bin/init ]; then
 fi
 
 cp zig-out/bin/init "$ROOTFS/sbin/init"
-for prog in juice echo uname greetd greet peel clock; do
+for prog in juice echo uname greetd greet peel clock squeeze; do
     if [ -f "zig-out/bin/$prog" ]; then
         cp "zig-out/bin/$prog" "$ROOTFS/bin/$prog"
     fi

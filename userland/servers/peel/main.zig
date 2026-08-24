@@ -196,7 +196,10 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
     if (!w.visible) return;
     if (!Rect.overlaps(w.damageRect(), clip)) return;
 
-    // Shadow: offset down-right, darkening whatever is beneath.
+    // Shadow: offset down-right, darkening whatever is beneath. Only the
+    // fringe outside the window is visible, since the background fill below
+    // covers the rest - and shading is applied to freshly painted wallpaper
+    // each frame, so it does not accumulate.
     screen.shade(.{
         .x = w.rect.x + SHADOW,
         .y = w.rect.y + SHADOW,
@@ -253,6 +256,13 @@ fn paintPanel(clip: Rect) void {
 fn composite(area: Rect) void {
     const clip = Rect.intersect(area, .{ .x = 0, .y = 0, .w = screen.width, .h = screen.height });
     if (clip.isEmpty()) return;
+
+    // Everything drawn this frame is confined to the damage region. Window
+    // backgrounds and title bars are drawn unclipped by intent - they are
+    // whole-rectangle fills - so without this a small commit would blank an
+    // entire window and repaint only the damaged strip of its contents.
+    screen.setClip(clip);
+    defer screen.resetClip();
 
     paintWallpaper(clip);
     paintPanel(clip);
@@ -417,14 +427,33 @@ fn handleMouse(e: *const pulp.InputEvent) void {
 }
 
 fn handleKey(e: *const pulp.InputEvent) void {
-    if (!e.isPress()) return;
     // Tab cycles focus, so the compositor is demonstrable without a mouse.
-    if (e.code == 0x0F and window_count > 0) {
+    if (e.isPress() and e.code == 0x0F and window_count > 1) {
         const bottom = z_order[0];
         raise(bottom);
         var i: usize = 0;
         while (i < window_count) : (i += 1) addDamage(windows[i].damageRect());
+        return;
     }
+
+    // Everything else goes to the focused window - the top of the z-order.
+    // Peel does not interpret keys; it routes them.
+    if (window_count == 0) return;
+    const idx = z_order[window_count - 1];
+    const w = &windows[idx];
+    if (w.reply_port < 0) return;
+
+    const msg = proto.Input{
+        .window_id = w.id,
+        .kind = e.kind,
+        .code = e.code,
+        .value = e.value,
+        .reserved = 0,
+        .x = 0,
+        .y = 0,
+    };
+    const bytes: [*]const u8 = @ptrCast(&msg);
+    _ = pulp.portSend(w.reply_port, proto.Op.input, bytes[0..@sizeOf(proto.Input)]) catch {};
 }
 
 // ── Entry ───────────────────────────────────────────────────────────────────
@@ -486,6 +515,7 @@ export fn _start() callconv(.c) noreturn {
             composite(damage);
             clearDamage();
             frames += 1;
+
         }
 
         // Nothing to do until more input arrives. Sleeping rather than

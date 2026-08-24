@@ -60,26 +60,48 @@ pub const Surface = struct {
     /// Pixels per row, which may exceed width.
     stride: i32,
 
+    /// Every draw is clipped to this rectangle. The compositor sets it to the
+    /// damage region for the frame, so a partial repaint cannot touch pixels
+    /// outside the area it was asked to refresh.
+    ///
+    /// Without this, any unclipped fill - a window background, say - erases
+    /// the whole window while only the damaged sliver gets redrawn on top.
+    clip: Rect = .{ .x = 0, .y = 0, .w = 1 << 30, .h = 1 << 30 },
+
+    pub fn setClip(self: *Surface, r: Rect) void {
+        self.clip = r;
+    }
+
+    pub fn resetClip(self: *Surface) void {
+        self.clip = .{ .x = 0, .y = 0, .w = self.width, .h = self.height };
+    }
+
+    fn clipped(self: *const Surface, r: Rect) Rect {
+        const bounds = Rect{ .x = 0, .y = 0, .w = self.width, .h = self.height };
+        return Rect.intersect(Rect.intersect(r, bounds), self.clip);
+    }
+
     pub fn rgb(r: u8, g: u8, b: u8) Color {
         return (@as(u32, r) << 16) | (@as(u32, g) << 8) | @as(u32, b);
     }
 
     pub inline fn put(self: *const Surface, x: i32, y: i32, c: Color) void {
         if (x < 0 or y < 0 or x >= self.width or y >= self.height) return;
+        if (!self.clip.contains(x, y)) return;
         self.pixels[@intCast(y * self.stride + x)] = c;
     }
 
     pub fn fill(self: *const Surface, r: Rect, c: Color) void {
-        const clipped = Rect.intersect(r, .{ .x = 0, .y = 0, .w = self.width, .h = self.height });
-        if (clipped.isEmpty()) return;
+        const area = self.clipped(r);
+        if (area.isEmpty()) return;
 
-        var y = clipped.y;
-        while (y < clipped.bottom()) : (y += 1) {
+        var y = area.y;
+        while (y < area.bottom()) : (y += 1) {
             // Row-at-a-time: the inner loop is a straight run of stores, which
             // is what makes software compositing viable at this resolution.
             const row = @as(usize, @intCast(y * self.stride));
-            var x = clipped.x;
-            while (x < clipped.right()) : (x += 1) {
+            var x = area.x;
+            while (x < area.right()) : (x += 1) {
                 self.pixels[row + @as(usize, @intCast(x))] = c;
             }
         }
@@ -87,14 +109,14 @@ pub const Surface = struct {
 
     /// Vertical gradient, for the wallpaper.
     pub fn gradient(self: *const Surface, r: Rect, top: Color, bottom: Color) void {
-        const clipped = Rect.intersect(r, .{ .x = 0, .y = 0, .w = self.width, .h = self.height });
-        if (clipped.isEmpty() or r.h == 0) return;
+        const area = self.clipped(r);
+        if (area.isEmpty() or r.h == 0) return;
 
-        var y = clipped.y;
-        while (y < clipped.bottom()) : (y += 1) {
+        var y = area.y;
+        while (y < area.bottom()) : (y += 1) {
             const t = @as(u32, @intCast(y - r.y)) * 255 / @as(u32, @intCast(@max(r.h, 1)));
             const c = lerp(top, bottom, @intCast(t));
-            self.fill(.{ .x = clipped.x, .y = y, .w = clipped.w, .h = 1 }, c);
+            self.fill(.{ .x = area.x, .y = y, .w = area.w, .h = 1 }, c);
         }
     }
 
@@ -107,14 +129,14 @@ pub const Surface = struct {
 
     /// Darken a region — a cheap stand-in for a real blurred drop shadow.
     pub fn shade(self: *const Surface, r: Rect, amount: u8) void {
-        const clipped = Rect.intersect(r, .{ .x = 0, .y = 0, .w = self.width, .h = self.height });
-        if (clipped.isEmpty()) return;
+        const area = self.clipped(r);
+        if (area.isEmpty()) return;
 
-        var y = clipped.y;
-        while (y < clipped.bottom()) : (y += 1) {
+        var y = area.y;
+        while (y < area.bottom()) : (y += 1) {
             const row = @as(usize, @intCast(y * self.stride));
-            var x = clipped.x;
-            while (x < clipped.right()) : (x += 1) {
+            var x = area.x;
+            while (x < area.right()) : (x += 1) {
                 const i = row + @as(usize, @intCast(x));
                 self.pixels[i] = darken(self.pixels[i], amount);
             }

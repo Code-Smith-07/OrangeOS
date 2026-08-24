@@ -30,6 +30,10 @@ pub const NR = struct {
     pub const shm_map: u64 = 55;
     pub const handle_close: u64 = 56;
     pub const shm_open: u64 = 57;
+    pub const pty_create: u64 = 80;
+    pub const pty_read: u64 = 81;
+    pub const pty_write: u64 = 82;
+    pub const spawn_pty: u64 = 83;
     pub const fb_acquire: u64 = 70;
     pub const fb_map: u64 = 71;
     pub const input_read: u64 = 72;
@@ -358,6 +362,37 @@ pub fn inputRead(out: []InputEvent) usize {
     const r = syscall2(NR.input_read, @intFromPtr(out.ptr), out.len);
     if (r < 0) return 0;
     return @intCast(r);
+}
+
+// ── Pseudo-terminals ────────────────────────────────────────────────────────
+
+/// Create a PTY. Returns the master handle; the slave is bound to whatever
+/// spawnPty starts.
+pub fn ptyCreate() Error!i64 {
+    const r = syscall0(NR.pty_create);
+    if (r < 0) return errno(r);
+    return r;
+}
+
+/// Read what the program on the slave end has written. Non-blocking.
+pub fn ptyRead(h: i64, buf: []u8) usize {
+    const r = syscall3(NR.pty_read, @bitCast(h), @intFromPtr(buf.ptr), buf.len);
+    if (r < 0) return 0;
+    return @intCast(r);
+}
+
+/// Supply input the program on the slave end will read from stdin.
+pub fn ptyWrite(h: i64, bytes: []const u8) usize {
+    const r = syscall3(NR.pty_write, @bitCast(h), @intFromPtr(bytes.ptr), bytes.len);
+    if (r < 0) return 0;
+    return @intCast(r);
+}
+
+/// Start a program with its stdio bound to a PTY.
+pub fn spawnPty(path: []const u8, h: i64) Error!i64 {
+    const r = syscall3(NR.spawn_pty, @intFromPtr(path.ptr), path.len, @bitCast(h));
+    if (r < 0) return errno(r);
+    return r;
 }
 
 // ── Convenience output ──────────────────────────────────────────────────────
