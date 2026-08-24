@@ -21,6 +21,7 @@ const tsc = @import("../../time/tsc.zig");
 const time = @import("../../time/time.zig");
 const pci = @import("../pci/pci.zig");
 const ahci = @import("../../drivers/block/ahci.zig");
+const nvme = @import("../../drivers/block/nvme.zig");
 const block = @import("../../drivers/block/block.zig");
 const partition = @import("../../drivers/block/partition.zig");
 const vfs = @import("../../fs/vfs/vfs.zig");
@@ -148,12 +149,21 @@ pub fn init() !void {
 
     // Storage comes up after interrupts, because the driver times out against
     // the TSC and wants a running clock.
-    const disks = ahci.init() catch |e| blk: {
+    // NVMe first: on any machine built in the last several years it is the
+    // boot device, and AHCI is the legacy path rather than the other way round.
+    const nvme_disks = nvme.init() catch |e| blk: {
+        console.warn("NVMe init failed: {s}", .{@errorName(e)});
+        break :blk 0;
+    };
+
+    const sata_disks = ahci.init() catch |e| blk: {
         console.warn("AHCI init failed: {s}", .{@errorName(e)});
         break :blk 0;
     };
+
+    const disks = nvme_disks + sata_disks;
     if (disks == 0) {
-        console.warn("no SATA disks found", .{});
+        console.warn("no disks found", .{});
     } else {
         for (block.list()) |*d| {
             var cap: [32]u8 = undefined;

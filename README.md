@@ -13,7 +13,7 @@
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS desktop](docs/screenshots/phase9a.png)
+![Orange OS desktop](docs/screenshots/phase9b.png)
 
 </div>
 
@@ -76,10 +76,10 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 9a complete.** Orange OS boots under **UEFI** from a single disk image
-— the same image that would be written to a USB stick. Firmware loads the
-bootloader from the ESP, the kernel mounts its root partition off the same
-disk, and the whole system comes up: desktop, shell, networking and USB.
+**Phase 9b complete.** Orange OS boots under **UEFI from an NVMe disk** — the
+combination essentially every machine built since about 2018 actually uses.
+One image, written to a stick or a drive; firmware loads the bootloader from
+the ESP and the kernel mounts its root partition off the same device.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -100,6 +100,7 @@ disk, and the whole system comes up: desktop, shell, networking and USB.
 | 8 | USB: xHCI, control transfers, enumeration | ✅ **Done** |
 | 8 | USB: HID input | ✅ **Done** |
 | 9 | UEFI boot from a single USB image | ✅ **Done** |
+| 9 | NVMe storage | ✅ **Done** |
 | 9 | Booting physical hardware | 🔨 Next |
 
 See the [full roadmap](ARCHITECTURE.md#16-development-roadmap) for what each
