@@ -143,6 +143,7 @@ pub fn init() !void {
 
     // Other processors come up last: they need the page tables, the APIC and
     // a calibrated TSC, all of which exist by now.
+    smp.installPanicHalt();
     smp.init() catch |e| {
         console.warn("SMP bring-up failed: {s}", .{@errorName(e)});
     };

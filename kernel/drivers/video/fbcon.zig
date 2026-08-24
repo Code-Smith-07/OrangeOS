@@ -275,6 +275,22 @@ pub fn resumeOutput() void {
     suspended = false;
 }
 
+/// Take the screen back unconditionally and clear it.
+///
+/// For the panic path only. Once a compositor owns the framebuffer the kernel
+/// console stands down, which means a panic after boot would print to a serial
+/// port that most real machines do not have - a silent freeze, and the worst
+/// possible failure mode for hardware bring-up. A dead kernel has no reason to
+/// be polite about who owns the screen.
+pub fn reclaim() void {
+    if (fb == null) return;
+    suspended = false;
+    esc_state = .none;
+    color_fg = theme.fg;
+    color_bg = theme.bg;
+    clearScreen();
+}
+
 pub fn isReady() bool {
     return fb != null and !suspended;
 }

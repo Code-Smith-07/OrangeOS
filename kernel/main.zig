@@ -135,6 +135,9 @@ export fn kmain() callconv(.c) noreturn {
     _ = sched.spawn("net-test", netTest, null, .normal) catch {};
     _ = sched.spawn("audio-test", audioTest, null, .batch) catch {};
     _ = sched.spawn("usb-input", usbInputThread, null, .realtime) catch {};
+    if (build_options.late_fault) {
+        _ = sched.spawn("late-fault", lateFault, null, .batch) catch {};
+    }
     _ = sched.spawn("init", process.initThread, null, .normal) catch |e| {
         console.err("could not spawn init: {s}", .{@errorName(e)});
     };
@@ -153,6 +156,16 @@ export fn kmain() callconv(.c) noreturn {
     if (build_options.fault_test) faultTest();
 
     io.hang();
+}
+
+/// Fault on purpose once the compositor owns the screen, so the panic path's
+/// ability to take it back can be checked rather than assumed. Enabled with
+/// -Dlate-fault.
+fn lateFault(_: ?*anyopaque) void {
+    time.busySleepMs(16_000);
+    console.warn("late-fault: triggering a deliberate panic now", .{});
+    const bad: *allowzero volatile u64 = @ptrFromInt(0);
+    bad.* = 0xDEAD;
 }
 
 /// USB has no interrupt handler yet, so reports are collected by polling.

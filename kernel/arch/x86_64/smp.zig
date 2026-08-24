@@ -108,6 +108,45 @@ export fn apEntry(index: u64) callconv(.c) noreturn {
     sched.startAp();
 }
 
+/// Vector used to stop every other core when the kernel panics.
+pub const VECTOR_PANIC_HALT: u8 = 0xF0;
+
+/// Destination shorthand 0b11: every CPU except the one sending.
+const SHORTHAND_ALL_BUT_SELF: u32 = 3 << 18;
+
+var halt_handler_installed: bool = false;
+
+fn panicHaltHandler(frame: *@import("isr.zig").TrapFrame) void {
+    _ = frame;
+    // No EOI and no return. This core is done: the machine is about to print
+    // a panic and anything this core does from here would scribble over it.
+    io.cli();
+    while (true) asm volatile ("hlt");
+}
+
+pub fn installPanicHalt() void {
+    if (halt_handler_installed) return;
+    @import("isr.zig").register(VECTOR_PANIC_HALT, panicHaltHandler);
+    halt_handler_installed = true;
+}
+
+/// Stop every other processor.
+///
+/// Without this a panic on one core is a race against the others: the
+/// compositor keeps running on another CPU and paints over the panic output
+/// as it is being written. Which is exactly what happened the first time this
+/// was tested.
+pub fn haltOtherCpus() void {
+    if (online <= 1) return;
+
+    sendIpi(0, SHORTHAND_ALL_BUT_SELF | (1 << 14) | VECTOR_PANIC_HALT);
+
+    // Give them a moment to notice. Not waiting for acknowledgement: a core
+    // that is wedged badly enough not to take an interrupt is exactly the
+    // situation where blocking forever would hide the panic entirely.
+    tsc.busyWaitUs(50_000);
+}
+
 /// Held false until the boot processor has brought everyone up and entered the
 /// scheduler itself.
 var release_aps: bool = false;

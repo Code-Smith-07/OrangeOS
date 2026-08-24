@@ -13,8 +13,35 @@ const io = @import("arch/x86_64/io.zig");
 const fbcon = @import("drivers/video/fbcon.zig");
 const isr = @import("arch/x86_64/isr.zig");
 const backtrace = @import("debug/backtrace.zig");
+const smp = @import("arch/x86_64/smp.zig");
+
+/// Take the screen back and show the log that led here.
+///
+/// On a machine with no serial port - which is most laptops - this is the only
+/// way a failure after boot is visible at all. Without it the compositor keeps
+/// the framebuffer and the machine simply stops with a desktop on screen.
+fn reclaimScreen() void {
+    // Stop the other cores first. The compositor runs on one of them, and it
+    // will happily paint over a panic while it is being printed.
+    smp.haltOtherCpus();
+
+    fbcon.reclaim();
+
+    console.emergencyWrite(
+        \\
+        \\  Orange OS - kernel panic. Log leading up to the failure:
+        \\  ----------------------------------------------------------------
+        \\
+    );
+    console.replayLog();
+    console.emergencyWrite(
+        \\  ----------------------------------------------------------------
+        \\
+    );
+}
 
 fn banner(title: []const u8) void {
+    reclaimScreen();
     console.write("\n");
     if (fbcon.isReady()) fbcon.setColor(fbcon.theme.accent);
     console.write("================================================================\n");

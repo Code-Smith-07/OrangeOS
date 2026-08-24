@@ -82,6 +82,14 @@ pub fn build(b: *std.Build) void {
     ) orelse false;
     options.addOption(bool, "no_ps2", no_ps2);
 
+    const late_fault = b.option(
+        bool,
+        "late-fault",
+        "Fault deliberately once the desktop is up, to check that a panic " ++
+            "takes the screen back and shows the log",
+    ) orelse false;
+    options.addOption(bool, "late_fault", late_fault);
+
     // ── Userland ─────────────────────────────────────────────────────────────
     // Every program links against Pulp and nothing else: no libc, no runtime,
     // static ELF, same bare-metal target as the kernel.
