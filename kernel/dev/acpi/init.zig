@@ -29,6 +29,7 @@ const console = @import("../../console.zig");
 const serial = @import("../../drivers/char/serial.zig");
 const ps2 = @import("../../drivers/input/ps2.zig");
 const smp = @import("../../arch/x86_64/smp.zig");
+const net = @import("../../net/net.zig");
 const fmt = @import("../../lib/fmt.zig");
 
 /// Try each partition until one holds a CitrusFS. Trying rather than assuming
@@ -103,6 +104,10 @@ pub fn init() !void {
 
     ps2.init();
     console.ok("PS/2 keyboard and mouse online (IRQ 1, IRQ 12)", .{});
+
+    net.init() catch |e| {
+        console.warn("network init failed: {s}", .{@errorName(e)});
+    };
 
     // Other processors come up last: they need the page tables, the APIC and
     // a calibrated TSC, all of which exist by now.

@@ -17,6 +17,7 @@ const citrusfs = @import("../fs/citrusfs/citrusfs.zig");
 const ipc = @import("../ipc/ipc.zig");
 const pty_mod = @import("../ipc/pty.zig");
 const ipc_object = @import("../ipc/object.zig");
+const net = @import("../net/net.zig");
 const event = @import("../drivers/input/event.zig");
 const framebuffer = @import("../drivers/video/framebuffer.zig");
 const fbcon = @import("../drivers/video/fbcon.zig");
@@ -72,6 +73,8 @@ pub const Nr = enum(u64) {
     pty_read = 81,
     pty_write = 82,
     spawn_pty = 83,
+    net_ping = 90,
+    net_info = 91,
     shm_map = 55,
     handle_close = 56,
     fb_acquire = 70,
@@ -123,6 +126,8 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .pty_read => sysPtyRead(frame.rdi, frame.rsi, frame.rdx),
         .pty_write => sysPtyWrite(frame.rdi, frame.rsi, frame.rdx),
         .spawn_pty => sysSpawnPty(frame.rdi, frame.rsi, frame.rdx),
+        .net_ping => sysNetPing(frame.rdi, frame.rsi, frame.rdx),
+        .net_info => sysNetInfo(frame.rdi),
         .shm_map => sysShmMap(frame.rdi, frame.rsi),
         .handle_close => sysHandleClose(frame.rdi),
         .fb_acquire => sysFbAcquire(frame.rdi),
@@ -622,6 +627,56 @@ fn sysSpawnPty(path_ptr: u64, path_len: u64, h: u64) i64 {
         };
     };
     return @intCast(tid);
+}
+
+// ── Networking ──────────────────────────────────────────────────────────────
+
+/// Send one ICMP echo request and wait. Returns the round trip in
+/// microseconds, or -EHOSTUNREACH if nothing came back.
+///
+/// The address arrives packed into a u32 rather than through a pointer: it is
+/// four bytes, and a pointer would mean a validation round trip for no reason.
+fn sysNetPing(addr: u64, seq: u64, timeout_ms: u64) i64 {
+    if (!net.isUp()) return -19; // ENODEV
+
+    const ip = [4]u8{
+        @truncate(addr),
+        @truncate(addr >> 8),
+        @truncate(addr >> 16),
+        @truncate(addr >> 24),
+    };
+
+    const us = net.ping(ip, @truncate(seq), @min(timeout_ms, 5000)) orelse return -113;
+    return @intCast(us);
+}
+
+const NetInfo = extern struct {
+    ip: u32,
+    gateway: u32,
+    netmask: u32,
+    up: u32,
+    mac: [6]u8,
+    reserved: [2]u8,
+};
+
+fn packIp(a: [4]u8) u32 {
+    return @as(u32, a[0]) | (@as(u32, a[1]) << 8) | (@as(u32, a[2]) << 16) | (@as(u32, a[3]) << 24);
+}
+
+fn sysNetInfo(out: u64) i64 {
+    const mac = @import("../drivers/net/e1000.zig").macAddress();
+    const info = NetInfo{
+        .ip = packIp(net.local_ip),
+        .gateway = packIp(net.gateway_ip),
+        .netmask = packIp(net.netmask),
+        .up = if (net.isUp()) 1 else 0,
+        .mac = mac,
+        .reserved = .{ 0, 0 },
+    };
+    const pml4 = vmm.currentCr3();
+    const src: [*]const u8 = @ptrCast(&info);
+    validate.copyToUser(pml4, out, src[0..@sizeOf(NetInfo)], @sizeOf(NetInfo)) catch return EFAULT;
+    return 0;
 }
 
 fn sysGetpid() i64 {

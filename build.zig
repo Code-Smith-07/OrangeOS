@@ -129,6 +129,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "squeeze", .path = "userland/apps/squeeze/main.zig" },
         .{ .name = "grove", .path = "userland/apps/grove/main.zig" },
         .{ .name = "about", .path = "userland/apps/about/main.zig" },
+        .{ .name = "ping", .path = "userland/bin/ping/main.zig" },
     };
 
     for (programs) |prog| {
@@ -214,6 +215,8 @@ pub fn build(b: *std.Build) void {
         "-drive", "id=disk0,file=build/disk.img,format=raw,if=none",
         "-device", "ahci,id=ahci",
         "-device", "ide-hd,drive=disk0,bus=ahci.0",
+        "-netdev", "user,id=n0",
+        "-device", "e1000,netdev=n0",
         "-serial", "stdio",
         "-no-reboot", "-no-shutdown",
     };

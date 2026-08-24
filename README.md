@@ -13,7 +13,7 @@
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS desktop](docs/screenshots/phase8b.png)
+![Orange OS desktop](docs/screenshots/phase8c.png)
 
 </div>
 
@@ -76,10 +76,8 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 8b complete.** Orange OS schedules across every processor. All four
-cores run the same scheduler over shared run queues, each with its own current
-task, idle thread, GDT, TSS and timer — sharing the load roughly evenly while
-the full desktop runs.
+**Phase 8c complete.** Orange OS is on the network. An e1000 driver, ARP, IPv4
+and ICMP written from scratch — `ping` runs from the shell and gets replies.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -95,7 +93,8 @@ the full desktop runs.
 | 7 | Graphics: PTY and terminal emulator | ✅ **Done** |
 | 7 | Graphics: widget toolkit and desktop shell | ✅ **Done** |
 | 8 | SMP: bring-up and cross-CPU scheduling | ✅ **Done** |
-| 8 | Networking, USB, audio | 🔨 In progress |
+| 8 | Networking: e1000, ARP, IPv4, ICMP | ✅ **Done** |
+| 8 | USB, audio | 🔨 In progress |
 | 9 | Real hardware | ⬜ Planned |
 
 See the [full roadmap](ARCHITECTURE.md#16-development-roadmap) for what each
@@ -133,7 +132,8 @@ Then fetch the bootloader, create a disk, and build:
 | `zig build -Dblk-test run` | Run block device read/write tests |
 | `zig build -Dfs-test run` | Run filesystem tests |
 
-Add `-smp 4` to the QEMU command line to boot with four processors.
+Add `-smp 4` to the QEMU command line to boot with four processors, and
+`-netdev user,id=n0 -device e1000,netdev=n0` for networking.
 
 > **A note on timer accuracy under emulation.** The scheduler tick is
 > best-effort; timekeeping is not. QEMU's TCG emulation on a non-x86 host

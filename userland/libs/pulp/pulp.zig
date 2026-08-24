@@ -34,6 +34,8 @@ pub const NR = struct {
     pub const pty_read: u64 = 81;
     pub const pty_write: u64 = 82;
     pub const spawn_pty: u64 = 83;
+    pub const net_ping: u64 = 90;
+    pub const net_info: u64 = 91;
     pub const fb_acquire: u64 = 70;
     pub const fb_map: u64 = 71;
     pub const input_read: u64 = 72;
@@ -393,6 +395,43 @@ pub fn spawnPty(path: []const u8, h: i64) Error!i64 {
     const r = syscall3(NR.spawn_pty, @intFromPtr(path.ptr), path.len, @bitCast(h));
     if (r < 0) return errno(r);
     return r;
+}
+
+// ── Networking ──────────────────────────────────────────────────────────────
+
+pub const NetInfo = extern struct {
+    ip: u32,
+    gateway: u32,
+    netmask: u32,
+    up: u32,
+    mac: [6]u8,
+    reserved: [2]u8,
+};
+
+pub fn netInfo() Error!NetInfo {
+    var info: NetInfo = undefined;
+    const r = syscall1(NR.net_info, @intFromPtr(&info));
+    if (r < 0) return errno(r);
+    return info;
+}
+
+/// One ICMP echo request. Returns the round trip in microseconds, or null if
+/// nothing came back.
+pub fn ping(ip: [4]u8, seq: u16, timeout_ms: u64) ?u64 {
+    const packed_ip: u64 = @as(u64, ip[0]) | (@as(u64, ip[1]) << 8) |
+        (@as(u64, ip[2]) << 16) | (@as(u64, ip[3]) << 24);
+    const r = syscall3(NR.net_ping, packed_ip, seq, timeout_ms);
+    if (r < 0) return null;
+    return @intCast(r);
+}
+
+pub fn unpackIp(v: u32) [4]u8 {
+    return .{
+        @truncate(v),
+        @truncate(v >> 8),
+        @truncate(v >> 16),
+        @truncate(v >> 24),
+    };
 }
 
 // ── Convenience output ──────────────────────────────────────────────────────

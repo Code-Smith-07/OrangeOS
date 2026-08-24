@@ -19,6 +19,7 @@ const time = @import("time/time.zig");
 const tsc = @import("time/tsc.zig");
 const sched = @import("sched/sched.zig");
 const smp = @import("arch/x86_64/smp.zig");
+const net = @import("net/net.zig");
 const sched_test = @import("sched/test.zig");
 const process = @import("sched/process.zig");
 const blk_test = @import("drivers/block/test.zig");
@@ -129,6 +130,7 @@ export fn kmain() callconv(.c) noreturn {
     // A short-lived reporter, so the per-CPU switch counts are visible without
     // needing a userland tool for it.
     _ = sched.spawn("cpu-report", cpuReport, null, .batch) catch {};
+    _ = sched.spawn("net-test", netTest, null, .normal) catch {};
     _ = sched.spawn("init", process.initThread, null, .normal) catch |e| {
         console.err("could not spawn init: {s}", .{@errorName(e)});
     };
@@ -147,6 +149,44 @@ export fn kmain() callconv(.c) noreturn {
     if (build_options.fault_test) faultTest();
 
     io.hang();
+}
+
+/// Resolve the gateway and ping it. Proves the whole path: descriptor rings,
+/// ARP, IPv4 header construction, checksums, and the receive dispatch.
+fn netTest(_: ?*anyopaque) void {
+    if (!net.isUp()) return;
+    time.busySleepMs(3000);
+
+    const gw = net.gateway();
+    console.write("\n");
+    console.info("network self-test: pinging the gateway...", .{});
+
+    if (net.resolve(gw, 2000)) |mac| {
+        console.print("[ ok ] arp {d}.{d}.{d}.{d} is {x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}\n", .{
+            gw[0], gw[1], gw[2], gw[3], mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+        });
+    } else {
+        console.err("arp: no reply from the gateway", .{});
+        return;
+    }
+
+    var seq: u16 = 1;
+    var replies: u32 = 0;
+    while (seq <= 4) : (seq += 1) {
+        if (net.ping(gw, seq, 1000)) |us| {
+            replies += 1;
+            console.print("[ ok ] reply from {d}.{d}.{d}.{d}: seq={d} time={d}.{d} ms\n", .{
+                gw[0], gw[1], gw[2], gw[3], seq, us / 1000, (us % 1000) / 100,
+            });
+        } else {
+            console.warn("ping seq={d} timed out", .{seq});
+        }
+        time.busySleepMs(400);
+    }
+
+    console.print("[{s}] network: {d}/4 replies\n", .{
+        if (replies == 4) " ok " else "warn", replies,
+    });
 }
 
 /// Wait a while, then report how much work each core has done.
