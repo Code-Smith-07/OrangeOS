@@ -8,6 +8,9 @@ const NR_EXIT: u64 = 0;
 const NR_WRITE: u64 = 1;
 const NR_GETPID: u64 = 4;
 const NR_YIELD: u64 = 7;
+const NR_OPEN: u64 = 20;
+const NR_CLOSE: u64 = 21;
+const NR_READ: u64 = 22;
 const NR_UPTIME: u64 = 60;
 
 /// Argument registers are rdi, rsi, rdx, r10, r8, r9 — r10 rather than rcx,
@@ -67,6 +70,39 @@ fn writeNum(buf: []u8, value: u64) []const u8 {
     return buf[0..n];
 }
 
+fn syscall2(nr: u64, a0: u64, a1: u64) i64 {
+    return asm volatile ("syscall"
+        : [ret] "={rax}" (-> i64),
+        : [nr] "{rax}" (nr),
+          [a0] "{rdi}" (a0),
+          [a1] "{rsi}" (a1),
+        : "rcx", "r11", "memory"
+    );
+}
+
+/// The milestone this phase was built for: read a real file off a real disk
+/// from an unprivileged process.
+fn cat(path: []const u8) void {
+    _ = write("  $ cat ");
+    _ = write(path);
+    _ = write("\n");
+
+    const fd = syscall2(NR_OPEN, @intFromPtr(path.ptr), path.len);
+    if (fd < 0) {
+        _ = write("    open failed\n");
+        return;
+    }
+
+    var buf: [256]u8 = undefined;
+    while (true) {
+        const n = syscall3(NR_READ, @intCast(fd), @intFromPtr(&buf), buf.len);
+        if (n <= 0) break;
+        _ = write(buf[0..@intCast(n)]);
+    }
+
+    _ = syscall1(NR_CLOSE, @intCast(fd));
+}
+
 export fn _start() callconv(.c) noreturn {
     _ = write("\n");
     _ = write("  +--------------------------------------------+\n");
@@ -111,6 +147,11 @@ export fn _start() callconv(.c) noreturn {
     } else {
         _ = write("ACCEPTED - VALIDATION IS BROKEN\n");
     }
+
+    _ = write("\n");
+    cat("/etc/motd");
+    cat("/etc/os-release");
+    _ = write("\n");
 
     _ = write("  yielding to the scheduler...\n");
     _ = syscall0(NR_YIELD);

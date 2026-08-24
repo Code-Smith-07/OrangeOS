@@ -8,6 +8,7 @@ const console = @import("../console.zig");
 const sched = @import("../sched/sched.zig");
 const validate = @import("validate.zig");
 const vmm = @import("../mm/vmm.zig");
+const vfs = @import("../fs/vfs/vfs.zig");
 
 /// Register state at the syscall boundary. Field order is the reverse of the
 /// push order in syscallEntry.
@@ -35,11 +36,16 @@ pub const SyscallFrame = extern struct {
     ss: u64,
 };
 
+/// Numbers follow the ABI table in ARCHITECTURE.md section 11.2. Once a
+/// number is assigned it is stable and is never reused for anything else.
 pub const Nr = enum(u64) {
     exit = 0,
     write = 1,
     getpid = 4,
     yield = 7,
+    open = 20,
+    close = 21,
+    read = 22,
     uptime = 60,
     _,
 };
@@ -49,6 +55,11 @@ pub const Nr = enum(u64) {
 const EFAULT: i64 = -14;
 const ENOSYS: i64 = -38;
 const EBADF: i64 = -9;
+const ENOENT: i64 = -2;
+const EMFILE: i64 = -24;
+const EISDIR: i64 = -21;
+const ENAMETOOLONG: i64 = -36;
+const EIO: i64 = -5;
 
 var syscall_count: u64 = 0;
 
@@ -62,6 +73,9 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .exit => sysExit(@bitCast(frame.rdi)),
         .write => sysWrite(frame.rdi, frame.rsi, frame.rdx),
         .getpid => sysGetpid(),
+        .open => sysOpen(frame.rdi, frame.rsi),
+        .close => sysClose(frame.rdi),
+        .read => sysRead(frame.rdi, frame.rsi, frame.rdx),
         .yield => sysYield(),
         .uptime => sysUptime(),
         else => ENOSYS,
@@ -87,6 +101,52 @@ fn sysWrite(fd: u64, buf: u64, len: u64) i64 {
 
     console.write(kbuf[0..@intCast(len)]);
     return @intCast(len);
+}
+
+/// Map a VFS error onto the ABI's errno values.
+fn vfsErrno(e: vfs.Error) i64 {
+    return switch (e) {
+        vfs.Error.NotFound, vfs.Error.NotMounted => ENOENT,
+        vfs.Error.NotDirectory, vfs.Error.NotFile => EISDIR,
+        vfs.Error.NameTooLong => ENAMETOOLONG,
+        vfs.Error.TooManyOpen => EMFILE,
+        vfs.Error.BadFd => EBADF,
+        vfs.Error.IoError => EIO,
+    };
+}
+
+fn sysOpen(path_ptr: u64, path_len: u64) i64 {
+    if (path_len == 0 or path_len > vfs.MAX_PATH) return ENAMETOOLONG;
+
+    const pml4 = vmm.currentCr3();
+    var path: [vfs.MAX_PATH]u8 = undefined;
+    validate.copyFromUser(pml4, &path, path_ptr, @intCast(path_len)) catch return EFAULT;
+
+    const fd = vfs.open(path[0..@intCast(path_len)]) catch |e| return vfsErrno(e);
+    return fd;
+}
+
+fn sysClose(fd: u64) i64 {
+    vfs.close(@intCast(@as(i64, @bitCast(fd)))) catch |e| return vfsErrno(e);
+    return 0;
+}
+
+fn sysRead(fd: u64, buf: u64, len: u64) i64 {
+    if (len == 0) return 0;
+    if (len > 4096) return EFAULT;
+
+    const pml4 = vmm.currentCr3();
+
+    // Read into kernel memory first, then copy out. Reading straight into the
+    // user buffer would mean the filesystem writing through an unvalidated
+    // pointer.
+    var kbuf: [4096]u8 = undefined;
+    const n = vfs.read(@intCast(@as(i64, @bitCast(fd))), kbuf[0..@intCast(len)]) catch |e| {
+        return vfsErrno(e);
+    };
+
+    validate.copyToUser(pml4, buf, kbuf[0..n], n) catch return EFAULT;
+    return @intCast(n);
 }
 
 fn sysGetpid() i64 {

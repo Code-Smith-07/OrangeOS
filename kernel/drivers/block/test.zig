@@ -7,8 +7,9 @@ const std = @import("std");
 const block = @import("block.zig");
 const console = @import("../../console.zig");
 
-/// Far enough out that no filesystem structure is at risk.
-const SCRATCH_LBA: u64 = 2048;
+/// Inside the ESP, which nothing reads yet, and clear of the GPT structures
+/// at both ends of the disk.
+const SCRATCH_LBA: u64 = 4096;
 
 pub fn run() void {
     const devs = block.list();
@@ -25,24 +26,27 @@ pub fn run() void {
     var passed: usize = 0;
     var failed: usize = 0;
 
-    // Read LBA 0 and check the signature written into the image.
+    // These check real structures mkdisk writes, rather than hand-seeded
+    // markers: a test that only passes against a scratch image stops being a
+    // test the moment the disk becomes a real one.
+
+    // LBA 0 is the protective MBR, which ends in the 0x55AA boot signature.
     if (dev.read(0, 1, &buf)) |_| {
-        const ok = std.mem.startsWith(u8, &buf, "ORANGEOS-SECTOR-0");
-        report("read LBA 0 returns the expected signature", ok, &passed, &failed);
-        if (!ok) {
-            console.print("         got: {s}\n", .{buf[0..24]});
-        }
+        const ok = buf[510] == 0x55 and buf[511] == 0xAA;
+        report("LBA 0 carries the protective MBR boot signature", ok, &passed, &failed);
     } else |e| {
         console.print("  [FAIL] read LBA 0: {s}\n", .{@errorName(e)});
         failed += 1;
     }
 
-    // A non-zero LBA proves the address is actually reaching the device.
-    if (dev.read(100, 1, &buf)) |_| {
-        const ok = std.mem.startsWith(u8, &buf, "HELLO-FROM-LBA-100");
-        report("read LBA 100 returns its own distinct marker", ok, &passed, &failed);
+    // LBA 1 is the GPT header. Reading a different, non-zero LBA proves the
+    // address actually reaches the device rather than always returning sector 0.
+    if (dev.read(1, 1, &buf)) |_| {
+        const ok = std.mem.startsWith(u8, &buf, "EFI PART");
+        report("LBA 1 carries the GPT header signature", ok, &passed, &failed);
+        if (!ok) console.print("         got: {s}\n", .{buf[0..8]});
     } else |e| {
-        console.print("  [FAIL] read LBA 100: {s}\n", .{@errorName(e)});
+        console.print("  [FAIL] read LBA 1: {s}\n", .{@errorName(e)});
         failed += 1;
     }
 

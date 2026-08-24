@@ -23,9 +23,29 @@ const pci = @import("../pci/pci.zig");
 const ahci = @import("../../drivers/block/ahci.zig");
 const block = @import("../../drivers/block/block.zig");
 const partition = @import("../../drivers/block/partition.zig");
+const vfs = @import("../../fs/vfs/vfs.zig");
 const fmtlib = @import("../../lib/fmt.zig");
 const console = @import("../../console.zig");
 const fmt = @import("../../lib/fmt.zig");
+
+/// Try each partition until one holds a CitrusFS. Trying rather than assuming
+/// a fixed device means a disk laid out differently still boots.
+fn mountRoot() void {
+    for (block.list()) |*d| {
+        if (d.lba_offset == 0) continue; // whole disks, not partitions
+        vfs.mountRoot(d) catch continue;
+
+        const sb = vfs.superblock();
+        var cap: [32]u8 = undefined;
+        console.print("[ ok ] mounted CitrusFS on {s}: {s}, {d} inodes\n", .{
+            d.nameSlice(),
+            fmtlib.humanBytes(&cap, sb.total_blocks * sb.block_size),
+            sb.inode_count,
+        });
+        return;
+    }
+    console.warn("no CitrusFS partition found - / not mounted", .{});
+}
 
 pub fn init() !void {
     try acpi.init();
@@ -93,5 +113,7 @@ pub fn init() !void {
         }
         const parts = partition.scanAll();
         if (parts == 0) console.info("no GPT partitions found", .{});
+
+        mountRoot();
     }
 }

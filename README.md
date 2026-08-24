@@ -9,11 +9,11 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-orange.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/arch-x86__64-orange.svg)](ARCHITECTURE.md)
 [![Language](https://img.shields.io/badge/language-Zig-orange.svg)](https://ziglang.org)
-[![Status](https://img.shields.io/badge/status-Phase%205-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
+[![Status](https://img.shields.io/badge/status-Phase%206-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS booting](docs/screenshots/phase5.png)
+![Orange OS booting](docs/screenshots/phase5b.png)
 
 </div>
 
@@ -76,9 +76,9 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 5 in progress.** PCI enumeration, an AHCI (SATA) driver, the block
-layer, and GPT partitioning all work — the kernel reads and writes real disks.
-VFS and CitrusFS are next.
+**Phase 5 complete.** The kernel enumerates PCI, drives a SATA disk, parses
+GPT, mounts its own filesystem, and loads `/sbin/init` from disk. A user
+process in ring 3 can `cat /etc/motd`.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -87,9 +87,8 @@ VFS and CitrusFS are next.
 | 2 | Memory management | ✅ **Done** |
 | 3 | Interrupts and time | ✅ **Done** |
 | 4 | Processes and scheduling | ✅ **Done** |
-| 5 | Storage: PCI, AHCI, block, GPT | ✅ **Done** |
-| 5 | Storage: VFS and CitrusFS | 🔨 In progress |
-| 6 | Userland and IPC | ⬜ Planned |
+| 5 | Storage and filesystems | ✅ **Done** |
+| 6 | Userland and IPC | 🔨 In progress |
 | 7 | **Graphics — the desktop** | ⬜ Planned |
 | 8 | SMP, networking, USB, audio | ⬜ Planned |
 | 9 | Real hardware | ⬜ Planned |
@@ -127,6 +126,7 @@ Then fetch the bootloader, create a disk, and build:
 | `zig build trace` | Boot with interrupt and fault tracing |
 | `zig build -Dtick-hz=100` | Lower the scheduler tick rate |
 | `zig build -Dblk-test run` | Run block device read/write tests |
+| `zig build -Dfs-test run` | Run filesystem tests |
 
 > **A note on timer accuracy under emulation.** The scheduler tick is
 > best-effort; timekeeping is not. QEMU's TCG emulation on a non-x86 host

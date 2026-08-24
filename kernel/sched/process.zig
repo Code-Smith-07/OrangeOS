@@ -14,6 +14,8 @@ const percpu = @import("../arch/x86_64/percpu.zig");
 const task_mod = @import("task.zig");
 const sched = @import("sched.zig");
 const console = @import("../console.zig");
+const vfs = @import("../fs/vfs/vfs.zig");
+const heap = @import("../mm/heap.zig");
 
 pub const Error = error{OutOfMemory} || elf.Error;
 
@@ -58,12 +60,51 @@ pub fn execImage(image: []const u8) Error!noreturn {
     user.enter(loaded.entry, USER_STACK_TOP);
 }
 
-/// Thread body: runs the embedded init image.
+/// Thread body: load /sbin/init off the filesystem and run it.
+///
+/// The binary is no longer embedded in the kernel image. Keeping it there
+/// would have cost about a megabyte of kernel .rodata, and the whole point of
+/// having a filesystem is that programs live on it.
 pub fn initThread(arg: ?*anyopaque) void {
     _ = arg;
-    const image = @embedFile("init_elf");
-    execImage(image) catch |e| {
-        console.err("failed to start init: {s}", .{@errorName(e)});
+
+    const path = "/sbin/init";
+
+    if (!vfs.isMounted()) {
+        console.err("cannot start {s}: no filesystem mounted", .{path});
+        sched.exit(1);
+    }
+
+    const node = vfs.resolve(path) catch |e| {
+        console.err("cannot find {s}: {s}", .{ path, @errorName(e) });
+        sched.exit(1);
+    };
+
+    const size: usize = @intCast(node.size());
+    if (size == 0 or size > 8 * 1024 * 1024) {
+        console.err("{s} has an implausible size: {d} bytes", .{ path, size });
+        sched.exit(1);
+    }
+
+    const buf = heap.alloc(size) catch {
+        console.err("out of memory loading {s} ({d} bytes)", .{ path, size });
+        sched.exit(1);
+    };
+    defer heap.free(buf);
+
+    const n = vfs.readAt(&node, 0, buf[0..size]) catch |e| {
+        console.err("read {s} failed: {s}", .{ path, @errorName(e) });
+        sched.exit(1);
+    };
+    if (n != size) {
+        console.err("short read on {s}: {d} of {d} bytes", .{ path, n, size });
+        sched.exit(1);
+    }
+
+    console.print("[ ok ] loaded {s} from disk ({d} bytes)\n", .{ path, n });
+
+    execImage(buf[0..size]) catch |e| {
+        console.err("failed to exec {s}: {s}", .{ path, @errorName(e) });
         sched.exit(1);
     };
 }

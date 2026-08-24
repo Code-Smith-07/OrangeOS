@@ -60,6 +60,9 @@ pub fn build(b: *std.Build) void {
     const blk_test = b.option(bool, "blk-test", "Run block device tests at boot") orelse false;
     options.addOption(bool, "blk_test", blk_test);
 
+    const fs_test = b.option(bool, "fs-test", "Run filesystem tests at boot") orelse false;
+    options.addOption(bool, "fs_test", fs_test);
+
     // ── Userland: init, the first ring 3 program ─────────────────────────────
     // Built for the same bare-metal target: no libc, no runtime, static ELF.
     const init_mod = b.createModule(.{
@@ -99,9 +102,11 @@ pub fn build(b: *std.Build) void {
     });
 
     kernel_mod.addOptions("build_options", options);
-    // The init binary is embedded in the kernel image. Phase 5 loads programs
-    // from a filesystem instead.
-    kernel_mod.addAnonymousImport("init_elf", .{ .root_source_file = init_exe.getEmittedBin() });
+    // init is NOT embedded in the kernel. It is written to the CitrusFS image
+    // by scripts/mkdisk.sh and loaded from disk at boot, which is the whole
+    // point of having a filesystem. The artifact is installed so mkdisk can
+    // find it.
+    b.installArtifact(init_exe);
 
     const kernel = b.addExecutable(.{
         .name = "kernel.elf",
