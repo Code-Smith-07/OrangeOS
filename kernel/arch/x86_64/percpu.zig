@@ -32,6 +32,12 @@ pub const PerCpu = extern struct {
     /// Set by the timer tick, acted on where switching is safe.
     need_resched: bool = false,
     switches: u64 = 0,
+    /// Timer ticks sampled with this core's idle task running, and with
+    /// anything else running. The ratio is what 16.2 budgets as "idle CPU".
+    /// Sampled rather than accumulated: a counter incremented in the timer
+    /// interrupt cannot be fooled by a context switch landing mid-measurement.
+    idle_ticks: u64 = 0,
+    busy_ticks: u64 = 0,
 };
 
 pub const MAX_CPUS = 32;

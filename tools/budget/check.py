@@ -20,6 +20,7 @@ CHECKS = [
     ("image.total_bytes",   "Kernel image (linked)",    2 * MB,  "bytes", True),
     ("image.bss_bytes",     "  of which .bss",          512 * 1024, "bytes", True),
     ("mem.used_bytes",      "Desktop idle memory",      128 * MB, "bytes", True),
+    ("idle.busy_pct_x100",  "Desktop idle CPU",         100,      "pct_x100", True),
     ("boot.kernel_ready_ms", "Boot to scheduler",       2000,    "ms",    False),
     ("bench.ctx_switch_ns", "Context switch",           500,     "ns",    False),
     ("bench.syscall_ns",    "Syscall round-trip",       200,     "ns",    False),
@@ -28,6 +29,8 @@ CHECKS = [
 def human(v, unit):
     if unit == "bytes":
         return f"{v/MB:.2f} MB" if v >= MB else f"{v/1024:.1f} KB"
+    if unit == "pct_x100":
+        return f"{v/100:.2f}%"
     return f"{v} {unit}"
 
 def main(path):

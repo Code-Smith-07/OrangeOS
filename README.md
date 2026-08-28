@@ -31,8 +31,9 @@ Three things define the project:
 That gives total control over the hardware, the software, and the licensing.
 
 **Radically lightweight.** The full desktop targets **under 128 MB of RAM at
-idle** and a **sub-2-second boot**. These are CI-enforced budgets, not
-aspirations — a change that regresses them fails the build.
+idle**, **under 1% idle CPU**, and a **sub-2-second boot**. Size, memory, and
+idle CPU are enforced budgets; timing is measured and reported until there is
+a native-speed reference machine. The limits are tests, not aspirations.
 
 **Beautiful by design.** Compositing, animation, and typography are Phase 0
 concerns, not something bolted on later.
@@ -76,10 +77,12 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Phase 9b complete.** Orange OS boots under **UEFI from an NVMe disk** — the
-combination essentially every machine built since about 2018 actually uses.
-One image, written to a stick or a drive; firmware loads the bootloader from
-the ESP and the kernel mounts its root partition off the same device.
+**Phase 9e complete.** Orange OS now idles a full four-core desktop at
+**0.00–0.02% CPU** under the resource-budget harness. Scheduler sleeps, IPC,
+console and PTY reads, and the Peel compositor all block until real work
+arrives; a static desktop no longer keeps every core runnable. UEFI/NVMe boot,
+panic replay, and the complete size, memory, latency, and idle-CPU budget
+remain checked end to end.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
@@ -101,10 +104,32 @@ the ESP and the kernel mounts its root partition off the same device.
 | 8 | USB: HID input | ✅ **Done** |
 | 9 | UEFI boot from a single USB image | ✅ **Done** |
 | 9 | NVMe storage | ✅ **Done** |
+| 9 | Panic replay after compositor takeover | ✅ **Done** |
+| 9 | Enforced resource-budget harness | ✅ **Done** |
+| 9 | Blocking waits and <1% desktop idle CPU | ✅ **Done** |
 | 9 | Booting physical hardware | 🔨 Next |
 
 See the [full roadmap](ARCHITECTURE.md#16-development-roadmap) for what each
 phase contains and honest time estimates.
+
+### Measured resource budget
+
+Measured by `./scripts/budget.sh` on QEMU q35 with 512 MiB, four processors,
+UEFI, and an NVMe root disk:
+
+| Metric | Limit | Measured | Result |
+|--------|------:|---------:|--------|
+| Kernel image | < 2 MB | **0.80 MB** | Pass |
+| `.bss` | < 512 KB | **171 KB** | Pass |
+| Full desktop idle memory | < 128 MB | **22.2 MB** | Pass |
+| Full desktop idle CPU | < 1% | **0.00–0.02%** | Pass |
+| Context switch | < 500 ns | **17–60 ns** | Pass † |
+| Syscall round-trip | < 200 ns | **136–157 ns** | Pass † |
+| Boot to scheduler | < 2 s | **3.5–4.3 s** | Over † |
+
+† Development runs QEMU's TCG x86_64 emulation on Apple Silicon. Timing is
+reported rather than failed until it can be measured on native hardware; the
+size, memory, and idle-CPU limits are hard failures today.
 
 ---
 

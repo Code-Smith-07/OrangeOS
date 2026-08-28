@@ -174,8 +174,8 @@ export fn kmain() callconv(.c) noreturn {
 /// and the resulting numbers would be flattering and meaningless. The budget
 /// that matters is a full desktop sitting idle.
 fn budgetThread(_: ?*anyopaque) void {
-    time.busySleepMs(8_000);
-    budget.reportAll();
+    sched.sleepMs(8_000);
+    budget.reportAll(smp.cpusOnline());
 
     // The syscall figure has to come from ring 3 to be worth anything, so the
     // last measurement is taken by a userland program rather than here.
@@ -185,7 +185,7 @@ fn budgetThread(_: ?*anyopaque) void {
 }
 
 fn lateFault(_: ?*anyopaque) void {
-    time.busySleepMs(16_000);
+    sched.sleepMs(16_000);
     console.warn("late-fault: triggering a deliberate panic now", .{});
     const bad: *allowzero volatile u64 = @ptrFromInt(0);
     bad.* = 0xDEAD;
@@ -198,7 +198,7 @@ fn usbInputThread(_: ?*anyopaque) void {
     console.ok("usb: HID input polling started", .{});
     while (true) {
         xhci.pollInput();
-        time.busySleepMs(1);
+        sched.sleepMs(1);
     }
 }
 
@@ -206,7 +206,7 @@ fn usbInputThread(_: ?*anyopaque) void {
 /// buffer. Position moving is the only proof available without ears.
 fn audioTest(_: ?*anyopaque) void {
     if (!hda.isPresent()) return;
-    time.busySleepMs(6000);
+    sched.sleepMs(6000);
 
     console.write("\n");
     console.info("audio self-test: playing 440 Hz...", .{});
@@ -214,9 +214,9 @@ fn audioTest(_: ?*anyopaque) void {
     const before = hda.position();
     hda.playTone(440, 0);
 
-    time.busySleepMs(1500);
+    sched.sleepMs(1500);
     const mid = hda.position();
-    time.busySleepMs(1500);
+    sched.sleepMs(1500);
     const after = hda.position();
 
     hda.stop();
@@ -233,7 +233,7 @@ fn audioTest(_: ?*anyopaque) void {
 /// ARP, IPv4 header construction, checksums, and the receive dispatch.
 fn netTest(_: ?*anyopaque) void {
     if (!net.isUp()) return;
-    time.busySleepMs(3000);
+    sched.sleepMs(3000);
 
     const gw = net.gateway();
     console.write("\n");
@@ -259,7 +259,7 @@ fn netTest(_: ?*anyopaque) void {
         } else {
             console.warn("ping seq={d} timed out", .{seq});
         }
-        time.busySleepMs(400);
+        sched.sleepMs(400);
     }
 
     console.print("[{s}] network: {d}/4 replies\n", .{
@@ -269,7 +269,7 @@ fn netTest(_: ?*anyopaque) void {
 
 /// Wait a while, then report how much work each core has done.
 fn cpuReport(_: ?*anyopaque) void {
-    time.busySleepMs(12_000);
+    sched.sleepMs(12_000);
     sched.reportCpus(smp.cpusOnline());
 }
 
@@ -300,8 +300,10 @@ fn heartbeat() void {
     }
 
     // Independent check: does one TSC-measured second really take one second?
+    // Now routed through the sleep queue, so this doubles as a check that a
+    // blocked thread actually gets woken on time rather than late or never.
     const t0 = time.monotonicNs();
-    time.busySleepMs(1000);
+    sched.sleepMs(1000);
     const dt_ms = (time.monotonicNs() - t0) / 1_000_000;
     console.print("[ ok ] 1000 ms sleep measured {d} ms\n", .{dt_ms});
 

@@ -316,7 +316,12 @@ export fn _start() callconv(.c) noreturn {
             did_work = true;
         }
 
-        paint();
+        // Painting is not a clock. The old unconditional call marked the
+        // cursor row dirty on every 16 ms poll and sent a commit even when the
+        // terminal was completely unchanged. Peel then did real compositing
+        // work for false damage. Repaint only after output or input changed
+        // terminal state; the next shell echo moves the cursor as usual.
+        if (did_work) paint();
 
         // Idle politely when neither side has anything to say.
         if (!did_work) pulp.sleepMs(16);

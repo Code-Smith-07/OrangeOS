@@ -6,9 +6,9 @@
 #
 # Two classes of check, deliberately separated:
 #
-#   HARD    Size and memory figures. These are properties of the build and of
-#           the running system, identical on any host, so a regression is a
-#           real regression and fails the script.
+#   HARD    Size, memory, and idle-CPU figures. These describe what the build
+#           consumes rather than how quickly the host can emulate it, so a
+#           regression is real and fails the script.
 #
 #   TIMING  Boot time and the two latency benchmarks. Development here happens
 #           under QEMU's TCG interpreter on an arm64 Mac, emulating x86_64 -

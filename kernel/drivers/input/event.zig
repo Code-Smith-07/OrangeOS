@@ -4,8 +4,8 @@
 //! syscall. One queue for now — Peel is the only consumer and owns the screen.
 //! Per-device queues arrive when there is a device manager to hand them out.
 
-const std = @import("std");
-const io = @import("../../arch/x86_64/io.zig");
+const sched = @import("../../sched/sched.zig");
+const spinlock = @import("../../sync/spinlock.zig");
 
 pub const Kind = enum(u8) {
     key = 1,
@@ -44,14 +44,24 @@ const CAPACITY = 256;
 var queue: [CAPACITY]Event = undefined;
 var head: usize = 0;
 var tail: usize = 0;
+var lock: spinlock.SpinLock = .{};
 
 fn push(e: Event) void {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+
     const next = (head + 1) % CAPACITY;
     // Full: drop the oldest. For input, the newest state is what matters —
     // a stale mouse delta is worse than a missing one.
     if (next == tail) tail = (tail + 1) % CAPACITY;
     queue[head] = e;
     head = next;
+}
+
+/// Wait channel for "input is available". The compositor blocks here rather
+/// than polling; a keystroke or mouse move wakes it directly.
+pub fn waitChannel() usize {
+    return @intFromPtr(&queue);
 }
 
 pub fn pushKey(k: KeyEvent) void {
@@ -62,6 +72,7 @@ pub fn pushKey(k: KeyEvent) void {
         .dx = 0,
         .dy = 0,
     });
+    sched.wakeChannel(waitChannel());
 }
 
 pub fn pushMouse(m: MouseEvent) void {
@@ -74,13 +85,13 @@ pub fn pushMouse(m: MouseEvent) void {
         .dx = m.dx,
         .dy = m.dy,
     });
+    sched.wakeChannel(waitChannel());
 }
 
 /// Drain up to `out.len` events. Returns how many were taken.
 pub fn drain(out: []Event) usize {
-    const was = interruptsEnabled();
-    io.cli();
-    defer if (was) io.sti();
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
 
     var n: usize = 0;
     while (n < out.len and tail != head) {
@@ -92,15 +103,9 @@ pub fn drain(out: []Event) usize {
 }
 
 pub fn pending() usize {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+
     if (head >= tail) return head - tail;
     return CAPACITY - tail + head;
-}
-
-fn interruptsEnabled() bool {
-    const flags = asm volatile (
-        \\ pushfq
-        \\ popq %[out]
-        : [out] "=r" (-> u64),
-    );
-    return flags & (1 << 9) != 0;
 }

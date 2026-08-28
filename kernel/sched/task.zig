@@ -83,6 +83,20 @@ pub const Task = struct {
     entry: *const fn (?*anyopaque) void,
     arg: ?*anyopaque,
 
+    /// Deadline for a sleeping thread, in monotonic nanoseconds, and the link
+    /// through the scheduler's sleeper list. Both are meaningless unless the
+    /// thread's state is `.blocked` because it called sleepMs.
+    wake_at_ns: u64 = 0,
+    sleep_next: ?*Task = null,
+
+    /// Wait-queue membership. `wait_channel` is an arbitrary address that
+    /// identifies what the thread is waiting for - a port, a PTY - and
+    /// `on_wait_list` says whether it is currently linked, which is what makes
+    /// the two-phase wait race-free.
+    wait_channel: usize = 0,
+    wait_next: ?*Task = null,
+    on_wait_list: bool = false,
+
     /// When set, fd 0/1/2 route to this PTY's slave end instead of the serial
     /// console. Inherited by anything this task spawns, so a shell started in
     /// a terminal keeps its children in the same terminal.

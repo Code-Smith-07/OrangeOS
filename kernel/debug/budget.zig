@@ -147,9 +147,65 @@ pub fn benchContextSwitch() void {
     emit("bench.ctx_switch_samples", switches);
 }
 
+/// Fraction of a window each core spent idle, in hundredths of a percent.
+///
+/// 16.2 budgets idle CPU with a desktop on screen at under 1 %. Taken as a
+/// difference across a window rather than as a lifetime average, because a
+/// lifetime average is dominated by boot - when the machine is legitimately
+/// busy - and would flatter any amount of steady-state spinning.
+var task_before: [64]u64 = @splat(0);
+
+pub fn benchIdleCpu(cpu_count: usize, window_ms: u64) void {
+    var tb: usize = 0;
+    while (tb < sched.taskSlotCount() and tb < task_before.len) : (tb += 1) {
+        task_before[tb] = if (sched.taskAt(tb)) |t| t.ticks_used else 0;
+    }
+
+    var before: [percpu.MAX_CPUS]struct { idle: u64, busy: u64 } = undefined;
+    var i: usize = 0;
+    while (i < cpu_count and i < before.len) : (i += 1) {
+        const s = sched.cpuIdleSamples(i);
+        before[i] = .{ .idle = s.idle, .busy = s.busy };
+    }
+
+    // Must block, not busy-wait: a measuring thread that holds a core makes
+    // that core read as busy and understates how idle the machine really is.
+    sched.sleepMs(window_ms);
+
+    var tot_idle: u64 = 0;
+    var tot_busy: u64 = 0;
+    i = 0;
+    while (i < cpu_count and i < before.len) : (i += 1) {
+        const s = sched.cpuIdleSamples(i);
+        const d_idle = s.idle - before[i].idle;
+        const d_busy = s.busy - before[i].busy;
+        tot_idle += d_idle;
+        tot_busy += d_busy;
+
+        const total = d_idle + d_busy;
+        const busy_pct_x100: u64 = if (total == 0) 0 else (d_busy * 10_000) / total;
+        console.print("[budget] cpu{d}.busy_pct_x100 {d} (idle_ticks={d} busy_ticks={d})\n", .{ i, busy_pct_x100, d_idle, d_busy });
+    }
+
+    const total = tot_idle + tot_busy;
+    const busy_x100: u64 = if (total == 0) 0 else (tot_busy * 10_000) / total;
+    emit("idle.busy_pct_x100", busy_x100);
+    emit("idle.samples", total);
+
+    // Attribute the busy time. A percentage on its own says the machine is
+    // awake; this says who woke it.
+    var n: usize = 0;
+    while (n < sched.taskSlotCount() and n < task_before.len) : (n += 1) {
+        const t = sched.taskAt(n) orelse continue;
+        const used = t.ticks_used - task_before[n];
+        if (used == 0) continue;
+        console.print("[budget] task.{s} {d}\n", .{ t.nameSlice(), used });
+    }
+}
+
 /// Print everything. Called from a kernel thread once the desktop is up, so
 /// the memory figures describe a running system rather than a half-booted one.
-pub fn reportAll() void {
+pub fn reportAll(cpu_count: usize) void {
     const tid: u32 = if (sched.currentTask()) |t| t.tid else 0;
     console.print("\n[budget] reporter cpu={d} tid={d}\n", .{ percpu.this().cpu_index, tid });
     reportImage();
@@ -159,5 +215,6 @@ pub fn reportAll() void {
     // Memory again: the benchmark itself allocates nothing, so a difference
     // here would mean something else moved while we were measuring.
     emit("mem.used_bytes_after_bench", pmm.stats().used_pages * pmm.PAGE_SIZE);
+    benchIdleCpu(cpu_count, 10000);
     console.write("[budget] ---- end ----\n");
 }

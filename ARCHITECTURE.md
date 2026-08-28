@@ -1856,21 +1856,22 @@ limits below. Measured on QEMU q35, 512 MiB, `-smp 4`, UEFI, root on NVMe.
 
 | Metric | Limit | Measured | Class | Emitted by |
 |--------|-------|----------|-------|------------|
-| Kernel image (linked) | < 2 MB | **0.79 MB** | hard | `budget.reportImage` |
-| — of which `.bss` | < 512 KB | **170 KB** | hard | `budget.reportImage` |
+| Kernel image (linked) | < 2 MB | **0.80 MB** | hard | `budget.reportImage` |
+| — of which `.bss` | < 512 KB | **171 KB** | hard | `budget.reportImage` |
 | Full desktop idle RSS | < 128 MB | **22.2 MB** | hard | `budget.reportMemory` |
-| Boot to scheduler | < 2 s | 4.2–4.6 s † | timing | `budget.reportBoot` |
-| Context switch | < 500 ns | **18 ns** | timing † | `budget.benchContextSwitch` |
-| Syscall round-trip | < 200 ns | **166–240 ns** † | timing | `userland/bin/bench` |
-| Idle CPU (desktop shown) | < 1 % | *not yet measured* | — | — |
+| Boot to scheduler | < 2 s | 3.5–4.3 s † | timing | `budget.reportBoot` |
+| Context switch | < 500 ns | **17–60 ns** | timing † | `budget.benchContextSwitch` |
+| Syscall round-trip | < 200 ns | **136–157 ns** † | timing | `userland/bin/bench` |
+| Idle CPU (desktop shown) | < 1 % | **0.00–0.02 %** | hard | `budget.benchIdleCpu` |
 
 † Development runs QEMU's TCG interpreter emulating x86_64 on an arm64 Mac,
-which is nothing like the hardware these limits describe. Size and memory
-figures are properties of the build and are identical everywhere, so they are
-**hard**: exceeding one fails `budget.sh` with a non-zero exit. Timing figures
-are reported and compared but do not fail the script, because a check that is
-red on every run is a check everyone learns to ignore. They become hard once
-there is a native-speed reference machine to run them on.
+which is nothing like the hardware these limits describe. Size, memory, and
+idle-CPU figures describe what the build consumes rather than how quickly the
+host can emulate it, so they are **hard**: exceeding one fails `budget.sh` with
+a non-zero exit. Latency and boot-time figures are reported and compared but do
+not fail the script, because a check that is red every run is one everyone
+learns to ignore. They become hard once there is a native-speed reference
+machine to run them on.
 
 > A change that regresses a hard limit is a **failed build**, not a
 > discussion. This is the entire product thesis — it has to be defended

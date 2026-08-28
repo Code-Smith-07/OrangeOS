@@ -10,6 +10,7 @@ const std = @import("std");
 const heap = @import("../mm/heap.zig");
 const pmm = @import("../mm/pmm.zig");
 const pty_mod = @import("pty.zig");
+const spinlock = @import("../sync/spinlock.zig");
 
 pub const Error = error{
     OutOfMemory,
@@ -62,6 +63,7 @@ pub const Port = struct {
     head: usize = 0,
     tail: usize = 0,
     count: usize = 0,
+    lock: spinlock.SpinLock = .{},
 
     /// Sequence number stamped on each message, so a reply can be matched.
     next_seq: u64 = 1,
@@ -70,18 +72,28 @@ pub const Port = struct {
         return self.name[0..self.name_len];
     }
 
-    pub fn isEmpty(self: *const Port) bool {
+    pub fn isEmpty(self: *Port) bool {
+        const state = spinlock.acquireIrqSave(&self.lock);
+        defer spinlock.releaseIrqRestore(&self.lock, state);
         return self.count == 0;
     }
 
     pub fn push(self: *Port, msg: *Message) Error!void {
+        const state = spinlock.acquireIrqSave(&self.lock);
+        defer spinlock.releaseIrqRestore(&self.lock, state);
+
         if (self.count == QUEUE_DEPTH) return Error.QueueFull;
+        msg.header.seq = self.next_seq;
+        self.next_seq += 1;
         self.queue[self.tail] = msg;
         self.tail = (self.tail + 1) % QUEUE_DEPTH;
         self.count += 1;
     }
 
     pub fn pop(self: *Port) ?*Message {
+        const state = spinlock.acquireIrqSave(&self.lock);
+        defer spinlock.releaseIrqRestore(&self.lock, state);
+
         if (self.count == 0) return null;
         const m = self.queue[self.head];
         self.head = (self.head + 1) % QUEUE_DEPTH;

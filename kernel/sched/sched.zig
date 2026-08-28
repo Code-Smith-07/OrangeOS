@@ -114,6 +114,18 @@ fn registerTask(t: *Task) void {
     all_count += 1;
 }
 
+/// Iterate every task ever registered. Used by the budget reporter to
+/// attribute CPU time: knowing the machine is busy is useless without knowing
+/// which thread is making it busy.
+pub fn taskSlotCount() usize {
+    return all_count;
+}
+
+pub fn taskAt(i: usize) ?*Task {
+    if (i >= all_count) return null;
+    return all_tasks[i];
+}
+
 pub fn findByTid(tid: u32) ?*Task {
     var i: usize = 0;
     while (i < all_count) : (i += 1) {
@@ -271,6 +283,9 @@ pub fn tick() void {
     const t = currentOf(c) orelse return;
     t.ticks_used += 1;
 
+    // Sample what this core was doing when the tick landed.
+    if (idleOf(c) == t) c.idle_ticks += 1 else c.busy_ticks += 1;
+
     // Catch a kernel stack overrun at the first tick after it happens, while
     // the cause is still on the stack, rather than letting it surface later as
     // a jump through a corrupted pointer.
@@ -283,6 +298,16 @@ pub fn tick() void {
     }
 
     if (t.quantum_left > 0) t.quantum_left -= 1;
+
+    // Wake anything whose sleep deadline has passed. One core does this, the
+    // same as the boost below: four cores each walking the list every tick
+    // would be three times the lock traffic for the same result.
+    if (percpu.cpuIndex() == 0 and sleepers != null) {
+        const now_ns = time.monotonicNs();
+        const state = spinlock.acquireIrqSave(&lock);
+        wakeExpired(now_ns);
+        spinlock.releaseIrqRestore(&lock, state);
+    }
 
     // Anti-starvation: periodically lift everything back to interactive.
     // Only one core does this, or four cores would each boost every second.
@@ -420,12 +445,270 @@ pub fn reportCpus(cpu_count: usize) void {
     console.write("\n");
 }
 
+/// Idle and busy tick samples for one core.
+pub fn cpuIdleSamples(index: usize) struct { idle: u64, busy: u64 } {
+    const b = percpu.block(index);
+    return .{ .idle = b.idle_ticks, .busy = b.busy_ticks };
+}
+
 pub fn switchCount() u64 {
     return total_switches;
 }
 
 pub fn isStarted() bool {
     return started;
+}
+
+/// Threads waiting on a deadline. Intrusive, singly linked through
+/// Task.sleep_next, guarded by `lock`.
+var sleepers: ?*Task = null;
+
+/// Sleep for `ms`, off the run queue entirely.
+///
+/// The kernel had no such thing until now: sysSleepMs spun on yield() until
+/// the deadline passed, which keeps the thread permanently runnable. With five
+/// userland processes doing that - the compositor at 125 Hz, the terminal at
+/// 62 Hz, and three more - every core always had work, the idle task never ran
+/// once in a three-second window, and the machine burned 100 % of four cores
+/// showing a static desktop. For something meant to run on a laptop that is
+/// the whole product thesis inverted: a spinning sleep is a flat battery.
+pub fn sleepMs(ms: u64) void {
+    if (!started or ms == 0) {
+        if (ms != 0) time.busySleepMs(ms);
+        return;
+    }
+
+    const deadline = time.monotonicNs() + ms * 1_000_000;
+
+    const was = spinlock.interruptsEnabled();
+    io.cli();
+    lock.acquire();
+
+    const c = cpu();
+    const prev = currentOf(c) orelse {
+        lock.release();
+        if (was) io.sti();
+        return;
+    };
+
+    prev.wake_at_ns = deadline;
+    prev.sleep_next = sleepers;
+    sleepers = prev;
+    prev.state = .blocked;
+
+    const next = pickNext(c);
+    switchTo(c, next);
+
+    lock.release();
+    if (was) io.sti();
+}
+
+/// Move any sleeper whose deadline has passed back onto a run queue.
+/// Caller must hold `lock`.
+fn wakeExpired(now_ns: u64) void {
+    var cur = sleepers;
+    var prev_link: ?*Task = null;
+
+    while (cur) |t| {
+        const next = t.sleep_next;
+        if (t.wake_at_ns <= now_ns) {
+            if (prev_link) |p| p.sleep_next = next else sleepers = next;
+            t.sleep_next = null;
+            t.wake_at_ns = 0;
+            // A timed wait that expired is still linked as a waiter.
+            if (t.on_wait_list) unlinkWaiter(t);
+            if (t.state == .blocked) {
+                t.state = .ready;
+                queues[@intFromEnum(t.priority)].push(t);
+            }
+        } else {
+            prev_link = t;
+        }
+        cur = next;
+    }
+}
+
+// ── Wait queues ─────────────────────────────────────────────────────────────
+//
+// Waiting on something - a message, a keystroke - used to mean calling yield()
+// in a loop. That keeps the thread permanently runnable, so a core can never
+// go idle and the "blocked" thread is indistinguishable from a busy one. Four
+// servers doing it kept every core at 100 %.
+//
+// Waking is done by address: `chan` is any stable integer identifying the
+// thing being waited on, usually a pointer to it. That avoids threading a wait
+// queue through every object type.
+//
+// The two phases exist to close a lost-wakeup race. Checking a condition and
+// then blocking is not atomic: on another core a sender can make the condition
+// true and wake the queue in between, and the thread then sleeps forever
+// waiting for an event that already happened. So a thread registers itself
+// *before* testing the condition. If the wake lands in the window, it unlinks
+// the thread, and commitWait sees it is no longer listed and returns without
+// sleeping.
+
+var waiters: ?*Task = null;
+
+/// Phase 1: join the queue for `chan` while still runnable.
+pub fn prepareWait(chan: usize) void {
+    if (!started) return;
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+
+    const t = currentOf(cpu()) orelse return;
+    if (t.on_wait_list) unlinkWaiter(t);
+    t.wait_channel = chan;
+    t.wait_next = waiters;
+    t.on_wait_list = true;
+    waiters = t;
+}
+
+/// Leave the queue without sleeping. Used when the condition turned out to be
+/// true after all.
+pub fn cancelWait() void {
+    if (!started) return;
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+
+    const t = currentOf(cpu()) orelse return;
+    if (t.on_wait_list) unlinkWaiter(t);
+}
+
+/// Phase 2 with a bound. `timeout_ms` of 0 waits indefinitely.
+pub fn commitWaitTimeout(timeout_ms: u64) void {
+    if (!started) {
+        asm volatile ("pause");
+        return;
+    }
+
+    const was = spinlock.interruptsEnabled();
+    io.cli();
+    lock.acquire();
+
+    const c = cpu();
+    const t = currentOf(c) orelse {
+        lock.release();
+        if (was) io.sti();
+        return;
+    };
+
+    if (!t.on_wait_list) {
+        lock.release();
+        if (was) io.sti();
+        return;
+    }
+
+    if (timeout_ms != 0) {
+        t.wake_at_ns = time.monotonicNs() + timeout_ms * 1_000_000;
+        t.sleep_next = sleepers;
+        sleepers = t;
+    }
+
+    t.state = .blocked;
+    const next = pickNext(c);
+    switchTo(c, next);
+
+    lock.release();
+    if (was) io.sti();
+}
+
+/// Phase 2: sleep, unless a wake already unlinked us.
+pub fn commitWait() void {
+    if (!started) {
+        asm volatile ("pause");
+        return;
+    }
+
+    const was = spinlock.interruptsEnabled();
+    io.cli();
+    lock.acquire();
+
+    const c = cpu();
+    const t = currentOf(c) orelse {
+        lock.release();
+        if (was) io.sti();
+        return;
+    };
+
+    // The wake beat us here. Nothing to wait for.
+    if (!t.on_wait_list) {
+        lock.release();
+        if (was) io.sti();
+        return;
+    }
+
+    t.state = .blocked;
+    const next = pickNext(c);
+    switchTo(c, next);
+
+    lock.release();
+    if (was) io.sti();
+}
+
+/// Caller must hold `lock`.
+fn unlinkSleeper(t: *Task) void {
+    var cur = sleepers;
+    var prev_link: ?*Task = null;
+    while (cur) |x| {
+        if (x == t) {
+            if (prev_link) |p| p.sleep_next = x.sleep_next else sleepers = x.sleep_next;
+            x.sleep_next = null;
+            x.wake_at_ns = 0;
+            return;
+        }
+        prev_link = x;
+        cur = x.sleep_next;
+    }
+}
+
+/// Caller must hold `lock`.
+fn unlinkWaiter(t: *Task) void {
+    var cur = waiters;
+    var prev_link: ?*Task = null;
+    while (cur) |w| {
+        if (w == t) {
+            if (prev_link) |p| p.wait_next = w.wait_next else waiters = w.wait_next;
+            w.wait_next = null;
+            w.on_wait_list = false;
+            return;
+        }
+        prev_link = w;
+        cur = w.wait_next;
+    }
+    t.on_wait_list = false;
+}
+
+/// Wake everything waiting on `chan`.
+pub fn wakeChannel(chan: usize) void {
+    if (!started) return;
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+
+    var cur = waiters;
+    var prev_link: ?*Task = null;
+    while (cur) |w| {
+        const next = w.wait_next;
+        if (w.wait_channel == chan) {
+            if (prev_link) |p| p.wait_next = next else waiters = next;
+            w.wait_next = null;
+            w.on_wait_list = false;
+            // Drop any timeout too. Leaving a stale deadline behind means the
+            // next timer sweep wakes this task again, out of whatever it has
+            // gone on to block on since - a spurious wakeup that is very hard
+            // to trace back to here.
+            if (w.wake_at_ns != 0) unlinkSleeper(w);
+            // Only queue it if it actually got as far as sleeping. A thread
+            // still between prepareWait and commitWait is runnable already,
+            // and queueing it twice would put one task on two run queues.
+            if (w.state == .blocked) {
+                w.state = .ready;
+                queues[@intFromEnum(w.priority)].push(w);
+            }
+        } else {
+            prev_link = w;
+        }
+        cur = next;
+    }
 }
 
 /// Block the current thread until something wakes it.

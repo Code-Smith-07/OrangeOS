@@ -89,6 +89,8 @@ pub const Nr = enum(u64) {
     fb_acquire = 70,
     fb_map = 71,
     input_read = 72,
+    input_bind = 73,
+    input_wait = 74,
     uptime = 60,
     _,
 };
@@ -151,6 +153,8 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .fb_acquire => sysFbAcquire(frame.rdi),
         .fb_map => sysFbMap(),
         .input_read => sysInputRead(frame.rdi, frame.rsi),
+        .input_bind => sysInputBind(frame.rdi),
+        .input_wait => sysInputWait(frame.rdi),
         .yield => sysYield(),
         .uptime => sysUptime(),
         else => ENOSYS,
@@ -230,10 +234,18 @@ fn sysRead(fd: u64, buf: u64, len: u64) i64 {
             io.sti();
             defer io.cli();
 
+            const chan = pty_mod.waitChannel(&obj.data.pty);
             var n: usize = 0;
             while (n == 0) {
+                // Register before reading, so a write arriving in between
+                // cancels the wait instead of being missed.
+                sched.prepareWait(chan);
                 n = pty_mod.slaveRead(&obj.data.pty, kbuf[0..@intCast(want)]);
-                if (n == 0) sched.yield();
+                if (n != 0) {
+                    sched.cancelWait();
+                    break;
+                }
+                sched.commitWait();
             }
             validate.copyToUser(pml4, buf, kbuf[0..n], n) catch return EFAULT;
             return @intCast(n);
@@ -246,14 +258,20 @@ fn sysRead(fd: u64, buf: u64, len: u64) i64 {
         io.sti();
         defer io.cli();
 
+        const chan = serial.waitChannel();
         var n: usize = 0;
         while (n == 0) {
+            sched.prepareWait(chan);
             while (n < want) {
                 const c = serial.readByte() orelse break;
                 kbuf[n] = c;
                 n += 1;
             }
-            if (n == 0) sched.yield();
+            if (n != 0) {
+                sched.cancelWait();
+                break;
+            }
+            sched.commitWait();
         }
 
         validate.copyToUser(pml4, buf, kbuf[0..n], n) catch return EFAULT;
@@ -328,14 +346,13 @@ fn sysSleepMs(ms: u64) i64 {
         sched.yield();
         return 0;
     }
+    // Interrupts on for the duration: MSR_FMASK clears IF on syscall entry,
+    // and a thread that sleeps with interrupts off never sees the timer that
+    // is supposed to wake it.
     io.sti();
     defer io.cli();
 
-    const time = @import("../time/time.zig");
-    const deadline = time.monotonicNs() + ms * 1_000_000;
-    while (time.monotonicNs() < deadline) {
-        sched.yield();
-    }
+    sched.sleepMs(ms);
     return 0;
 }
 
@@ -563,6 +580,38 @@ fn sysFbMap() i64 {
     t.shm_next = base + size + vmm.PAGE_SIZE;
 
     return @bitCast(base);
+}
+
+/// Register this port as the one the compositor serves clients on, so a
+/// client message wakes the same channel input events do.
+fn sysInputBind(h: u64) i64 {
+    const t = sched.currentTask() orelse return EIO;
+    if (fb_owner != t.tid) return -13; // EACCES
+    ipc.setInputSink(@bitCast(h)) catch |e| return ipcErrno(e);
+    return 0;
+}
+
+/// Block until input arrives, a client message arrives, or the timeout
+/// expires. Replaces a poll-and-sleep loop in the compositor, which was the
+/// last thing keeping an otherwise idle desktop awake.
+fn sysInputWait(timeout_ms: u64) i64 {
+    const t = sched.currentTask() orelse return EIO;
+    if (fb_owner != t.tid) return -13; // EACCES
+
+    io.sti();
+    defer io.cli();
+
+    const chan = event.waitChannel();
+    sched.prepareWait(chan);
+    // Both conditions must be checked after joining the wait queue. Checking
+    // only input loses a client message sent just before this syscall: its
+    // wake sees no waiter, then Peel sleeps despite the queued message.
+    if (event.pending() != 0 or ipc.inputPending()) {
+        sched.cancelWait();
+        return 0;
+    }
+    sched.commitWaitTimeout(timeout_ms);
+    return 0;
 }
 
 /// Drain pending input events into a user buffer. Returns the count.

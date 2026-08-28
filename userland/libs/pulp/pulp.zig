@@ -49,6 +49,8 @@ pub const NR = struct {
     pub const fb_map: u64 = 71;
     pub const input_read: u64 = 72;
     pub const uptime: u64 = 60;
+    pub const input_bind: u64 = 73;
+    pub const input_wait: u64 = 74;
 };
 
 pub const STDIN: u64 = 0;
@@ -150,6 +152,18 @@ fn errno(v: i64) Error {
 pub fn exit(code: u8) noreturn {
     _ = syscall1(NR.exit, code);
     unreachable;
+}
+
+/// Tell the kernel this port is the compositor's client port, so messages to
+/// it wake the same channel `waitInput` blocks on.
+pub fn inputBind(port: i64) void {
+    _ = syscall1(NR.input_bind, @bitCast(port));
+}
+
+/// Block until input or a client message arrives, or `timeout_ms` passes.
+/// A timeout of 0 waits indefinitely.
+pub fn waitInput(timeout_ms: u64) void {
+    _ = syscall1(NR.input_wait, timeout_ms);
 }
 
 pub fn getpid() i64 {

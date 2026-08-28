@@ -5,6 +5,8 @@
 //! flow through here.
 
 const io = @import("../../arch/x86_64/io.zig");
+const sched = @import("../../sched/sched.zig");
+const spinlock = @import("../../sync/spinlock.zig");
 const isr = @import("../../arch/x86_64/isr.zig");
 const apic = @import("../../arch/x86_64/apic.zig");
 const ioapic = @import("../../arch/x86_64/ioapic.zig");
@@ -88,20 +90,37 @@ inline fn rxEmpty() bool {
     return rx_head == rx_tail;
 }
 
+var rx_lock: spinlock.SpinLock = .{};
+
+/// Stable address identifying "console input" for the scheduler's wait
+/// queues. Any thread blocked reading fd 0 waits on this.
+pub fn waitChannel() usize {
+    return @intFromPtr(&rx_buf);
+}
+
 fn rxPush(c: u8) void {
-    const next = (rx_head + 1) % RX_CAPACITY;
-    // Full: drop the newest rather than overwrite unread input. Losing the
-    // most recent keystroke is less confusing than losing the oldest.
-    if (next == rx_tail) return;
-    rx_buf[rx_head] = c;
-    rx_head = next;
+    {
+        const state = spinlock.acquireIrqSave(&rx_lock);
+        defer spinlock.releaseIrqRestore(&rx_lock, state);
+
+        const next = (rx_head + 1) % RX_CAPACITY;
+        // Full: drop the newest rather than overwrite unread input. Losing the
+        // most recent keystroke is less confusing than losing the oldest.
+        if (next == rx_tail) return;
+        rx_buf[rx_head] = c;
+        rx_head = next;
+    }
+
+    // A reader blocked on the console has a byte now. Called from the RX
+    // interrupt, so this must not be a path that can sleep - wakeChannel only
+    // moves tasks onto run queues.
+    sched.wakeChannel(waitChannel());
 }
 
 /// Take one byte, or null if nothing is buffered.
 pub fn readByte() ?u8 {
-    const was = interruptsEnabled();
-    io.cli();
-    defer if (was) io.sti();
+    const state = spinlock.acquireIrqSave(&rx_lock);
+    defer spinlock.releaseIrqRestore(&rx_lock, state);
 
     if (rxEmpty()) return null;
     const c = rx_buf[rx_tail];
@@ -110,16 +129,9 @@ pub fn readByte() ?u8 {
 }
 
 pub fn hasInput() bool {
+    const state = spinlock.acquireIrqSave(&rx_lock);
+    defer spinlock.releaseIrqRestore(&rx_lock, state);
     return !rxEmpty();
-}
-
-fn interruptsEnabled() bool {
-    const flags = asm volatile (
-        \\ pushfq
-        \\ popq %[out]
-        : [out] "=r" (-> u64),
-    );
-    return flags & (1 << 9) != 0;
 }
 
 fn rxHandler(frame: *isr.TrapFrame) void {

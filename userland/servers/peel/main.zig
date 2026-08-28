@@ -504,6 +504,11 @@ export fn _start() callconv(.c) noreturn {
     };
     pulp.print("peel: serving clients on port \"{s}\"\n", .{proto.PORT});
 
+    // Register the client port as the compositor's wake source, so a client
+    // message and an input event arrive on the same channel and the main loop
+    // has exactly one thing to wait on.
+    pulp.inputBind(server_port);
+
     // First frame: everything.
     composite(.{ .x = 0, .y = 0, .w = screen.width, .h = screen.height });
     clearDamage();
@@ -528,11 +533,13 @@ export fn _start() callconv(.c) noreturn {
             composite(damage);
             clearDamage();
             frames += 1;
-
         }
 
-        // Nothing to do until more input arrives. Sleeping rather than
-        // spinning is what keeps an idle desktop at nearly zero CPU.
-        if (n == 0) pulp.sleepMs(8);
+        // Sleep until either source has work. input_wait registers before it
+        // checks both the input queue and this process's bound client port, so
+        // an event landing between this loop and the syscall cannot be lost.
+        // No polling timeout is needed: input drivers and portSend both wake
+        // the same channel.
+        pulp.waitInput(0);
     }
 }
