@@ -93,21 +93,25 @@ remain checked end to end.
 | 4 | Processes and scheduling | ✅ **Done** |
 | 5 | Storage and filesystems | ✅ **Done** |
 | 6 | Userland, IPC, and Seed | ✅ **Done** |
-| 7 | Graphics: input, compositor, windows | ✅ **Done** |
-| 7 | Graphics: client protocol | ✅ **Done** |
-| 7 | Graphics: PTY and terminal emulator | ✅ **Done** |
-| 7 | Graphics: widget toolkit and desktop shell | ✅ **Done** |
-| 8 | SMP: bring-up and cross-CPU scheduling | ✅ **Done** |
-| 8 | Networking: e1000, IPv4, ICMP, UDP, DHCP, DNS, TCP | ✅ **Done** |
-| 8 | Audio: Intel HD Audio | ✅ **Done** |
-| 8 | USB: xHCI, control transfers, enumeration | ✅ **Done** |
-| 8 | USB: HID input | ✅ **Done** |
-| 9 | UEFI boot from a single USB image | ✅ **Done** |
-| 9 | NVMe storage | ✅ **Done** |
-| 9 | Panic replay after compositor takeover | ✅ **Done** |
-| 9 | Enforced resource-budget harness | ✅ **Done** |
-| 9 | Blocking waits and <1% desktop idle CPU | ✅ **Done** |
-| 9 | Booting physical hardware | 🔨 Next |
+| 7a | PS/2 input, framebuffer handoff, and the Peel compositor | ✅ **Done** |
+| 7b | Peel display protocol | ✅ **Done** |
+| 7c | Pseudo-terminals and the Squeeze terminal emulator | ✅ **Done** |
+| 7d | Segment widget toolkit and the Grove launcher | ✅ **Done** |
+| 8a | SMP: every processor boots | ✅ **Done** |
+| 8b | Cross-CPU scheduling | ✅ **Done** |
+| 8c | Networking: e1000, ARP, IPv4, and ICMP | ✅ **Done** |
+| 8d | UDP sockets, DHCP, and DNS | ✅ **Done** |
+| 8e | TCP: fetching a page over a real handshake | ✅ **Done** |
+| 8f | Intel HD Audio | ✅ **Done** |
+| 8g-a | xHCI controller bring-up and device enumeration | ✅ **Done** |
+| 8g-b | USB control transfers and device enumeration | ✅ **Done** |
+| 8g-c | USB HID input | ✅ **Done** |
+| 9a | UEFI boot from a single USB image | ✅ **Done** |
+| 9b | NVMe storage | ✅ **Done** |
+| 9c | Panic replay after compositor takeover | ✅ **Done** |
+| 9d | Enforced resource-budget harness | ✅ **Done** |
+| 9e | Blocking waits and <1% desktop idle CPU | ✅ **Done** |
+| 9f | Booting physical hardware | 🔨 Next |
 
 See the [full roadmap](ARCHITECTURE.md#16-development-roadmap) for what each
 phase contains and honest time estimates.
