@@ -10,6 +10,10 @@
 
 pub const PORT = "peel";
 
+pub const WindowFlags = struct {
+    pub const closable: u32 = 1 << 0;
+};
+
 pub const Op = struct {
     /// Client -> Peel: please give me a window.
     pub const create_window: u32 = 1;
@@ -21,6 +25,8 @@ pub const Op = struct {
     pub const created: u32 = 128;
     /// Peel -> client: an input event landed on you.
     pub const input: u32 = 129;
+    /// Peel -> client: the user pressed the window's close button.
+    pub const close_requested: u32 = 130;
 };
 
 /// Request to create a window. `shm_name` names a buffer the client has
@@ -35,6 +41,7 @@ pub const CreateWindow = extern struct {
     y: i32,
     title_len: u32,
     shm_name_len: u32,
+    flags: u32,
     title: [48]u8,
     shm_name: [32]u8,
 };
@@ -46,6 +53,11 @@ pub const Commit = extern struct {
     y: i32,
     w: i32,
     h: i32,
+};
+
+/// Either side identifies the window whose lifetime is ending.
+pub const Destroy = extern struct {
+    window_id: u32,
 };
 
 /// Peel's answer to create_window.

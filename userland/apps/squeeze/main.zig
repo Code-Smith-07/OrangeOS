@@ -275,7 +275,6 @@ export fn _start() callconv(.c) noreturn {
     };
     pulp.print("squeeze: window {d}, shell pid {d}\n", .{ win.id, shell });
 
-
     var out: [512]u8 = undefined;
     var msg: [256]u8 = undefined;
 
@@ -288,13 +287,20 @@ export fn _start() callconv(.c) noreturn {
             var i: usize = 0;
             while (i < n) : (i += 1) feed(out[i]);
             did_work = true;
-
         }
 
         // Key events from Peel into the shell's stdin.
         while (true) {
             const m = pulp.portRecvMsg(win.reply, &msg, false) catch break;
             if (m.len == 0) break;
+            if (m.opcode == proto.Op.close_requested) {
+                // Let Juice leave normally too; otherwise closing a terminal
+                // would strand its shell as an invisible background process.
+                _ = pulp.ptyWrite(pty, "\nexit\n");
+                win.destroy();
+                pulp.puts("squeeze: closed\n");
+                pulp.exit(0);
+            }
             if (m.opcode != proto.Op.input) continue;
             if (m.len < @sizeOf(proto.Input)) continue;
 

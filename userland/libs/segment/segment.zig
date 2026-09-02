@@ -124,6 +124,12 @@ pub const App = struct {
         self.dirty = true;
     }
 
+    /// Tell Peel the window is gone, then terminate the application.
+    pub fn close(self: *App) noreturn {
+        self.win.destroy();
+        pulp.exit(0);
+    }
+
     // ── Painting ────────────────────────────────────────────────────────────
 
     fn drawGlyph(self: *App, c: u8, x: i32, y: i32, scale: i32, color: u32) void {
@@ -217,6 +223,7 @@ pub const App = struct {
         while (true) {
             const m = pulp.portRecvMsg(self.win.reply, &msg, false) catch return got;
             if (m.len == 0) return got;
+            if (m.opcode == proto.Op.close_requested) self.close();
             if (m.opcode != proto.Op.input) continue;
             if (m.len < @sizeOf(proto.Input)) continue;
 
@@ -247,5 +254,10 @@ pub fn textWidth(text: []const u8, scale: i32) i32 {
 /// Create a window and an App bound to it.
 pub fn createApp(title: []const u8, w: i32, h: i32, x: i32, y: i32) !App {
     const win = try libpeel.createWindow(title, w, h, x, y);
+    return .{ .win = win };
+}
+
+pub fn createAppWithFlags(title: []const u8, w: i32, h: i32, x: i32, y: i32, flags: u32) !App {
+    const win = try libpeel.createWindowWithFlags(title, w, h, x, y, flags);
     return .{ .win = win };
 }

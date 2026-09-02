@@ -10,17 +10,19 @@ const segment = @import("segment");
 const Entry = struct {
     label: []const u8,
     path: []const u8,
+    singleton: bool,
 };
 
 const ENTRIES = [_]Entry{
-    .{ .label = "Terminal", .path = "/bin/squeeze" },
-    .{ .label = "Clock", .path = "/bin/clock" },
-    .{ .label = "About", .path = "/bin/about" },
+    .{ .label = "Terminal", .path = "/bin/squeeze", .singleton = false },
+    .{ .label = "Clock", .path = "/bin/clock", .singleton = true },
+    .{ .label = "About", .path = "/bin/about", .singleton = true },
 };
 
 var app: segment.App = undefined;
 var status_id: u32 = 0;
 var launched: u32 = 0;
+var running: [ENTRIES.len]i64 = [_]i64{-1} ** ENTRIES.len;
 
 /// Called by Segment when a launcher button is released over itself.
 fn launch(id: u32) void {
@@ -32,7 +34,20 @@ fn launch(id: u32) void {
     if (index >= ENTRIES.len) return;
 
     const entry = ENTRIES[index];
+    if (entry.singleton and running[index] > 0) {
+        if (pulp.waitNoHang(running[index])) |result| {
+            if (result == null) {
+                app.setText(status_id, "already open");
+                return;
+            }
+            running[index] = -1;
+        } else |_| {
+            running[index] = -1;
+        }
+    }
+
     if (pulp.spawn(entry.path)) |pid| {
+        if (entry.singleton) running[index] = pid;
         launched += 1;
         pulp.print("grove: launched {s} as pid {d}\n", .{ entry.path, pid });
         app.setText(status_id, entry.label);
@@ -43,7 +58,7 @@ fn launch(id: u32) void {
 }
 
 export fn _start() callconv(.c) noreturn {
-    app = segment.createApp("Grove", 220, 240, 900, 90) catch {
+    app = segment.createAppWithFlags("Grove", 220, 240, 900, 90, 0) catch {
         pulp.puts("grove: no display server\n");
         pulp.exit(1);
     };

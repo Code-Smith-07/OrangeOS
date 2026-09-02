@@ -28,7 +28,7 @@ cat > "$ROOTFS/etc/seed.conf" <<'CONF'
 # <name> <path> <policy>   policy: once | respawn | essential
 peel    /bin/peel    essential
 greetd  /bin/greetd  respawn
-squeeze /bin/squeeze respawn
+squeeze /bin/squeeze once
 grove   /bin/grove   respawn
 juice   /bin/juice   essential
 CONF

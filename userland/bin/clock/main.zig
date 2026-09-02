@@ -66,8 +66,19 @@ export fn _start() callconv(.c) noreturn {
 
     var frames: u64 = 0;
     var last_shown: u64 = 0xFFFF_FFFF;
+    var msg: [64]u8 = undefined;
 
     while (true) {
+        while (true) {
+            const event = pulp.portRecvMsg(win.reply, &msg, false) catch break;
+            if (event.len == 0) break;
+            if (event.opcode == libpeel.proto.Op.close_requested) {
+                win.destroy();
+                pulp.puts("clock: closed\n");
+                pulp.exit(0);
+            }
+        }
+
         const ms = pulp.uptimeMs();
         const secs = ms / 1000;
 

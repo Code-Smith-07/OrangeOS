@@ -60,10 +60,21 @@ pub const Window = struct {
     pub fn commitAll(self: *const Window) void {
         self.commit(0, 0, self.width, self.height);
     }
+
+    /// Remove this window from Peel before the client process exits.
+    pub fn destroy(self: *const Window) void {
+        const msg = proto.Destroy{ .window_id = self.id };
+        const bytes: [*]const u8 = @ptrCast(&msg);
+        _ = pulp.portSend(self.server, proto.Op.destroy, bytes[0..@sizeOf(proto.Destroy)]) catch {};
+    }
 };
 
 /// Connect to Peel and ask for a window.
 pub fn createWindow(title: []const u8, w: i32, h: i32, x: i32, y: i32) Error!Window {
+    return createWindowWithFlags(title, w, h, x, y, proto.WindowFlags.closable);
+}
+
+pub fn createWindowWithFlags(title: []const u8, w: i32, h: i32, x: i32, y: i32, flags: u32) Error!Window {
     const server = pulp.portConnect(proto.PORT) catch return Error.NoDisplayServer;
 
     const pid = pulp.getpid();
@@ -89,6 +100,7 @@ pub fn createWindow(title: []const u8, w: i32, h: i32, x: i32, y: i32) Error!Win
         .y = y,
         .title_len = @intCast(@min(title.len, 48)),
         .shm_name_len = @intCast(shm_name.len),
+        .flags = flags,
         .title = undefined,
         .shm_name = undefined,
     };
@@ -105,6 +117,7 @@ pub fn createWindow(title: []const u8, w: i32, h: i32, x: i32, y: i32) Error!Win
     if (n < @sizeOf(proto.Created)) return Error.Rejected;
 
     const created: *align(1) const proto.Created = @ptrCast(&resp);
+    if (created.window_id == 0) return Error.Rejected;
 
     return .{
         .id = created.window_id,

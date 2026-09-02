@@ -65,5 +65,5 @@ export fn _start() callconv(.c) noreturn {
 
 fn quit(id: u32) void {
     _ = id;
-    pulp.exit(0);
+    app.close();
 }
