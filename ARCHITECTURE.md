@@ -1881,11 +1881,11 @@ with the Daybreak desktop on September 6, 2026.
 |--------|-------|----------|-------|------------|
 | Kernel image (linked) | < 2 MB (goal) | **0.81 MB** | advisory | `budget.reportImage` |
 | — of which `.bss` | < 512 KB (goal) | **171 KB** | advisory | `budget.reportImage` |
-| Full desktop idle RSS | ≤ 3 GiB | **66.26 MB** | hard, configurable | `budget.reportMemory` |
-| Boot to scheduler | < 2 s | 2.194 s † | timing | `budget.reportBoot` |
-| Context switch | < 500 ns | **36 ns** | timing † | `budget.benchContextSwitch` |
-| Syscall round-trip | < 200 ns | **141 ns** † | timing | `userland/bin/bench` |
-| Idle CPU (desktop shown) | < 1 % (goal) | **3.67 %** | advisory, exceeded | `budget.benchIdleCpu` |
+| Full desktop idle memory | ≤ 3 GiB | **81.19 MB** | hard, configurable | `budget.reportMemory` |
+| Boot to scheduler | < 2 s | 2.164 s † | timing | `budget.reportBoot` |
+| Context switch | < 500 ns | **59 ns** | timing † | `budget.benchContextSwitch` |
+| Syscall round-trip | < 200 ns | **159 ns** † | timing | `userland/bin/bench` |
+| Idle CPU (desktop shown) | < 1 % (goal) | **0.28 %** | advisory | `budget.benchIdleCpu` |
 
 † Development uses QEMU TCG x86_64 emulation on an arm64 Mac. Boot time,
 latency, kernel size, and idle CPU remain visible advisory goals rather than

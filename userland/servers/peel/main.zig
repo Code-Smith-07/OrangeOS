@@ -345,6 +345,11 @@ fn drawCursor(s: *const gfx.Surface, x: i32, y: i32) void {
 var screen: gfx.Surface = undefined;
 var front: gfx.Surface = undefined;
 var back_handle: i64 = -1;
+// A cursor/chrome-free snapshot of the layers underneath the dragged window.
+// Client commits, window-stack changes and keyboard/shell actions invalidate it.
+var drag_backdrop: ?gfx.Surface = null;
+var drag_backdrop_id: ?u32 = null;
+var drag_backdrop_valid = false;
 
 fn rebuildWallpaper() void {
     if (wallpaper) |*s| {
@@ -378,23 +383,8 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
     if (!w.visible) return;
     if (!Rect.overlaps(w.damageRect(), clip)) return;
 
-    var spread: i32 = 14;
-    while (spread >= 2) : (spread -= 1) {
-        // Only the shadow fringe survives the opaque window. Clip to four
-        // disjoint strips instead of blending its entire covered interior.
-        const shadow = Rect{ .x = w.rect.x - spread, .y = w.rect.y - spread + 6, .w = w.rect.w + spread * 2, .h = w.rect.h + spread * 2 };
-        const strips = [_]Rect{
-            .{ .x = shadow.x, .y = shadow.y, .w = shadow.w, .h = w.rect.y - shadow.y },
-            .{ .x = shadow.x, .y = w.rect.bottom(), .w = shadow.w, .h = shadow.bottom() - w.rect.bottom() },
-            .{ .x = shadow.x, .y = w.rect.y, .w = spread, .h = w.rect.h },
-            .{ .x = w.rect.right(), .y = w.rect.y, .w = spread, .h = w.rect.h },
-        };
-        for (strips) |strip| {
-            screen.setClip(Rect.intersect(clip, strip));
-            screen.rounded(shadow, 16 + spread, 0x1F183C, if (active) 5 else 3);
-        }
-    }
     screen.setClip(clip);
+    gfx.windowShadow(&screen, w.rect, active);
     // Diffuse the actual underlying desktop before painting opaque content.
     // Limit title writes to the title while rounding the full frame's top edge.
     screen.setClip(Rect.intersect(clip, w.titleBar()));
@@ -424,7 +414,7 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
         if (i == 0 and !w.closable) continue;
         const c = w.control(@intCast(i));
         screen.circle(c.x + 11, c.y + 12, 7, colors[i]);
-        if (c.contains(cursor_x, cursor_y)) {
+        if (dragging == null and c.contains(cursor_x, cursor_y)) {
             ui.icon(&screen, ([_]ui.Icon{ .close, .minimize, .maximize })[i], c.x + 3, c.y + 4, 16);
         }
     }
@@ -501,12 +491,36 @@ fn composite(clip: Rect) void {
     screen.setClip(clip);
     defer screen.resetClip();
 
-    paintWallpaper(clip);
-
-    var i: usize = 0;
-    while (i < window_count) : (i += 1) {
-        const idx = z_order[i];
-        paintWindow(&windows[idx], activeWindow() == idx, clip);
+    const moving = if (dragging) |id| findWindowById(id) else null;
+    const can_cache = moving != null and activeWindow() == moving and windows[moving.?].visible and drag_backdrop != null;
+    if (can_cache) {
+        const id = windows[moving.?].id;
+        if (!drag_backdrop_valid or drag_backdrop_id != id) {
+            const target = screen;
+            screen = drag_backdrop.?;
+            screen.resetClip();
+            const full = Rect{ .x = 0, .y = 0, .w = screen.width, .h = screen.height };
+            paintWallpaper(full);
+            for (z_order[0..window_count]) |idx| {
+                if (idx != moving.?) paintWindow(&windows[idx], false, full);
+            }
+            screen = target;
+            drag_backdrop_valid = true;
+            drag_backdrop_id = id;
+        }
+        // The moving title still samples its real, current backdrop; the
+        // complete window and shell are rendered normally above this cache.
+        var y = clip.y * screen.scale;
+        while (y < clip.bottom() * screen.scale) : (y += 1) {
+            const start: usize = @intCast(y * screen.stride + clip.x * screen.scale);
+            const len: usize = @intCast(clip.w * screen.scale);
+            @memcpy(screen.pixels[start..][0..len], drag_backdrop.?.pixels[start..][0..len]);
+        }
+        paintWindow(&windows[moving.?], true, clip);
+    } else {
+        drag_backdrop_valid = false;
+        paintWallpaper(clip);
+        for (z_order[0..window_count]) |idx| paintWindow(&windows[idx], activeWindow() == idx, clip);
     }
 
     syncShell();
@@ -692,6 +706,7 @@ fn pumpClients() void {
     while (true) {
         const m = pulp.portRecvMsg(server_port, &buf, false) catch return;
         if (m.len == 0) return;
+        drag_backdrop_valid = false;
         switch (m.opcode) {
             proto.Op.display_info => {
                 if (m.len != 8) continue;
@@ -840,6 +855,7 @@ fn handleMouse(e: *const pulp.InputEvent) void {
                 }
                 if (control_pressed == null and !windows[idx].zoomed) {
                     dragging = id;
+                    drag_backdrop_valid = false;
                     drag_dx = cursor_x - windows[idx].rect.x;
                     drag_dy = cursor_y - windows[idx].rect.y;
                 }
@@ -914,6 +930,7 @@ fn handleMouse(e: *const pulp.InputEvent) void {
 }
 
 fn handleKey(e: *const pulp.InputEvent) void {
+    drag_backdrop_valid = false;
     if (e.isPress() and e.code == 0x01 and shell.popup != .none) {
         shellAction(desktop.Action.dismiss);
         return;
@@ -1018,6 +1035,15 @@ export fn _start() callconv(.c) noreturn {
             wallpaper = .{ .pixels = @ptrCast(@alignCast(pixels)), .width = screen.width, .height = screen.height, .stride = screen.stride, .scale = screen.scale };
             rebuildWallpaper();
         } else |_| {}
+    } else |_| {}
+
+    // Optional, one-time storage; allocation failure preserves normal drawing.
+    if (pulp.shmCreate("", back_bytes)) |h| {
+        if (pulp.shmMap(h, true)) |pixels| {
+            drag_backdrop = .{ .pixels = @ptrCast(@alignCast(pixels)), .width = screen.width, .height = screen.height, .stride = screen.stride, .scale = screen.scale };
+        } else |_| {
+            pulp.handleClose(h);
+        }
     } else |_| {}
 
     // First frame: everything.

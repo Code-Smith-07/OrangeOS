@@ -126,7 +126,7 @@ Native tests compare cached/uncached pixels exactly, including 2x backing,
 changed backdrops and partial clips. No blur, shadow layers, or display
 resolution were removed to obtain the speedup.
 
-Final rapid-input run, `orange-daybreak-1mfiy9i4`, with stress threads disabled:
+Shell-cache rapid-input run, `orange-daybreak-1mfiy9i4`, with stress threads disabled:
 
 | Scenario | Publications / 40 inputs | Median newest-sample ms | Longest publication gap ms |
 |---|---:|---:|---:|
@@ -145,3 +145,36 @@ The ordinary pointer/dock paths improved; drag smoothness is not declared done.
 Scheduler stress build: `orange-daybreak-rxxh8yh4`, five checks passed, zero
 failed (register integrity, preemption, concurrent advancement and switching).
 That stress build's timings are not used for the final comparison.
+
+## Window-drag follow-up
+
+Peel now optionally allocates one additional full-resolution backdrop (16.384 MB
+at 2560x1600). During a topmost-window drag it reuses the wallpaper and windows
+below that window. Client messages, keyboard events and each new drag invalidate
+the snapshot. The moving window, its live frosted title and desktop chrome are
+still rendered normally; background applications are not frozen. Allocation
+failure uses the ordinary compositor. The backdrop excludes the pointer and
+shell, and title-control hover is disabled while dragging.
+
+The window shadow's straight edges now use a small exact RGB lookup table for
+the thirteen original blend layers; curved corners retain the original renderer.
+The lookup preserves integer rounding and antialiased outer-edge coverage.
+Native tests compare every output pixel against the old layered renderer at
+1x/2x, active/inactive, off-screen positions and partial damage clips.
+
+Rapid-input run `orange-daybreak-tmq9mniz`: 21 publications during 40 drag inputs,
+15.4 ms median newest-sample age, 20.8 ms p95, 60.2 ms longest publication gap.
+The earlier shell-cache-only run delivered 6 publications and a 174.6 ms longest
+gap. Input injection gaps were 18.3 ms in both runs. Ordinary client/glass motion
+delivered all 40 publications at a 3.4 ms median; dock motion delivered 38.
+These remain short emulator observations, not a guarantee of 60 fps, app-launch
+latency or physical-display latency. Long drag frames still need work.
+
+The expanded desktop regression also holds a window mid-drag and checks that
+an exposed Clock continues updating, then verifies content after drag release.
+
+Resource harness after this phase: 81.19 MB idle memory, 0.28% idle CPU,
+2.164 s boot-to-scheduler (over the advisory 2 s goal), 59 ns context switch,
+159 ns syscall round trip. All hard gates passed. Idle usage does not measure
+interactive smoothness. Full normal-build regression evidence:
+`orange-daybreak-4xhlu0yp` in the host temporary directory.

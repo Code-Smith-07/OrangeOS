@@ -287,6 +287,22 @@ def main():
         g.move(360, 131)
         g.monitor("mouse_button 0")
         g.until(lambda: g.pixel(200, 250) == base, "window drag returns content")
+        # A live client behind a held drag must invalidate the backdrop cache.
+        # Move Terminal left so the entire clock is exposed, without releasing.
+        clock_count = len(re.findall(r'peel: window \d+ "clock"', g.log()))
+        g.click(598,732)
+        g.until(lambda: len(re.findall(r'peel: window \d+ "clock"', g.log())) > clock_count, "Clock reopens for drag-cache test")
+        g.move(360,131)
+        g.monitor("mouse_button 1")
+        time.sleep(.2)
+        g.move(40,131)
+        clock_pixels = g.region(500,510,280,65)
+        g.until(lambda: g.region(500,510,280,65) != clock_pixels, "background Clock stays live during held drag", 5)
+        g.move(360,131)
+        g.monitor("mouse_button 0")
+        g.until(lambda: g.pixel(200,250) == base, "drag-cache release restores content")
+        g.click(800,409)
+        g.click(481,409)
         # Files reads the real guest VFS; Trash is an honest read-only folder.
         g.click(360,732)
         g.until(lambda: '"Files"' in g.log() and 'files: listed /:' in g.log(),"Files launches and lists root")

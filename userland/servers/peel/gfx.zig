@@ -76,6 +76,116 @@ pub fn shadowExtent(r: Rect) Rect {
     return .{ .x = r.x - 8, .y = r.y, .w = r.w + 16, .h = r.h + 11 };
 }
 
+// Exact repeated RGB blend tables for straight window-shadow edges. Unlike
+// collapsing layers into one alpha, this preserves each layer's rounding.
+const shadow_tables = tables: {
+    @setEvalBranchQuota(1_000_000);
+    var result: [2][14][2][3][256]u8 = undefined;
+    for (0..2) |active| for (0..14) |count| for (0..2) |edge| for (0..3) |channel| for (0..256) |value| {
+        var out: u32 = @intCast(value);
+        const tint = ([_]u32{ 0x1F, 0x18, 0x3C })[channel];
+        const alpha: u32 = if (active == 1) 5 else 3;
+        for (0..count) |layer| {
+            const a = alpha - @intFromBool(edge == 1 and layer + 1 == count);
+            out = (out * (255 - a) + tint * a) / 255;
+        }
+        result[active][count][edge][channel][value] = @intCast(out);
+    };
+    break :tables result;
+};
+
+pub fn windowShadow(s: *const Surface, r: Rect, active: bool) void {
+    windowShadowImpl(s, r, active, true);
+}
+
+fn windowShadowImpl(s: *const Surface, r: Rect, active: bool, fast: bool) void {
+    // Only the corners need rounded coverage evaluated for all thirteen
+    // layers. Straight edges use the exact precomputed colour transformation.
+    const optimized = fast and r.w >= 64 and r.h >= 64;
+    const centers = [_]Rect{
+        .{ .x = r.x + 30, .y = r.y - 14, .w = r.w - 60, .h = 14 },
+        .{ .x = r.x + 30, .y = r.bottom(), .w = r.w - 60, .h = 20 },
+        .{ .x = r.x - 14, .y = r.y + 30, .w = 14, .h = r.h - 60 },
+        .{ .x = r.right(), .y = r.y + 30, .w = 14, .h = r.h - 60 },
+    };
+    var spread: i32 = 14;
+    while (spread >= 2) : (spread -= 1) {
+        const shadow = Rect{ .x = r.x - spread, .y = r.y - spread + 6, .w = r.w + spread * 2, .h = r.h + spread * 2 };
+        const strips = [_]Rect{
+            .{ .x = shadow.x, .y = shadow.y, .w = shadow.w, .h = r.y - shadow.y },
+            .{ .x = shadow.x, .y = r.bottom(), .w = shadow.w, .h = shadow.bottom() - r.bottom() },
+            .{ .x = shadow.x, .y = r.y, .w = spread, .h = r.h },
+            .{ .x = r.right(), .y = r.y, .w = spread, .h = r.h },
+        };
+        for (strips, 0..) |strip, side| {
+            var part = s.*;
+            if (optimized) {
+                const center = centers[side];
+                const ends = if (side < 2) [_]Rect{
+                    .{ .x = strip.x, .y = strip.y, .w = center.x - strip.x, .h = strip.h },
+                    .{ .x = center.right(), .y = strip.y, .w = strip.right() - center.right(), .h = strip.h },
+                } else [_]Rect{
+                    .{ .x = strip.x, .y = strip.y, .w = strip.w, .h = center.y - strip.y },
+                    .{ .x = strip.x, .y = center.bottom(), .w = strip.w, .h = strip.bottom() - center.bottom() },
+                };
+                for (ends) |end| {
+                    part.setClip(Rect.intersect(s.clip, end));
+                    part.rounded(shadow, 16 + spread, 0x1F183C, if (active) 5 else 3);
+                }
+            } else {
+                part.setClip(Rect.intersect(s.clip, strip));
+                part.rounded(shadow, 16 + spread, 0x1F183C, if (active) 5 else 3);
+            }
+        }
+    }
+    if (!optimized) return;
+    for (centers, 0..) |center, side| {
+        const area = s.clipped(center);
+        if (area.isEmpty()) continue;
+        var y = area.y * s.scale;
+        while (y < area.bottom() * s.scale) : (y += 1) {
+            var x = area.x * s.scale;
+            while (x < area.right() * s.scale) : (x += 1) {
+                const needed = switch (side) {
+                    0 => r.y - @divTrunc(y, s.scale) + 6,
+                    1 => @divTrunc(y, s.scale) - r.bottom() - 5,
+                    2 => r.x - @divTrunc(x, s.scale),
+                    else => @divTrunc(x, s.scale) - r.right() + 1,
+                };
+                const count: usize = @intCast(@max(0, @as(i32, 15) - @max(2, needed)));
+                const outer_pixel = switch (side) {
+                    0 => @mod(y, s.scale) == 0,
+                    1 => @mod(y, s.scale) == s.scale - 1,
+                    2 => @mod(x, s.scale) == 0,
+                    else => @mod(x, s.scale) == s.scale - 1,
+                };
+                const edge = needed >= 2 and needed <= 14 and outer_pixel;
+                const lut = &shadow_tables[@intFromBool(active)][count][@intFromBool(edge)];
+                const idx: usize = @intCast(y * s.stride + x);
+                const c = s.pixels[idx];
+                s.pixels[idx] = (@as(u32, lut[0][(c >> 16) & 255]) << 16) | (@as(u32, lut[1][(c >> 8) & 255]) << 8) | lut[2][c & 255];
+            }
+        }
+    }
+}
+
+test "fast window shadows exactly match layered shadows at 1x and 2x" {
+    const std = @import("std");
+    var pixels: [280 * 260]u32 = undefined;
+    for ([_]i32{ 1, 2 }) |scale| for ([_]bool{ false, true }) |active| for (0..3) |variant| {
+        for (&pixels, 0..) |*p, i| p.* = @intCast((i * 1987) & 0xFFFFFF);
+        const original = pixels;
+        var s = Surface{ .pixels = &pixels, .width = 140, .height = 130, .stride = 140 * scale, .scale = scale };
+        const r = if (variant == 0) Rect{ .x = 20, .y = 20, .w = 90, .h = 80 } else Rect{ .x = -4, .y = -3, .w = 104, .h = 99 };
+        if (variant == 2) s.setClip(.{ .x = 3, .y = 4, .w = 87, .h = 102 });
+        windowShadowImpl(&s, r, active, false);
+        const expected = pixels;
+        pixels = original;
+        windowShadow(&s, r, active);
+        try std.testing.expectEqualSlices(u32, &expected, &pixels);
+    };
+}
+
 
 pub const Rect = struct {
     x: i32,
