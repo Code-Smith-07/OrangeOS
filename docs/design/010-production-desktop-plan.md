@@ -5,6 +5,14 @@ Created: 2026-09-07. Target: native OrangeOS on Zest, not a website or Linux res
 Requested outcome: a distinctive, beautiful, responsive desktop with a real
 modern browser, useful applications, and truthful hardware controls.
 
+Revision: MacBook-first host integration, 2026-09-07. The user has no second
+test machine. **The primary product/test target is OrangeOS running in QEMU on
+their MacBook, with a native macOS companion bridging host services.** Wi-Fi,
+Bluetooth, brightness, audio and other host integrations are explicitly in
+scope. Standalone PC drivers are a later optional track, not a prerequisite for
+using these features in the VM. This revision supersedes the earlier exclusion
+of a host settings bridge; the bridge itself is not implemented yet.
+
 This document governs the next desktop/platform programme. The numbered phases
 below are **Aurora Phase 1, Phase 2, ...**, independent of the historical kernel
 phases in [ARCHITECTURE.md](../../ARCHITECTURE.md). Existing implemented kernel
@@ -28,6 +36,13 @@ work is preserved. This plan refines [Daybreak](007-daybreak.md),
   platform-inspired hierarchy, not copied Apple branding or restricted fonts.
 - Keep changes reviewable. Separate UI work from ABI changes and migrations.
   Do not call an untested phase production-ready or mark it done in README.
+- No second PC or new peripheral is required to progress the MacBook release.
+  Test existing hardware/services on the user's Mac; unavailable peripheral
+  scenarios use protocol fixtures and remain explicitly unqualified physically.
+- Bridge controls may change the **Mac's** state, affecting other applications.
+  Obtain per-capability host consent, expose scope in the UI, and provide an
+  always-reachable host disconnect control. Planning permission is not permission
+  to turn off the user's Wi-Fi, unpair devices, capture media, or erase disks now.
 
 ## 2. Baseline: what exists, what does not
 
@@ -44,6 +59,7 @@ Source-audited on 2026-09-07; source presence is not physical-device certificati
 | Runtime | Static Zig ELF, Pulp syscall wrappers and bump arena | Reclaimable VM, C/C++ runtime, threads/TLS, FPU/SIMD task isolation |
 | Storage | CitrusFS/AHCI/NVMe, read-only Files API | Durable user writes, file authority, trash transactions, profiles, recovery |
 | Browser | `008-browser.md` only | No engine port, browser executable, modern web rendering or HTTPS UI |
+| Mac integration | Parallels 2.0 reference has Swift host/Windows guest agents and QEMU virtio-serial wiring | OrangeOS virtio-console driver, Zig agent, Swift companion and host capability adapters |
 
 ### Current redraw audit and unfinished work
 
@@ -150,6 +166,32 @@ Zest: process/VM, scheduler, IPC, VFS, sockets, driver interfaces
 QEMU virtual devices OR explicitly supported physical devices
 ```
 
+The primary MacBook backend extends this stack as follows:
+
+```text
+OrangeOS Settings / Control Centre / applications
+       | versioned, capability-scoped guest IPC
+OrangeOS integration service + Zig guest agent
+       | virtio-serial (control/events; independent of guest networking)
+QEMU per-VM Unix socket
+       | bounded authenticated session
+OrangeOS Mac Companion (Swift, user session, visible permissions)
+       | allowlisted adapters and macOS consent
+CoreWLAN | Bluetooth APIs | CoreAudio | display/power | approved file/media APIs
+       | macOS-owned drivers
+The user's MacBook hardware
+
+Separate data paths:
+Guest TCP/TLS -> e1000 virtual NIC -> QEMU NAT -> Mac's active network
+Guest PCM -> HDA -> QEMU CoreAudio -> selected Mac speaker/headphone route
+Guest display/input -> QEMU presentation/input backend -> Mac screen/keyboard
+```
+
+Control bridging does not require pretending the guest owns Apple's radio or
+GPU driver. macOS retains the hardware drivers; OrangeOS implements the virtual
+drivers and explicit service adapters. The guest browser still runs its native
+engine and TLS; the companion is not a hidden remote web renderer.
+
 These service names describe **planned logical ownership**, not existing
 executables. Small services may initially share a supervised process; public
 contracts must not depend on that placement. Peel owns rendering/window policy,
@@ -185,11 +227,11 @@ services with bounded restart/backoff and health reporting.
 | Search/recent files | scoped query, indexing progress | bounded index + Files/app registry | no access, stale entry, cancelled query |
 | Appearance | get/set/watch theme, wallpaper, scale | Settings store → Peel/toolkit subscriptions | corrupt image, failed persistence, mode rollback |
 | Network menu | enumerate links, link state, DHCP/DNS state | Network service → sockets/e1000 or NIC driver | link loss, no lease, DNS failure, captive portal |
-| Wi-Fi panel | scan, connect, disconnect, radio state | wireless service/supplicant → 802.11 driver/firmware | bad key, rfkill, timeout, regulatory restriction |
-| Bluetooth panel | discover, pair, connect, forget | Bluetooth service → HCI → supported USB controller | rejected pairing, removed adapter, lost link |
-| Volume/sound | enumerate routes, PCM stream, gain/mute | Audio service → HDA initially | absent codec, underrun, route loss |
-| Brightness/display | enumerate capability/range, set/get backlight | Display/Power service → ACPI or GPU backlight backend | no physical backlight, invalid range, timeout |
-| Battery/power | status/health, policy, sleep/wake requests | Power service → ACPI AML/EC/platform backend | absent battery, device refuses suspend, wake failure |
+| Wi-Fi panel | scan, connect, disconnect, radio state | guest network service → Mac bridge → CoreWLAN; guest packets continue through virtual NIC | denied/redacted location data, bad key, host-wide disconnect, timeout |
+| Bluetooth panel | discover, pair/connect where supported, service operations | guest Bluetooth broker → Mac bridge → CoreBluetooth/IOBluetooth adapters | denied access, unsupported profile/control, pairing rejected, host-owned device conflict |
+| Volume/sound | enumerate routes, PCM stream, gain/mute | guest Audio service → HDA/QEMU/CoreAudio; host route metadata/control through bridge | absent codec, underrun, permission denied, route loss |
+| Brightness/display | enumerate capability/range, set/get backlight | guest display service → Mac bridge → validated host display backend | unsupported OS/display API, denied access, invalid range, timeout |
+| Battery/power | host battery/AC status, VM suspend/resume policy | guest Power service → Mac bridge → IOPowerSources and host lifecycle notifications | no battery, stale snapshot, sleep disconnect, permission denied |
 | Airplane mode | aggregate requested radio policy and readback | Network + Bluetooth services → radio controls | partial failure; Ethernet is not a radio |
 | Date/calendar | wall clock, timezone, calendar state | Time/settings service → RTC, later time synchronisation | invalid clock, timezone change, offline sync |
 | Notifications | post/list/dismiss, action handles | notification service + app identity policy | flood, stale action, denied source |
@@ -208,32 +250,164 @@ Coalesce obsolete frames; never lose key/button transitions. A resize has
 configure/ack and buffer-generation transitions, not an in-place size mutation.
 Start with a compatibility bridge for old clients; remove after migration.
 
-## 5. Hardware reality and test targets
+## 5. MacBook-first hardware integration
 
-| Target | Honest capability | Not implied |
+### Supported modes and development priority
+
+| Mode | Purpose | Qualification |
 |---|---|---|
-| Current Mac + x86_64 QEMU TCG | Emulated CPU, virtual NIC/disks/display/input; selected optional devices | Direct Mac Wi-Fi/Bluetooth/backlight, native x86 CPU speed or GPU acceleration |
-| Explicitly attached USB device | Possible testing route after host/backend support, device permission and guest driver verification | USB enumeration alone is not Wi-Fi or Bluetooth support |
-| Selected x86_64 UEFI PC | Real device work against recorded PCI/USB IDs and firmware | Universal laptop compatibility or safe install to every disk |
-| Apple Silicon native boot | Separate architecture/platform programme | Implied by running this x86 guest on a Mac |
+| MacBook + QEMU + Mac Companion | Primary desktop product, host service integration and all current development | End-to-end tests on the user's existing MacBook |
+| MacBook + QEMU without companion | Safe basic desktop/network fallback | Bridge loss must not hang or prevent guest boot |
+| User-selected USB passthrough | Optional exclusive device access where host/QEMU support it | Per-device consent and driver tests; never required for built-in host bridges |
+| Standalone x86 PC / native Apple Silicon | Future independent deployment tracks | Deferred; no second computer purchase or physical-driver gate for the VM release |
 
-For virtual Ethernet show **Ethernet**, even when the Mac uses Wi-Fi upstream.
-For QEMU brightness show **No hardware backlight exposed**; a separate optional
-"Dim desktop" effect must be labelled software dimming. No host settings bridge
-is authorised or implied. A future explicit bridge is a separate security model.
+Record the actual host OS, architecture, QEMU build and adapter versions for each
+test; do not infer them from screenshots or an older project's README. Read-only
+checks this revision reported macOS 15.7 (24G222), arm64, QEMU 11.1.0; model/RAM
+sysctl access was denied in the current tool environment. These are provisional
+tool-environment observations, not a complete inventory or device certification.
 
-Select one reference x86 PC and one documented radio adapter per feature after
-inventory. Record exact IDs, revisions, firmware source/license, transport,
-interrupt/DMA requirements and reproducible tests. Do not promise all chipsets.
-USB passthrough and destructive disk installation require explicit target choice;
-do not detach the user's only input/network device or overwrite personal disks.
+The UI can say **Mac Wi-Fi**, **Mac Bluetooth**, **Mac display brightness** and
+**Mac battery** with live bridge data. Guest virtual-network status remains
+separate: host Wi-Fi connected does not prove the guest has DHCP, DNS or internet.
+If the companion is missing, show unavailable/stale and reconnect guidance—not
+fabricated values or a generic claim that the VM can never access those services.
 
-Wi-Fi requires a radio driver, firmware lifecycle, scan/association, key handling,
-802.11 security integration and regulatory controls—not just a TCP stack.
-Bluetooth requires controller transport, HCI, L2CAP/security and selected profiles;
-start with one real HID profile, not an immediate promise of every headset.
-Backlight/battery require actual platform methods or driver registers and tested
-readback. ACPI table parsing alone does not provide those methods.
+### Reference implementation to adapt, not blindly copy
+
+User's project: `/Volumes/Tahoe/Users/vishwatejasb/Desktop/Parallels 2.0`.
+Source inspection found `QemuRunner.swift` virtio-serial/socket setup,
+`AgentServer.swift` transport/handshake, `AgentProtocol.swift` capability/RPC
+messages, `VMInstance.swift` lifecycle wiring, `ClipboardBridge.swift` echo
+suppression, and `guest-agent/p2agent.ps1` Windows handlers. Audio arguments
+connect HDA to CoreAudio. No host Wi-Fi/Bluetooth/brightness adapters were found.
+
+Reuse the architecture and reviewed project-owned code where appropriate; do
+not import proprietary files from that project's research/extraction directories.
+Windows drivers/PowerShell cannot substitute for an OrangeOS Zig agent. Review
+protocol authority carefully: P2 primarily lets the host call the guest; guest
+requests to change host hardware introduce a new, stronger trust boundary.
+
+### Transport, guest drivers and lifecycle
+
+1. Add virtio PCI discovery, bounded descriptor rings, interrupt/poll integration,
+   virtio-console multiport negotiation and a named `org.orange.host` port.
+   Keep kernel debug serial separate. No driver claim until fragmented traffic,
+   ring exhaustion, reset and disconnect tests pass on actual QEMU.
+2. QEMU creates the channel in a private per-run directory; the companion opens
+   its Unix socket. No LAN listener and no unauthenticated TCP fallback. If a
+   temporary development transport is necessary, document its isolation and
+   removal gate; network-dependent control is not the release transport.
+3. Use a versioned, bounded RPC schema with distinct request/result/event types.
+   Initial control-message limit: 64 KiB, limited nesting/collections, strict
+   method enums and range validation. Chunk bounded large listings; never send
+   audio/video/framebuffers or arbitrary file bodies as giant JSON messages.
+4. Launcher pins VM identity and provisions a short-lived session credential via
+   a private boot configuration path. Verify identity/session before enabling
+   operations; rotate on relaunch/restore, reject replay/stale generation IDs.
+   A guest-held credential binds the VM, not a trusted app: host consent and
+   method allowlists remain mandatory against a fully compromised guest.
+5. Expose `host.hello`, `host.capabilities`, `host.subscribe`, `host.snapshot`,
+   `host.cancel`; return capability status, provider, scope, permissions and
+   supported operations. Do not confuse an open socket with completed handshake.
+6. Seed supervises the Zig agent; companion reconnects with backoff. Requests
+   have deadlines, cancellation, queue quotas and single-writer framing.
+   Disconnect expires pending actions and marks data stale; reconnect resyncs
+   state. Do not replay a radio-off, pairing or sleep request after reconnect.
+7. Control plane is independent of the virtual NIC. Test it while Wi-Fi is off,
+   guest DHCP fails, the Mac sleeps/wakes and the VM or companion restarts.
+
+Planned locations: `host/macos/` (Swift companion and native adapter tests),
+`userland/servers/host-agent/` (Zig agent), `userland/libs/host-services/` (typed
+guest API), `kernel/drivers/virtio/` (transport), and `tools/host_bridge/`
+(integration/fault tests). These paths are proposals, not installed components.
+
+Example control flow: clicking Join in OrangeOS requests `wifi.join` with a
+session-scoped network handle and host credential reference, not a shell command.
+The companion verifies the VM grant and a current user gesture, obtains any
+needed host consent, then returns an operation ID. Progress events distinguish
+associating, connected, failed and cancelled; a fresh interface snapshot confirms
+completion. The guest separately waits for virtual NIC/DHCP/DNS/HTTPS readiness.
+Changing Wi-Fi in macOS updates OrangeOS through the same state subscription.
+Concurrent joins are serialised per interface; stale requests cannot reconnect
+over a newer user selection. The pattern applies to other host mutations.
+
+### Complete host-service coverage register
+
+Each row must end as implemented+tested, permission-gated, unsupported by the
+tested platform, or deferred with a reason. "Complete" means this inventory and
+qualified useful integration—not raw ownership of every internal Apple device.
+
+| Capability | Proposed host/backend path | Guest implementation and MacBook test |
+|---|---|---|
+| Wi-Fi state/scan/join/power | CoreWLAN; host location/other permissions as required | `wifi.state/scan/join/disconnect/set_power`; confirm host readback, guest DNS/HTTPS separately; consent before disrupting connectivity |
+| Bluetooth state/device management | CoreBluetooth and relevant public IOBluetooth operations, per-operation capability probe | `bluetooth.state/devices/discover/connect/disconnect`; real authorisation/events; pairing/forget/power separately qualified, never assumed from scan support |
+| BLE service access | Brokered CoreBluetooth service/characteristic operations | Scoped service/device grants; read/write/notify, cancellation and payload limits; real peripheral tests only if one is already available |
+| Bluetooth headphones/input | Keep device paired to macOS; share selected CoreAudio route or QEMU input | Guest audio/input works through Mac-owned peripheral when available; do not advertise raw HCI access or guest ownership |
+| Speaker/output volume | HDA/QEMU CoreAudio data plane plus CoreAudio route metadata | Guest stream gain separate from host master volume; audible playback, mute, route change, device loss |
+| Microphone | Explicit macOS recording consent plus per-guest/app permission | Bounded PCM transport, input meter, visible capture state; test revoke, stop, reconnect; no automatic recording |
+| Built-in display brightness | Host adapter feasibility spike using documented supported interfaces first | `display.brightness.get/set`; verify physical change/readback and safe minimum; API restriction remains explicit, not a fake dim overlay |
+| External monitor brightness | Display-specific supported API/DDC path if device exists | Optional; not a built-in display prerequisite or tested claim without that monitor |
+| Display modes/Retina/colour | QEMU backend + guest configure/ack; CoreGraphics/AppKit host geometry | Native backing scale, resize, fullscreen, colour/ICC policy and multi-monitor metadata; no stretched framebuffer presented as real resize |
+| GPU | Investigate host-supported virtual GPU/graphics transport and Metal presentation | Guest driver and rendering tests; host Metal presentation alone does not prove accelerated guest rendering |
+| Keyboard/trackpad/mouse | QEMU input backend, guest HID/PS2/absolute input; optional scoped gesture messages | Capture/release, modifiers, scroll, repeat, focus loss, no double cursor; not a global keystroke logger |
+| Battery/AC/power | IOPowerSources snapshots/events; host wake/sleep notifications | Host battery values with source/time; time resync, bridge reconnect, VM suspend/resume; host shutdown/sleep is separate explicit consent |
+| Thermal/resource pressure | Supported process/system thermal and pressure APIs | Report available states, throttle VM policy safely; no invented temperatures, fan RPM or unsafe fan controls |
+| Storage/shared folders | Virtual disks first; selected folder broker/security-scoped host access | File picker grants, traversal/symlink protection, read-only default, revoke; guest Trash never silently deletes host data |
+| Clipboard/drag-and-drop | NSPasteboard plus explicit app/session grants and typed transfers | Echo suppression, size limits, file grants, revoke; background clipboard harvesting disabled |
+| Time/timezone | Host clock and timezone service | UTC + timezone identity/transitions rather than fixed offset only; DST, suspend, manual clock changes |
+| Camera | AVFoundation capability/permission adapter plus bounded media data plane | Explicit indicator/consent, device list, frames, revoke; needs guest media API, not just a control RPC |
+| USB/removable devices | Host device metadata; approved folder/device sharing or qualified passthrough | No automatic detach of host input/storage; no raw internal-disk access; removable-device tests optional if absent |
+| Host authentication/Touch ID | Optional LocalAuthentication confirmation for sensitive host operations | Return scoped approval result; never expose fingerprints, Secure Enclave keys or emulate raw biometric hardware |
+| Printers, location and other optional services | Inventory then provider-specific broker/privacy review | Not silently promised; explicit capability state, no location sharing by default; additional hardware not required for core release |
+
+### macOS compatibility and permission gates
+
+- CoreWLAN exposes scan/association/power operations; installed SDK headers also
+  document location authorisation/redaction. Bundle/sign the companion with
+  accurate usage descriptions; test denied/revoked permissions and actual host
+  behaviour, not only successful compilation. Prefer host-side network credential
+  entry and Keychain references over passing saved passwords into the guest.
+- CoreBluetooth authorisation/power state observation is not a general Bluetooth
+  system power setter. Investigate supported classic-device pairing and management
+  separately. A host Settings handoff is an explicit partial fallback, **not**
+  completion of an automatic pair/power bridge. Do not use private symbols as if
+  they were supported, or unpair the user's keyboard/headset automatically.
+- Built-in Apple Silicon brightness requires a tested host-specific backend.
+  Public API feasibility is a gate. If only undocumented APIs work, document
+  stability/distribution/security costs and ask before adopting an experimental
+  adapter; do not disable SIP/TCC or automate permission approval.
+- Host-visible permissions page controls Wi-Fi changes, Bluetooth operations,
+  brightness, master volume, files, clipboard and capture independently per VM.
+  A launch grant is not a blanket grant for websites or guest applications.
+- No arbitrary host shell execution, raw paths, root daemon, private key export,
+  unrestricted DMA or credential dumping. A privileged helper, if justified,
+  exposes narrowly validated XPC methods and needs explicit installation approval.
+- Multiple clients may change host state. Use observed generations and fresh
+  readback; do not restore stale host settings over the user's later changes.
+  Tests may restore only the state they still own, with host-side recovery controls.
+
+### MacBook-only acceptance lab
+
+Use disposable guest disks and a test companion profile with bounded permissions.
+No writes to host internal disk partitions. The old Parallels project is a
+read-only reference unless the user separately requests edits.
+
+- Unit tests: codecs, adapters with recorded redacted fixtures, permission
+  transitions, timers, rate limits, stale handles, invalid/oversized requests.
+- Real bridge: boot handshake/capabilities, round-trip sequence tests with guest
+  networking disabled, guest/companion restart, multiple VMs, host sleep/resume.
+- Real host reads: battery/AC, Wi-Fi metadata permitted by macOS, Bluetooth state,
+  display/input/output capability list. Compare with host-native observations.
+- Consent-based writes: brightness and volume readback; controlled Wi-Fi change
+  with reconnection/recovery; Bluetooth discovery or an already-owned peripheral.
+  Warn that Wi-Fi changes can interrupt this chat; never perform them silently.
+- Media: microphone/camera test only when requested, visible recording indicator,
+  short local test data with defined deletion; no capture during a docs update.
+- Failure testing: denied/revoked permission, unavailable host API, no peripheral,
+  missing companion, lost channel, corrupt payload, guest crash and resource load.
+- Classify evidence as host-unit, QEMU end-to-end, real host read, real host write,
+  or peripheral-qualified. Fixtures cannot satisfy real pairing/audio device gates.
 
 ## 6. Phase-by-phase execution
 
@@ -286,6 +460,9 @@ Depends on: baseline kernel; can progress alongside design after Phase 1.
   static/dynamic linking choice and reproducible cross-toolchain description.
 - Process-local fault handling, exit cleanup, IPC/PTY/file/shared-memory cleanup,
   quotas and supervised service recovery. Define per-app security authority.
+- Implement the minimum virtio transport/agent prerequisites for Phase 9a early.
+  Host adapter feasibility and unit tests may start before the full runtime is
+  complete; do not queue the Mac bridge behind the browser or standalone drivers.
 
 Exit: cross-CPU state isolation tests; faulting process cannot panic the OS;
 1,000 create/exit cycles plateau in memory/handles; allocation-failure injection
@@ -377,67 +554,107 @@ Depends on: Phase 1/2; persistence and brokers from Phase 4. Does not block brow
 Exit: end-to-end daily workflows in light/dark mode, keyboard-only operation,
 long content, multiple scales, and accessibility/reduced-effects checks.
 
-### Phase 9 — Device framework and real audio control
+### Phase 9 — Mac bridge foundation, virtual drivers and audio
 
-Depends on: Phase 3 service lifecycle and API contracts.
+Depends on: minimum Phase 3 driver/lifecycle support and IPC contracts. Start
+host-side work early alongside Phases 1–3; Phase numbers group deliverables,
+not a requirement to finish Phase 8 before beginning this phase.
 
-- Stable device discovery, capability queries, driver bindings, hotplug events,
-  cancellation, DMA ownership and recovery on device loss.
-- HDA PCM playback/capture where supported, ring/stream scheduling, mixer,
-  route selection, gain/mute and per-app audio permissions. Connect Settings
-  and control centre to readback, not a local UI variable.
-- Define supported controller/codec matrix and QEMU audio fixture explicitly.
+**9a — Companion and secure channel:** inventory the current Mac, create the
+Swift companion scaffold, bounded transport/schema and adapter test doubles.
+Implement virtio-console/serial driver and Zig guest service; establish hello,
+capabilities, permission grants, subscriptions and restart-safe session identity.
+Exit: real bidirectional RPC while guest networking is disabled, no LAN listener,
+malformed-message rejection, denied host operation, guest/host restart recovery.
 
-Exit: audible test stream with verified gain/mute and route changes; no underrun
-storm or OS hang; unplug/restart and denied-microphone tests pass.
+**9b — Read-only integration:** host time/timezone, battery/AC, radio state and
+audio/display capability discovery. Each value includes source, freshness and
+permission state. Exit: guest values agree with host observations and become
+stale/unavailable correctly on permission revocation or companion loss.
 
-### Phase 10 — Real Wi-Fi
+**9c — Device lifecycle and audio:** stable device IDs, hotplug/cancellation,
+DMA/ring ownership; guest HDA PCM, QEMU CoreAudio, mixer, stream gain/mute and
+selected Mac output route. Host master-volume changes have a separate grant.
+Exit: real speaker playback/mute, responsive UI during streams, route-loss and
+underrun handling. Microphone capture requires separate consent and test evidence.
 
-Depends on: Phase 3/5/9; Phase 4 for saved credentials.
+**9d — Shared sessions:** approved clipboard, selected folders and input/display
+integration using the section 5 contracts. Exit: revoke/close/restart, clipboard
+echo suppression, safe file grants and fullscreen capture-release tests on Mac.
 
-- Inventory/select one supported adapter with available documentation and
-  redistributable firmware. Record chipset/revision, not merely retail name.
-- Implement driver transport/DMA/interrupts/firmware; integrate scan, association,
-  encryption/key installation and a reviewed supplicant/security stack.
-- Capability-led WPA2/WPA3 support, regulatory/rfkill handling, reconnection,
-  saved network policy and power management. Never log passwords.
-- Connect panel to actual scan results and radio/link state. Unsupported security
-  modes remain unavailable, not silently downgraded.
+### Phase 10 — Mac Wi-Fi bridge
 
-Exit: selected physical adapter scans and joins a real authorised access point,
-obtains a lease, resolves DNS and loads HTTPS in guest; wrong-password, radio-off,
-AP loss, restart and hotplug tests pass. QEMU Ethernet is not this acceptance test.
+Depends on: Phase 9a/9b; Phase 5 for guest HTTPS acceptance, not for transport.
 
-### Phase 11 — Real Bluetooth
+**10a — Host adapter:** implement CoreWLAN scan/state/power/association probes
+and actual permission handling. Record supported security modes and method
+availability on this Mac; macOS manages radio firmware, keys and regulatory policy.
 
-Depends on: Phase 3/9, Phase 4 for secure bonding data.
+**10b — Guest integration:** wire native Wi-Fi controls to allowlisted RPCs and
+observed events. Display host interface state and guest virtual-network health
+separately. Use host-side credential UI/Keychain grants; no saved password export.
 
-- Select one documented HCI controller; USB endpoint and transfer support before
-  HCI commands/events/ACL, then L2CAP, discovery, pairing/bonding and security.
-- Implement and test an explicit first profile (HID input), connection/forget
-  policy and reconnect. Headset audio is separate A2DP/HFP or LE Audio work,
-  including codec/routing dependencies; not implied by successful pairing.
-- UI shows discovered names safely, pairing consent/passkeys and real link state.
+**10c — Controlled qualification:** user-approved scan/join/reconnect and radio
+off/on tests, readback, wrong-key/cancel/denied-location cases; keep serial control
+alive during network loss. Protect the user's active connection and provide a
+host recovery action before running disruptive tests.
 
-Exit: pair and use a real supported peripheral; deny/cancel/forget/reconnect and
-adapter removal work; no silent pairing or leaked keys. Publish profile matrix.
+Exit: OrangeOS requests a supported operation, the Mac really performs it, and
+readback reaches the guest; confirm guest DHCP/DNS/HTTPS independently. NAT-only
+internet is not a completed Wi-Fi control bridge. No external Wi-Fi dongle or
+standalone 802.11 driver is required for this MacBook milestone.
 
-### Phase 12 — Display brightness, battery and power controls
+### Phase 11 — Mac Bluetooth bridge
 
-Depends on: Phase 9 and selected physical reference machine.
+Depends on: Phase 9a/9b; host permission/credential policies.
 
-- ACPI AML/platform device support with checked method evaluation; implement
-  supported backlight capability/range/read/set via ACPI or display driver.
-- Real battery/AC/charge readout, power policies, thermal reporting and safe
-  shutdown; suspend/resume only after per-device quiesce/restore is reliable.
-- Brightness slider reconciles hardware readback; external displays need their
-  own supported path. Never label an alpha overlay hardware brightness.
-- Airplane mode aggregates Wi-Fi/Bluetooth policy, surfaces partial failures and
-  maintains user preferences. Brightness/volume hotkeys reuse service APIs.
+**11a — State and permission:** expose host Bluetooth authorisation, availability,
+supported discovery/device operations and subscribed updates. Implement public
+CoreBluetooth and relevant IOBluetooth adapters, not a fictional generic HCI port.
 
-Exit: observed physical brightness change and readback, real AC/battery events,
-safe range limits and recovery; suspend requires repeated successful wake tests.
-VM unavailable states are tested independently and do not count as hardware passes.
+**11b — Qualified operations:** supported device discovery/connect/service access,
+pairing workflows where available, per-device grants, cancellation and safe names.
+Treat system power, classic pairing, forget and BLE operations as separate
+capabilities. A read-only power state does not imply a working power switch.
+Unsupported automation offers a clearly labelled host Settings handoff, with the
+automatic operation still marked incomplete; no private API bypass by default.
+
+**11c — Device sharing:** keep Mac-owned headsets/keyboards paired to macOS;
+expose their selected audio/input through the VM's existing virtual devices.
+Native guest BLE APIs use brokered service grants rather than raw controller
+ownership. Do not disconnect the user's only input device to demonstrate pairing.
+
+Exit: state/permissions and supported control round trips verified on this Mac;
+real pairing/service/audio tests qualified only for already-available peripherals.
+If no peripheral exists, fixtures/negative tests let development proceed but
+positive peripheral acceptance remains untested. No extra-device purchase gate.
+
+### Phase 12 — Mac brightness, battery, power and media integration
+
+Depends on: Phase 9a/9b, plus audio/data-plane support for capture.
+
+**12a — Display and power:** validate a host brightness backend, range/readback,
+safe limits and permission handling on the actual built-in panel. Guest controls
+change real Mac brightness, with scope visible; software dimming is separate.
+Read real battery/AC and thermal states through supported APIs. Synchronise
+time/timezone and reconnect after host sleep/wake; never equate guest shutdown
+with permission to shut down the Mac.
+
+**12b — Shared control policy:** brightness/volume hotkeys share broker APIs.
+Host radio policy (“Mac radios”) aggregates separately supported Wi-Fi/Bluetooth
+operations and reports partial failure; it is not an atomic platform airplane
+mode promise. Multiple host/guest actors cannot overwrite newer settings with
+stale restore values. Provide host-side revoke and recovery controls.
+
+**12c — Media and remaining inventory:** explicit camera/microphone grants,
+AVFoundation/CoreAudio adapters and bounded guest media streams; recording
+indicator, stop/revoke, device availability and guest-app access policy. Complete
+the section 5 coverage register for optional USB, external displays, authentication
+and other services; unsupported raw hardware remains explicitly scoped out.
+
+Exit: real brightness/volume readback and physical effect, battery/AC agreement,
+safe sleep/reconnect behaviour; camera/mic positive tests only with explicit
+capture consent. No second machine or ACPI laptop driver prerequisite.
 
 ### Phase 13 — Accelerated presentation and premium motion
 
@@ -463,6 +680,9 @@ Depends on: Phase 3–7 foundations; starts as a requirement, not late security 
   privileged-service inputs. Fuzz parsers, IPC lengths, image/font codecs and drivers.
 - Least authority, process sandbox, secret access prompts, secure session/lock
   behaviour, supply-chain manifests/SBOM and component license notices.
+- Include a fully compromised guest in the Mac Companion threat model. Test
+  arbitrary-method rejection, file/path escapes, capability revocation, replay,
+  guest-web-content access denial and no background host microphone/camera use.
 - Signed update manifests, authenticated downloads, anti-rollback policy,
   transactional install/rollback and recovery boot. Offline key management.
 - Error reporting is local by default; opt-in telemetry excludes secrets and URLs.
@@ -471,19 +691,25 @@ Exit: security regression suite, independent review of critical trust boundaries
 update tamper rejection and interrupted-update recovery. No production label
 solely because UI tests passed.
 
-### Phase 15 — Physical installation and supported-hardware qualification
+### Phase 15 — MacBook VM installation and integration qualification
 
-Depends on: relevant driver/power/security gates and explicit user-selected media.
+Depends on: relevant VM/bridge/security gates. No second test computer required.
 
-- Read-only live boot first, inventory/report, then a safe installer with exact
-  disk identification, partition preview, backup guidance and explicit erase consent.
-- Run storage/network/input/audio/power/display qualification on the reference PC;
-  document IDs, firmware and known unsupported devices. Test recovery independently.
-- No automatic writes to the Mac's internal disk. Native Apple Silicon remains
-  a separately scoped architecture/driver programme, not promised by this release.
+- Package QEMU configuration, guest image, signed companion and versioned agent
+  together with checked compatibility. Guided host permission onboarding and a
+  clear uninstall/revoke path; no silent helper or login-item installation.
+- VM creation/import, safe snapshots, crash recovery, update/rollback and guest
+  data export. Snapshot credentials/session IDs expire or rotate on restore.
+- Qualify built-in Mac display/input/network/audio/power paths; test host sleep,
+  lid open/resume, companion exit, VM crash and disk pressure using disposable
+  images. Do not claim suspend persistence before state-save tests pass.
+- Never repartition or install OrangeOS over macOS. Optional standalone x86
+  installation/drivers and native Apple Silicon boot are deferred tracks, not
+  prerequisites for this release or a requirement to obtain more hardware.
 
-Exit: repeatable boot/reboot/install/recovery on named reference hardware, no
-unintended disk mutation, complete compatibility report.
+Exit: repeatable install/start/stop/update/recovery on the user's MacBook and a
+published integration matrix distinguishing verified, denied, unavailable and
+not-yet-tested operations; no unintended host data or settings mutation.
 
 ### Phase 16 — Release candidate and production readiness
 
@@ -496,6 +722,9 @@ hardware must be excluded from the advertised compatibility matrix.
   open/close, concurrent downloads, disk pressure, hotplug and service failures.
 - Browser update rehearsal, corrupted-settings recovery, usability review and
   an explicit list of deferred features. No "all hardware" or "all sites" claim.
+- MacBook-first release qualifies every advertised bridge operation; companion
+  absence has a tested graceful fallback. Peripheral-only features without actual
+  device evidence are not advertised as tested. No unsupported API is hidden.
 
 Exit: release checklist with evidence and no untriaged critical reliability,
 security, data-loss or input-blocking bugs. User review before publication.
@@ -530,6 +759,10 @@ eviction/tab suspension or a visible resource limit, never an unexplained hang.
 | Milestone | Status | Evidence / next action |
 |---|---|---|
 | Production plan | Written; awaiting iterative review | This document; no hardware/browser completion implied |
+| MacBook-first bridge architecture | Planned; explicitly in scope | Swift companion + Zig guest agent; no standalone driver prerequisite |
+| Bridge 9a / 9b | Not implemented | First bridge milestones: channel, grants, capabilities, host-state readback |
+| Host Wi-Fi / Bluetooth adapters | Not implemented | Phases 10/11: independent operation/permission/real-host gates |
+| Host display / audio / media / power | Not implemented in OrangeOS | Phase 9c/12; qualify built-in devices on user's Mac |
 | Welcome blank-click fix | Verified locally | `9835784`, `tools/welcome_smoke.py` |
 | Whole-desktop flicker audit | Initial six-app CLI pass complete; expanded stress open | About/Files/Trash 8 redraws per 4 blank clicks; Files 1 transient sample |
 | Welcome/calendar experiment | Uncommitted, not release-ready | Calendar slow-hover regression must be resolved |
@@ -537,8 +770,17 @@ eviction/tab suspension or a visible resource limit, never an unexplained hang.
 | Aurora Phases 2–16 | Planned | Update each only with tests and local commit evidence |
 
 Immediate order: finish the all-app baseline audit; fix rendering/publication and
-calendar slowdown; agree the design system; start runtime/HTTPS/browser proof.
-Wireless and optional motion do **not** postpone the browser critical path.
+calendar slowdown; agree the design system. In the next platform work, start
+Phase 9a companion/schema/transport and minimum Phase 3 runtime together, then
+9b host readback and Wi-Fi/Bluetooth adapter probes. Runtime/HTTPS/browser proof
+continues as its own critical path; wireless and optional motion do **not** block
+it. No standalone hardware purchase or driver port is on either critical path.
+
+Track bridge milestones individually: 9a channel/security, 9b observed host
+state, 9c audio, 9d session sharing, 10a–10c Wi-Fi, 11a–11c Bluetooth, 12a–12c
+display/power/media. Each needs its own evidence and successful local commit.
+The Mac Companion may support these without altering native desktop design
+goals; it does not replace the browser engine or convert OrangeOS into a website.
 
 This is a substantial OS programme, not a one-turn skin change. Estimate each
 phase after its dependency spike; do not invent completion dates. Major risks:
@@ -550,6 +792,25 @@ Do not silently substitute a text fetcher or a hosted browser if a port is block
 ## 9. Primary engineering references
 
 Reviewed on 2026-09-07; recheck and pin relevant versions at implementation time.
+
+Mac integration reference evidence: the user's P2 sources listed in section 5,
+plus installed Xcode SDK CoreWLAN `CWInterface.h` (scan/association/power and
+location restrictions) and CoreBluetooth `CBManager.h`/`CBCentralManager.h`
+(authorisation and operation contracts). No radio/control operation was invoked
+while updating this plan.
+
+- [Apple CoreWLAN CWInterface](https://developer.apple.com/documentation/corewlan/cwinterface):
+  host Wi-Fi API reference; installed SDK headers were used where the web viewer
+  could not render Apple's Markdown documentation.
+- [Apple CoreBluetooth authorisation](https://developer.apple.com/documentation/corebluetooth/cbmanager/authorization-swift.type.property):
+  access state must be checked; a denied permission is not successful integration.
+- [Apple IOBluetooth](https://developer.apple.com/documentation/iobluetooth):
+  candidate classic-device API reference; specific methods/OS behaviour need probes.
+- [Apple IOKit](https://developer.apple.com/documentation/iokit): host device/power
+  interface reference, not proof that arbitrary Apple Silicon brightness controls
+  are supported.
+- [Apple capture authorisation](https://developer.apple.com/documentation/avfoundation/requesting-authorization-to-capture-and-save-media):
+  reference for explicit camera/microphone access; no capture is enabled by this plan.
 
 - [WebKit WPE](https://webkit.org/wpe/): embedded engine direction; does not
   supply an OrangeOS runtime or establish the cost of this port.

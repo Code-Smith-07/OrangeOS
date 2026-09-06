@@ -45,6 +45,12 @@ The next desktop programme is specified in the
 redesign, native browser/runtime work, app/service APIs, and real hardware
 integration. Its phase numbers are distinct from the historical kernel roadmap
 below. Planned capabilities must not be read as currently implemented ones.
+The primary qualification target is now the user's MacBook running OrangeOS in
+QEMU, with a planned Swift macOS companion and Zig guest-agent bridge for host
+Wi-Fi, Bluetooth, display/power, audio and other explicitly granted services.
+Standalone PC drivers remain a separate future track; no second computer is
+required for the VM programme. See the production plan for capability limits,
+host permissions and per-feature acceptance tests.
 
 Orange OS is a **from-scratch operating system** targeting x86_64, built to be
 **resource-conscious** while presenting a
