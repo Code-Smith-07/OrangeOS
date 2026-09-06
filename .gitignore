@@ -9,6 +9,10 @@ build/
 *.a
 *.elf
 *.bin
+!userland/libs/typography/inter-atlas.bin
+!userland/libs/typography/mono-atlas.bin
+!userland/libs/desktop-ui/icons.bin
+__pycache__/
 *.map
 
 # Disk images

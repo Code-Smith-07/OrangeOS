@@ -1,7 +1,7 @@
 //! Physical memory manager — buddy allocator.
 //!
 //! Manages physical page frames in power-of-two blocks, orders 0..10
-//! (4 KiB .. 4 MiB). Adjacent free blocks of equal order merge back into the
+//! (4 KiB .. 16 MiB). Adjacent free blocks of equal order merge back into the
 //! next order up, so contiguous allocations stay obtainable for DMA even after
 //! heavy fragmentation.
 //!
@@ -20,7 +20,7 @@ const limine = @import("../boot/limine_req.zig");
 const console = @import("../console.zig");
 
 pub const PAGE_SIZE: usize = 4096;
-pub const MAX_ORDER: usize = 10; // 4 KiB << 10 = 4 MiB
+pub const MAX_ORDER: usize = 12; // 4 KiB << 12 = 16 MiB (2x desktop surfaces)
 const ORDER_COUNT = MAX_ORDER + 1;
 
 pub const Error = error{
@@ -181,7 +181,7 @@ pub fn allocPage() Error!u64 {
 ///
 /// The zeroing happens after the lock is dropped. The block belongs to this
 /// caller by then, so nobody else can observe it, and holding a spinlock
-/// across a memset of up to 4 MiB would stall every other core for the
+/// across a memset of up to 16 MiB would stall every other core for the
 /// duration of a memory-bandwidth-bound loop.
 pub fn allocOrderZeroed(order: usize) Error!u64 {
     const phys = try allocOrder(order);

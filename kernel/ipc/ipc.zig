@@ -162,7 +162,7 @@ pub fn portRecv(h: i64, out: []u8, blocking: bool) Error!Received {
 /// Allocate a named shared memory object and return a handle.
 /// An empty name makes it anonymous and unfindable by anyone else.
 pub fn shmCreate(name: []const u8, size: usize) Error!i64 {
-    if (size == 0 or size > 4 * 1024 * 1024) return Error.OutOfMemory;
+    if (size == 0 or size > 16 * 1024 * 1024) return Error.OutOfMemory;
     const obj = try object.createShm(name, size);
     const table = try currentTable();
     return table.insert(obj);

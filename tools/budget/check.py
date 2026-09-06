@@ -4,23 +4,25 @@
 Reads a serial log, extracts the machine-readable measurements the kernel and
 the userland bench program emit, and prints a table with a verdict per row.
 
-Exit status is 1 only if a HARD limit is exceeded. Timing limits describe
-native hardware; this development setup runs QEMU's TCG interpreter emulating
-x86_64 on arm64, so those are reported as warnings rather than treated as
-regressions. Marking them hard here would mean a red build on every run, which
-is the fastest way to make a budget check worthless.
+Exit status is 1 if the configured RAM ceiling is exceeded or required data
+is missing. Kernel size, idle CPU, and timing remain advisory goals. Larger
+profiles are allowed with documented justification (ARCHITECTURE.md 16.2).
 """
+import os
 import re
 import sys
 
 MB = 1024 * 1024
+RAM_BUDGET_MIB = int(os.environ.get("ORANGE_RAM_BUDGET_MIB", "3072"))
+if RAM_BUDGET_MIB <= 0:
+    raise ValueError("ORANGE_RAM_BUDGET_MIB must be positive")
 
 # key, label, limit, unit, hard
 CHECKS = [
-    ("image.total_bytes",   "Kernel image (linked)",    2 * MB,  "bytes", True),
-    ("image.bss_bytes",     "  of which .bss",          512 * 1024, "bytes", True),
-    ("mem.used_bytes",      "Desktop idle memory",      128 * MB, "bytes", True),
-    ("idle.busy_pct_x100",  "Desktop idle CPU",         100,      "pct_x100", True),
+    ("image.total_bytes",   "Kernel image (linked)",    2 * MB,  "bytes", False),
+    ("image.bss_bytes",     "  of which .bss",          512 * 1024, "bytes", False),
+    ("mem.used_bytes",      "Desktop idle memory",      RAM_BUDGET_MIB * MB, "bytes", True),
+    ("idle.busy_pct_x100",  "Desktop idle CPU",         100,      "pct_x100", False),
     ("boot.kernel_ready_ms", "Boot to scheduler",       2000,    "ms",    False),
     ("bench.ctx_switch_ns", "Context switch",           500,     "ns",    False),
     ("bench.syscall_ns",    "Syscall round-trip",       200,     "ns",    False),
@@ -55,7 +57,8 @@ def main(path):
     warned = []
     for key, label, limit, unit, hard in CHECKS:
         if key not in vals:
-            print(f"  {label:<24} {'not reported':>12} {human(limit,unit):>12}   SKIP")
+            print(f"  {label:<24} {'not reported':>12} {human(limit,unit):>12}   FAIL (missing)")
+            failed.append(label + " missing")
             continue
         v = vals[key]
         ok = v <= limit
@@ -65,7 +68,7 @@ def main(path):
             status = "FAIL"
             failed.append(label)
         else:
-            status = "over (emulated)"
+            status = "over (advisory)"
             warned.append(label)
         print(f"  {label:<24} {human(v,unit):>12} {human(limit,unit):>12}   {status}")
 
@@ -87,15 +90,14 @@ def main(path):
 
     if warned:
         print()
-        print("  Timing limits describe native hardware. This run was measured")
-        print("  under TCG emulation, so the following are reported, not failed:")
+        print("  Advisory goals exceeded (not build failures):")
         for w in warned:
             print(f"    - {w}")
 
     if failed:
         print()
         print("  BUDGET REGRESSION:", ", ".join(failed))
-        print("  16.2: a change that regresses these is a failed build.")
+        print("  See ARCHITECTURE.md 16.2; document justified profile increases.")
         return 1
 
     print()

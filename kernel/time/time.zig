@@ -27,6 +27,13 @@ const NS_PER_TICK: u64 = 1_000_000_000 / TICK_HZ;
 
 var ticks: u64 = 0;
 var boot_tsc: u64 = 0;
+var wall_epoch: ?u64 = null;
+var wall_base_ms: u64 = 0;
+
+pub fn unixSeconds() ?u64 {
+    const epoch = wall_epoch orelse return null;
+    return epoch + (millisSinceBoot() - wall_base_ms) / 1000;
+}
 
 /// Called from the LAPIC timer interrupt on EVERY core.
 ///
@@ -64,6 +71,8 @@ fn errorHandler(frame: *isr.TrapFrame) void {
 
 pub fn init() void {
     boot_tsc = tsc.read();
+    wall_epoch = @import("rtc.zig").epoch();
+    wall_base_ms = millisSinceBoot();
 
     isr.register(apic.VECTOR_TIMER, tickHandler);
     isr.register(apic.VECTOR_SPURIOUS, spuriousHandler);

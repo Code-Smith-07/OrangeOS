@@ -1,8 +1,8 @@
 //! Peel's software renderer.
 //!
 //! Everything is a CPU store into a 32-bit ARGB buffer. No GPU is involved and
-//! none is needed: a full 1280x800 redraw is about 4 MB, and with damage
-//! tracking a typical frame touches a small fraction of that.
+//! A 1280x800 logical desktop at 2x has a 16 MB backing buffer. Damage
+//! tracking keeps most updates small; frosted surfaces expand their damage.
 
 pub const Color = u32;
 
@@ -59,6 +59,8 @@ pub const Surface = struct {
     height: i32,
     /// Pixels per row, which may exceed width.
     stride: i32,
+    /// Physical pixels per logical layout point.
+    scale: i32 = 1,
 
     /// Every draw is clipped to this rectangle. The compositor sets it to the
     /// damage region for the frame, so a partial repaint cannot touch pixels
@@ -85,24 +87,142 @@ pub const Surface = struct {
         return (@as(u32, r) << 16) | (@as(u32, g) << 8) | @as(u32, b);
     }
 
-    pub inline fn put(self: *const Surface, x: i32, y: i32, c: Color) void {
-        if (x < 0 or y < 0 or x >= self.width or y >= self.height) return;
-        if (!self.clip.contains(x, y)) return;
-        self.pixels[@intCast(y * self.stride + x)] = c;
+    pub fn putPhysical(self: *const Surface, x: i32, y: i32, color: Color) void {
+        if (x < 0 or y < 0 or x >= self.width * self.scale or y >= self.height * self.scale) return;
+        if (!self.clip.contains(@divTrunc(x, self.scale), @divTrunc(y, self.scale))) return;
+        self.pixels[@intCast(y * self.stride + x)] = color;
     }
-
+    pub fn getPhysical(self: *const Surface, x: i32, y: i32) Color {
+        if (x < 0 or y < 0 or x >= self.width * self.scale or y >= self.height * self.scale) return 0;
+        return self.pixels[@intCast(y * self.stride + x)];
+    }
+    pub inline fn put(self: *const Surface, x: i32, y: i32, c: Color) void {
+        self.fill(.{ .x = x, .y = y, .w = 1, .h = 1 }, c);
+    }
     pub fn fill(self: *const Surface, r: Rect, c: Color) void {
         const area = self.clipped(r);
         if (area.isEmpty()) return;
+        var y = area.y * self.scale;
+        while (y < area.bottom() * self.scale) : (y += 1) {
+            const begin: usize = @intCast(y * self.stride + area.x * self.scale);
+            @memset(self.pixels[begin..][0..@intCast(area.w * self.scale)], c);
+        }
+    }
+    /// Evaluate edges at backing resolution, not in enlarged logical pixels.
+    pub fn rounded(self: *const Surface, r: Rect, radius: i32, color: Color, alpha: u8) void {
+        const area = self.clipped(r);
+        const sc = self.scale;
+        const rad = @max(0, @min(radius, @divTrunc(@min(r.w, r.h), 2))) * sc;
+        var y = area.y * sc;
+        while (y < area.bottom() * sc) : (y += 1) {
+            var x = area.x * sc;
+            while (x < area.right() * sc) : (x += 1) {
+                const dx = @max(@max(r.x * sc + rad - x - 1, x - (r.right() * sc - rad)), 0);
+                const dy = @max(@max(r.y * sc + rad - y - 1, y - (r.bottom() * sc - rad)), 0);
+                const d = dx * dx + dy * dy;
+                if (d > rad * rad) continue;
+                var a: u32 = alpha;
+                const edge = @max(1, 2 * rad);
+                if (rad > 0 and d > rad * rad - edge) a = a * @as(u32, @intCast(rad * rad - d)) / @as(u32, @intCast(edge));
+                const idx: usize = @intCast(y * self.stride + x);
+                self.pixels[idx] = lerp(self.pixels[idx], color, @intCast(a));
+            }
+        }
+    }
 
-        var y = area.y;
-        while (y < area.bottom()) : (y += 1) {
-            // Row-at-a-time: the inner loop is a straight run of stores, which
-            // is what makes software compositing viable at this resolution.
-            const row = @as(usize, @intCast(y * self.stride));
-            var x = area.x;
-            while (x < area.right()) : (x += 1) {
-                self.pixels[row + @as(usize, @intCast(x))] = c;
+    /// Real backdrop diffusion, followed by a translucent material tint.
+    /// The caller must reconstruct the entire clipped-to-screen rectangle
+    /// from underlying layers first. Sampling is clamped INSIDE that rectangle
+    /// (no hidden halo); never sample last frame's already-composited glass.
+    /// Scratch is process-local, bounded and reused by this single-threaded
+    /// renderer. Two separable box passes approximate a soft Gaussian.
+    pub fn frost(self: *const Surface, r: Rect, radius: i32, tint: Color, opacity: u8) void {
+        self.frostImpl(r, radius, tint, opacity, false);
+    }
+    pub fn frostTop(self: *const Surface, r: Rect, radius: i32, tint: Color, opacity: u8) void {
+        self.frostImpl(r, radius, tint, opacity, true);
+    }
+    fn frostImpl(self: *const Surface, r: Rect, radius: i32, tint: Color, opacity: u8, top_only: bool) void {
+        const bounds = Rect.intersect(r, .{ .x = 0, .y = 0, .w = self.width, .h = self.height });
+        const area = self.clipped(r);
+        if (bounds.isEmpty() or area.isEmpty()) return;
+        const step = @max(4, @max(@divTrunc(bounds.w + FROST_W - 1, FROST_W), @divTrunc(bounds.h + FROST_H - 1, FROST_H)));
+        const width = @divTrunc(bounds.w + step - 1, step);
+        const height = @divTrunc(bounds.h + step - 1, step);
+        var y: i32 = 0;
+        while (y < height) : (y += 1) {
+            var x: i32 = 0;
+            while (x < width) : (x += 1) {
+                // Four taps average each downsample cell, avoiding single-pixel
+                // aliasing when fine text or icons sit behind the glass.
+                var red: u32 = 0;
+                var green: u32 = 0;
+                var blue: u32 = 0;
+                for ([_]i32{ 1, 3 }) |dy| for ([_]i32{ 1, 3 }) |dx| {
+                    const sx = @min(bounds.right() - 1, bounds.x + x * step + @divTrunc(dx * step, 4));
+                    const sy = @min(bounds.bottom() - 1, bounds.y + y * step + @divTrunc(dy * step, 4));
+                    const c = self.getPhysical(sx * self.scale, sy * self.scale);
+                    red += (c >> 16) & 255;
+                    green += (c >> 8) & 255;
+                    blue += c & 255;
+                };
+                frost_a[@intCast(y * width + x)] = ((red / 4) << 16) | ((green / 4) << 8) | (blue / 4);
+            }
+        }
+        for (0..2) |_| {
+            blurPass(&frost_a, &frost_b, width, height, true);
+            blurPass(&frost_b, &frost_a, width, height, false);
+        }
+        const sc = self.scale;
+        const rad = @max(0, @min(radius, @divTrunc(@min(r.w, r.h), 2))) * sc;
+        y = area.y * sc;
+        while (y < area.bottom() * sc) : (y += 1) {
+            const fy = @max(0, @divTrunc((y - bounds.y * sc) * 256, step * sc) - 128);
+            const y0 = @min(height - 1, fy >> 8);
+            const y1 = @min(height - 1, y0 + 1);
+            var x = area.x * sc;
+            while (x < area.right() * sc) : (x += 1) {
+                const dx = @max(@max(r.x * sc + rad - x - 1, x - (r.right() * sc - rad)), 0);
+                const dy = if (top_only) @max(r.y * sc + rad - y - 1, 0) else @max(@max(r.y * sc + rad - y - 1, y - (r.bottom() * sc - rad)), 0);
+                const d = dx * dx + dy * dy;
+                if (d > rad * rad) continue;
+                const fx = @max(0, @divTrunc((x - bounds.x * sc) * 256, step * sc) - 128);
+                const x0 = @min(width - 1, fx >> 8);
+                const x1 = @min(width - 1, x0 + 1);
+                const top = lerp(frost_a[@intCast(y0 * width + x0)], frost_a[@intCast(y0 * width + x1)], @intCast(fx & 255));
+                const bottom = lerp(frost_a[@intCast(y1 * width + x0)], frost_a[@intCast(y1 * width + x1)], @intCast(fx & 255));
+                const diffused = lerp(top, bottom, @intCast(fy & 255));
+                const material = lerp(diffused, tint, opacity);
+                const edge = @max(1, 2 * rad);
+                const coverage: u8 = if (rad > 0 and d > rad * rad - edge) @intCast(@divTrunc((rad * rad - d) * 255, edge)) else 255;
+                self.putPhysical(x, y, lerp(self.getPhysical(x, y), material, coverage));
+            }
+        }
+    }
+
+    pub fn circle(self: *const Surface, x: i32, y: i32, radius: i32, color: Color) void {
+        self.rounded(.{ .x = x - radius, .y = y - radius, .w = radius * 2 + 1, .h = radius * 2 + 1 }, radius, color, 255);
+    }
+
+    pub fn line(self: *const Surface, x0: i32, y0: i32, x1: i32, y1: i32, color: Color) void {
+        var x = x0 * self.scale;
+        var y = y0 * self.scale;
+        const dx: i32 = @intCast(@abs((x1 - x0) * self.scale));
+        const dy: i32 = -@as(i32, @intCast(@abs((y1 - y0) * self.scale)));
+        const sx: i32 = if (x0 < x1) 1 else -1;
+        const sy: i32 = if (y0 < y1) 1 else -1;
+        var err = dx + dy;
+        while (true) {
+            self.putPhysical(x, y, color);
+            if (x == x1 * self.scale and y == y1 * self.scale) break;
+            const e = 2 * err;
+            if (e >= dy) {
+                err += dy;
+                x += sx;
+            }
+            if (e <= dx) {
+                err += dx;
+                y += sy;
             }
         }
     }
@@ -132,17 +252,94 @@ pub const Surface = struct {
         const area = self.clipped(r);
         if (area.isEmpty()) return;
 
-        var y = area.y;
-        while (y < area.bottom()) : (y += 1) {
+        var y = area.y * self.scale;
+        while (y < area.bottom() * self.scale) : (y += 1) {
             const row = @as(usize, @intCast(y * self.stride));
-            var x = area.x;
-            while (x < area.right()) : (x += 1) {
+            var x = area.x * self.scale;
+            while (x < area.right() * self.scale) : (x += 1) {
                 const i = row + @as(usize, @intCast(x));
                 self.pixels[i] = darken(self.pixels[i], amount);
             }
         }
     }
 };
+
+const FROST_W = 384;
+const FROST_H = 256;
+var frost_a: [FROST_W * FROST_H]u32 = undefined;
+var frost_b: [FROST_W * FROST_H]u32 = undefined;
+
+fn blurPass(src: []const u32, dst: []u32, width: i32, height: i32, horizontal: bool) void {
+    var y: i32 = 0;
+    while (y < height) : (y += 1) {
+        var x: i32 = 0;
+        while (x < width) : (x += 1) {
+            var red: u32 = 0;
+            var green: u32 = 0;
+            var blue: u32 = 0;
+            var delta: i32 = -3;
+            while (delta <= 3) : (delta += 1) {
+                const sx = if (horizontal) @max(0, @min(width - 1, x + delta)) else x;
+                const sy = if (horizontal) y else @max(0, @min(height - 1, y + delta));
+                const c = src[@intCast(sy * width + sx)];
+                red += (c >> 16) & 255;
+                green += (c >> 8) & 255;
+                blue += c & 255;
+            }
+            dst[@intCast(y * width + x)] = ((red / 7) << 16) | ((green / 7) << 8) | (blue / 7);
+        }
+    }
+}
+
+/// Dependency closure helper: glass must be reconstructed in full whenever
+/// any of its backdrop changes. Repeated by the compositor for stacked glass.
+pub fn expandForGlass(damage: Rect, glass: Rect) Rect {
+    return if (Rect.overlaps(damage, glass)) Rect.unionWith(damage, glass) else damage;
+}
+
+test "frost spreads backdrop edges and confines all writes to damage" {
+    const std = @import("std");
+    var pixels: [64 * 32]u32 = undefined;
+    var s = Surface{ .pixels = &pixels, .width = 64, .height = 32, .stride = 64 };
+    const full = Rect{ .x = 0, .y = 0, .w = 64, .h = 32 };
+    s.fill(full, 0x101010);
+    s.fill(.{ .x = 32, .y = 0, .w = 32, .h = 32 }, 0xF0F0F0);
+    const original = pixels;
+    s.setClip(.{ .x = 16, .y = 8, .w = 32, .h = 16 });
+    s.frost(full, 0, 0, 0);
+    try std.testing.expect(s.getPhysical(28, 16) > 0x101010);
+    try std.testing.expect(s.getPhysical(36, 16) < 0xF0F0F0);
+    for (0..32) |y| for (0..64) |x| {
+        if (x < 16 or x >= 48 or y < 8 or y >= 24) try std.testing.expectEqual(original[y * 64 + x], pixels[y * 64 + x]);
+    };
+    const rendered = pixels;
+    pixels = original; // reconstruct underlying layer, as Peel does
+    s.frost(full, 0, 0, 0);
+    try std.testing.expectEqualSlices(u32, &rendered, &pixels);
+}
+
+test "glass damage grows to its dependency and skips unrelated surfaces" {
+    const std = @import("std");
+    const glass = Rect{ .x = 10, .y = 10, .w = 100, .h = 30 };
+    try std.testing.expectEqualDeep(glass, expandForGlass(.{ .x = 20, .y = 20, .w = 2, .h = 2 }, glass));
+    const far = Rect{ .x = 200, .y = 200, .w = 5, .h = 5 };
+    try std.testing.expectEqualDeep(far, expandForGlass(far, glass));
+}
+
+test "2x fill and rounded drawing obey logical damage clipping" {
+    const std = @import("std");
+    var pixels = [_]u32{0} ** 256;
+    var surface = Surface{ .pixels = &pixels, .width = 8, .height = 8, .stride = 16, .scale = 2 };
+    surface.setClip(.{ .x = 2, .y = 2, .w = 3, .h = 3 });
+    surface.fill(.{ .x = 0, .y = 0, .w = 8, .h = 8 }, 0xFFFFFF);
+    for (0..16) |y| for (0..16) |x| {
+        try std.testing.expectEqual(if (x >= 4 and x < 10 and y >= 4 and y < 10) @as(u32, 0xFFFFFF) else 0, pixels[y * 16 + x]);
+    };
+    surface.rounded(.{ .x = 0, .y = 0, .w = 8, .h = 8 }, 4, 0xFF8800, 255);
+    for (0..16) |y| for (0..16) |x| {
+        if (x < 4 or x >= 10 or y < 4 or y >= 10) try std.testing.expectEqual(@as(u32, 0), pixels[y * 16 + x]);
+    };
+}
 
 pub fn lerp(a: Color, b: Color, t: u8) Color {
     const ar = (a >> 16) & 0xFF;

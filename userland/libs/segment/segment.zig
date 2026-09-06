@@ -11,21 +11,21 @@
 
 const pulp = @import("pulp");
 const libpeel = @import("libpeel");
-const glyphs = @import("glyphs.zig");
+const typography = @import("typography");
 
 pub const proto = libpeel.proto;
 
 // ── Theme ───────────────────────────────────────────────────────────────────
 
 pub const Theme = struct {
-    bg: u32 = 0x16120F,
-    surface: u32 = 0x201B17,
-    surface_hover: u32 = 0x2C2520,
-    surface_active: u32 = 0x3A2A18,
-    accent: u32 = 0xFF8C1A,
-    text: u32 = 0xEAE0D5,
-    text_dim: u32 = 0x8A7A6A,
-    border: u32 = 0x000000,
+    bg: u32 = 0xF5F4FC,
+    surface: u32 = 0xE6E3F8,
+    surface_hover: u32 = 0xD3C9FF,
+    surface_active: u32 = 0xBAA9EF,
+    accent: u32 = 0x7454CC,
+    text: u32 = 0x33334C,
+    text_dim: u32 = 0x77728B,
+    border: u32 = 0xDCD7ED,
 };
 
 pub var theme: Theme = .{};
@@ -132,30 +132,13 @@ pub const App = struct {
 
     // ── Painting ────────────────────────────────────────────────────────────
 
-    fn drawGlyph(self: *App, c: u8, x: i32, y: i32, scale: i32, color: u32) void {
-        const g = glyphs.glyph(c);
-        var row: i32 = 0;
-        while (row < 8) : (row += 1) {
-            const bits = g[@intCast(row)];
-            var col: i32 = 0;
-            while (col < 8) : (col += 1) {
-                if (bits & (@as(u8, 0x80) >> @intCast(col)) == 0) continue;
-                self.win.fill(x + col * scale, y + row * scale, scale, scale, color);
-            }
-        }
-    }
-
     pub fn drawText(self: *App, text: []const u8, x: i32, y: i32, scale: i32, color: u32) void {
-        var cx = x;
-        for (text) |c| {
-            self.drawGlyph(c, cx, y, scale, color);
-            cx += 8 * scale;
-        }
+        typography.drawText(&self.win, text, x, y, scale, color);
     }
 
     fn paintWidget(self: *App, w: *const Widget) void {
         switch (w.kind) {
-            .panel => self.win.fill(w.rect.x, w.rect.y, w.rect.w, w.rect.h, w.color),
+            .panel => self.win.rounded(w.rect.x, w.rect.y, w.rect.w, w.rect.h, 12, w.color),
             .separator => self.win.fill(w.rect.x, w.rect.y, w.rect.w, 1, w.color),
             .label => self.drawText(w.text, w.rect.x, w.rect.y, w.scale, w.color),
             .button => {
@@ -166,14 +149,12 @@ pub const App = struct {
                 else
                     theme.surface;
 
-                self.win.fill(w.rect.x, w.rect.y, w.rect.w, w.rect.h, bg);
-                // Accent bar on the left, brighter when the pointer is over it.
-                self.win.fill(w.rect.x, w.rect.y, 2, w.rect.h, if (w.hovered) theme.accent else theme.text_dim);
+                self.win.rounded(w.rect.x, w.rect.y, w.rect.w, w.rect.h, 9, bg);
 
                 const tw = textWidth(w.text, 1);
                 const tx = w.rect.x + @divTrunc(w.rect.w - tw, 2);
                 const ty = w.rect.y + @divTrunc(w.rect.h - 8, 2);
-                self.drawText(w.text, tx, ty, 1, if (w.hovered) theme.text else theme.text_dim);
+                self.drawText(w.text, tx, ty, 1, theme.text);
             },
         }
     }
@@ -248,7 +229,7 @@ pub const App = struct {
 };
 
 pub fn textWidth(text: []const u8, scale: i32) i32 {
-    return @as(i32, @intCast(text.len)) * 8 * scale;
+    return typography.textWidth(text, scale);
 }
 
 /// Create a window and an App bound to it.

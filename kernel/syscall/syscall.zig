@@ -92,6 +92,7 @@ pub const Nr = enum(u64) {
     input_bind = 73,
     input_wait = 74,
     uptime = 60,
+    wall_time = 62,
     _,
 };
 
@@ -157,6 +158,7 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .input_wait => sysInputWait(frame.rdi),
         .yield => sysYield(),
         .uptime => sysUptime(),
+        .wall_time => if (@import("../time/time.zig").unixSeconds()) |seconds| @intCast(seconds) else -5,
         else => ENOSYS,
     };
 

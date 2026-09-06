@@ -1,69 +1,50 @@
-//! about — a small Segment application.
-//!
-//! Exists to be launched from Grove, proving the whole chain: a click in one
-//! process starts another, which asks Peel for a window of its own.
-
+//! About Orange OS: an original frosted system identity card.
 const pulp = @import("pulp");
-const segment = @import("segment");
-
-var app: segment.App = undefined;
-var clicks: u32 = 0;
-var counter_id: u32 = 0;
-var counter_text: [32]u8 = undefined;
-
-fn bump(id: u32) void {
-    _ = id;
-    clicks += 1;
-
-    // Format by hand: there is no allocator, and the buffer must outlive the
-    // call since the widget only stores a slice of it.
-    const prefix = "clicks: ";
-    @memcpy(counter_text[0..prefix.len], prefix);
-    var n = prefix.len;
-
-    var digits: [10]u8 = undefined;
-    var d: usize = 0;
-    var v = clicks;
-    if (v == 0) {
-        digits[0] = '0';
-        d = 1;
-    } else {
-        while (v > 0) : (v /= 10) {
-            digits[d] = '0' + @as(u8, @intCast(v % 10));
-            d += 1;
-        }
-    }
-    var k: usize = 0;
-    while (k < d) : (k += 1) {
-        counter_text[n] = digits[d - 1 - k];
-        n += 1;
-    }
-
-    app.setText(counter_id, counter_text[0..n]);
+const libpeel = @import("libpeel");
+const ui = @import("ui");
+const done = [_]ui.Button{.{ .id = 1, .rect = .{ .x = 280, .y = 282, .w = 112, .h = 36 } }};
+fn paint(win: *const libpeel.Window, pointer: ui.Pointer) void {
+    var s = ui.surface(win);
+    ui.gradient(&s, .{ .x = 0, .y = 0, .w = 420, .h = 338 }, 0, 0xF8E8E3, 0xE8E6F7);
+    s.frost(.{ .x = 22, .y = 20, .w = 376, .h = 114 }, 22, 0xFFFFFF, 100);
+    ui.icon(&s, .welcome, 37, 35, 86);
+    ui.label(&s, "Orange OS", 141, 47, 2, 0x51405C);
+    ui.label(&s, "Daybreak desktop", 142, 84, 1, 0x9A7A91);
+    s.frost(.{ .x = 22, .y = 148, .w = 376, .h = 119 }, 18, 0xFFFFFF, 130);
+    ui.label(&s, "Version 0.1.0  /  x86_64", 38, 164, 1, 0x5D5775);
+    ui.label(&s, "Zest kernel + CitrusFS storage", 38, 190, 1, 0x82798F);
+    ui.label(&s, "Peel display + native applications", 38, 214, 1, 0x82798F);
+    ui.label(&s, "An independent OS, made from scratch.", 38, 242, 1, 0x9D778F);
+    ui.label(&s, "Made for possibility.", 26, 297, 1, 0x9A8DA6);
+    ui.gradient(&s, done[0].rect, 12, if (pointer.pressed == 1) 0x7560AA else if (pointer.hover == 1) 0xAD95DD else 0x9D87CC, 0x7E6AAA);
+    ui.label(&s, "Done", 320, 295, 1, 0xFFFFFF);
+    win.commitAll();
 }
-
 export fn _start() callconv(.c) noreturn {
-    app = segment.createApp("About Orange OS", 340, 210, 420, 470) catch {
-        pulp.puts("about: no display server\n");
-        pulp.exit(1);
-    };
-
-    _ = app.panel(0, 0, 340, 34, segment.theme.surface);
-    _ = app.label("Orange OS 0.1.0", 14, 13, 1, segment.theme.accent);
-    _ = app.separator(0, 34, 340);
-
-    _ = app.label("Zest kernel, written from scratch.", 14, 52, 1, segment.theme.text);
-    _ = app.label("Peel compositor. Segment toolkit.", 14, 68, 1, segment.theme.text_dim);
-    _ = app.label("No Linux. No BSD. No inherited code.", 14, 84, 1, segment.theme.text_dim);
-
-    counter_id = app.label("clicks: 0", 14, 116, 1, segment.theme.text);
-    _ = app.button("Click me", 14, 140, 140, 32, bump);
-    _ = app.button("Quit", 170, 140, 140, 32, quit);
-
-    app.run();
-}
-
-fn quit(id: u32) void {
-    _ = id;
-    app.close();
+    const win = libpeel.createWindow("About Orange OS", 420, 338, 440, 220) catch pulp.exit(1);
+    var pointer: ui.Pointer = .{};
+    paint(&win, pointer);
+    var buf: [128]u8 = undefined;
+    while (true) {
+        var dirty = false;
+        while (true) {
+            const m = pulp.portRecvMsg(win.reply, &buf, false) catch break;
+            if (m.len == 0) break;
+            if (m.opcode == libpeel.proto.Op.close_requested) {
+                win.destroy();
+                pulp.exit(0);
+            }
+            if (m.opcode != libpeel.proto.Op.input or m.len < @sizeOf(libpeel.proto.Input)) continue;
+            const ev: *align(1) const libpeel.proto.Input = @ptrCast(&buf);
+            if (ev.kind != pulp.EV_MOUSE) continue;
+            const old = pointer;
+            if (pointer.update(ev.x, ev.y, ev.code, &done) == 1) {
+                win.destroy();
+                pulp.exit(0);
+            }
+            dirty = dirty or old.hover != pointer.hover or old.down != pointer.down;
+        }
+        if (dirty) paint(&win, pointer);
+        pulp.sleepMs(16);
+    }
 }

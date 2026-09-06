@@ -13,8 +13,10 @@
 const pulp = @import("pulp");
 const libpeel = @import("libpeel");
 const proto = libpeel.proto;
-const gfx = @import("gfx.zig");
+const gfx = @import("gfx");
+const ui = @import("ui");
 const font = @import("font.zig");
+const desktop = @import("desktop.zig");
 
 const Rect = gfx.Rect;
 const Color = gfx.Color;
@@ -22,19 +24,15 @@ const Color = gfx.Color;
 // ── Theme ───────────────────────────────────────────────────────────────────
 
 const ORANGE: Color = 0xFF8C1A;
-const ORANGE_DEEP: Color = 0xC25E00;
-const BG_TOP: Color = 0x1A1410;
-const BG_BOTTOM: Color = 0x0C0906;
-const WIN_BG: Color = 0x1E1A17;
-const WIN_TITLE: Color = 0x2A2420;
-const WIN_TITLE_ACTIVE: Color = 0x3A2A18;
-const TEXT: Color = 0xEAE0D5;
-const TEXT_DIM: Color = 0x8A7A6A;
-const BORDER: Color = 0x000000;
+const WIN_BG: Color = 0xF5F4FC;
+const WIN_TITLE: Color = 0xE8E7F2;
+const WIN_TITLE_ACTIVE: Color = 0xF7F5FC;
+const TEXT: Color = 0x33334C;
+const TEXT_DIM: Color = 0x77758C;
 
-const TITLE_H: i32 = 26;
+const TITLE_H: i32 = 38;
 const BORDER_W: i32 = 1;
-const SHADOW: i32 = 6;
+const SHADOW: i32 = 16;
 
 // ── Windows ─────────────────────────────────────────────────────────────────
 
@@ -46,6 +44,8 @@ const Window = struct {
     title_len: usize = 0,
     accent: Color,
     visible: bool = true,
+    zoomed: bool = false,
+    restore_rect: Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
 
     /// A client-backed window owns a shared buffer the client renders into.
     /// Peel only ever reads it. A window with no buffer is drawn by Peel
@@ -84,17 +84,21 @@ const Window = struct {
     }
 
     fn closeButton(self: *const Window) Rect {
-        return .{ .x = self.rect.right() - 28, .y = self.rect.y, .w = 28, .h = TITLE_H };
+        return self.control(0);
+    }
+
+    fn control(self: *const Window, index: i32) Rect {
+        return .{ .x = self.rect.x + 10 + index * 22, .y = self.rect.y + 7, .w = 22, .h = 24 };
     }
 
     /// The area the compositor must repaint for this window: its frame plus
     /// the shadow that falls outside it.
     fn damageRect(self: *const Window) Rect {
         return .{
-            .x = self.rect.x - 1,
-            .y = self.rect.y - 1,
-            .w = self.rect.w + SHADOW + 2,
-            .h = self.rect.h + SHADOW + 2,
+            .x = self.rect.x - SHADOW,
+            .y = self.rect.y - SHADOW,
+            .w = self.rect.w + SHADOW * 2,
+            .h = self.rect.h + SHADOW * 2 + 8,
         };
     }
 };
@@ -109,11 +113,13 @@ var next_window_id: u32 = 1;
 fn addWindow(r: Rect, title: []const u8, accent: Color) ?usize {
     if (window_count >= MAX_WINDOWS) return null;
     const idx = window_count;
+    if (activeWindow()) |old| addDamage(windows[old].damageRect());
     windows[idx] = .{ .rect = r, .accent = accent, .id = next_window_id };
     windows[idx].setTitle(title);
     next_window_id += 1;
     z_order[idx] = idx;
     window_count += 1;
+    chromeDamage();
     return idx;
 }
 
@@ -139,11 +145,142 @@ fn raise(index: usize) void {
 
 /// Focus a window and repaint both title bars whose active state changed.
 fn focusWindow(index: usize) void {
-    if (window_count == 0 or z_order[window_count - 1] == index) return;
-    const previous = z_order[window_count - 1];
-    addDamage(windows[previous].damageRect());
+    if (activeWindow()) |previous| addDamage(windows[previous].damageRect());
+    windows[index].visible = true;
     raise(index);
     addDamage(windows[index].damageRect());
+    chromeDamage();
+}
+
+fn activeWindow() ?usize {
+    var i = window_count;
+    while (i > 0) {
+        i -= 1;
+        const idx = z_order[i];
+        if (windows[idx].visible) return idx;
+    }
+    return null;
+}
+
+var shell: desktop.State = .{};
+var wallpaper: ?gfx.Surface = null;
+var pending_apps: [6]i64 = .{ -1, -1, -1, -1, -1, -1 };
+var shell_pressed: ?u16 = null;
+var control_pressed: ?struct { id: u32, control: i32 } = null;
+var desktop_hidden: [MAX_WINDOWS]u32 = [_]u32{0} ** MAX_WINDOWS;
+var desktop_hidden_count: usize = 0;
+
+fn chromeDamage() void {
+    addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = desktop.BAR_H });
+    const d = desktop.dockRect(&screen);
+    addDamage(.{ .x = d.x - 12, .y = d.y - 45, .w = d.w + 24, .h = d.h + 65 });
+    if (shell.popup != .none) addDamage(desktop.popupRect(&screen, shell.popup));
+}
+
+fn appIndex(title: []const u8) usize {
+    if (@import("std").mem.eql(u8, title, "Files")) return 4;
+    if (@import("std").mem.eql(u8, title, "Trash")) return 5;
+    if (title.len >= 7 and @import("std").mem.eql(u8, title[0..7], "Squeeze")) return 1;
+    if (@import("std").mem.eql(u8, title, "clock")) return 2;
+    if (title.len >= 5 and @import("std").mem.eql(u8, title[0..5], "About")) return 3;
+    return 0;
+}
+
+fn syncShell() void {
+    shell.active = if (activeWindow()) |idx| windows[idx].title() else "Desktop";
+    shell.running = .{ false, false, false, false, false, false };
+    shell.count = window_count;
+    for (0..window_count) |i| {
+        const app = appIndex(windows[i].title());
+        shell.running[app] = true;
+        shell.items[i] = .{ .title = windows[i].title(), .hidden = !windows[i].visible, .app = app, .pixels = windows[i].pixels, .width = windows[i].client_w * screen.scale, .height = windows[i].client_h * screen.scale };
+    }
+}
+
+fn launchApp(app: usize, new_instance: bool) void {
+    if (!new_instance) {
+        var i = window_count;
+        while (i > 0) {
+            i -= 1;
+            const idx = z_order[i];
+            if (appIndex(windows[idx].title()) == app) {
+                focusWindow(idx);
+                return;
+            }
+        }
+        if (pending_apps[app] > 0) {
+            const ended = pulp.waitNoHang(pending_apps[app]) catch @as(?i64, 0);
+            if (ended == null) return;
+        }
+    }
+    if (window_count == MAX_WINDOWS) {
+        shell.notice = "Window limit reached. Close a window.";
+        return;
+    }
+    const paths = [_][]const u8{ "/bin/grove", "/bin/squeeze", "/bin/clock", "/bin/about", "/bin/files", "/bin/trash" };
+    pending_apps[app] = pulp.spawn(paths[app]) catch {
+        shell.notice = "Could not start the application.";
+        return;
+    };
+    pulp.print("desktop: launched {s}\n", .{paths[app]});
+}
+
+fn toggleDesktop() void {
+    if (desktop_hidden_count > 0) {
+        for (desktop_hidden[0..desktop_hidden_count]) |id| {
+            if (findWindowById(id)) |idx| windows[idx].visible = true;
+        }
+        desktop_hidden_count = 0;
+    } else {
+        for (0..window_count) |i| if (windows[i].visible) {
+            desktop_hidden[desktop_hidden_count] = windows[i].id;
+            desktop_hidden_count += 1;
+            windows[i].visible = false;
+        };
+    }
+    addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = screen.height });
+}
+
+fn zoomWindow(idx: usize) void {
+    const w = &windows[idx];
+    addDamage(w.damageRect());
+    if (w.zoomed) {
+        w.rect = w.restore_rect;
+    } else {
+        w.restore_rect = w.rect;
+        w.rect = .{ .x = 12, .y = desktop.BAR_H + 12, .w = screen.width - 24, .h = screen.height - desktop.BAR_H - desktop.DOCK_H - 42 };
+    }
+    w.zoomed = !w.zoomed;
+    addDamage(w.damageRect());
+    pulp.print("desktop: zoom window {d} = {d}\n", .{ w.id, @intFromBool(w.zoomed) });
+}
+
+fn shellAction(action: u16) void {
+    shell.notice = "";
+    const old = shell.popup;
+    shell.popup = .none;
+    switch (action) {
+        1...4 => launchApp(action - 1, false),
+        desktop.Action.files => launchApp(4, false),
+        desktop.Action.trash => launchApp(5, false),
+        desktop.Action.menu => shell.popup = if (old == .menu) .none else .menu,
+        desktop.Action.overview => shell.popup = if (old == .overview) .none else .overview,
+        desktop.Action.settings => shell.popup = if (old == .settings) .none else .settings,
+        desktop.Action.desktop => toggleDesktop(),
+        desktop.Action.new_terminal => launchApp(1, true),
+        desktop.Action.wallpaper...desktop.Action.wallpaper + 2 => {
+            shell.palette = action - desktop.Action.wallpaper;
+            rebuildWallpaper();
+            shell.popup = .settings;
+            pulp.print("desktop: wallpaper {d}\n", .{shell.palette});
+        },
+        desktop.Action.window...desktop.Action.window + MAX_WINDOWS - 1 => {
+            const idx = action - desktop.Action.window;
+            if (idx < window_count) focusWindow(idx);
+        },
+        else => {},
+    }
+    addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = screen.height });
 }
 
 /// Topmost window containing the point, searching front to back.
@@ -177,8 +314,8 @@ fn clearDamage() void {
 
 // ── Cursor ──────────────────────────────────────────────────────────────────
 
-const CURSOR_W: i32 = 10;
-const CURSOR_H: i32 = 16;
+const CURSOR_W: i32 = 20;
+const CURSOR_H: i32 = 20;
 
 var cursor_x: i32 = 0;
 var cursor_y: i32 = 0;
@@ -189,18 +326,8 @@ fn cursorRect(x: i32, y: i32) Rect {
     return .{ .x = x, .y = y, .w = CURSOR_W, .h = CURSOR_H };
 }
 
-/// A simple arrow: each row is a run starting at the left edge.
 fn drawCursor(s: *const gfx.Surface, x: i32, y: i32) void {
-    const widths = [_]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 6, 4, 4, 3, 2, 1, 0 };
-    var row: i32 = 0;
-    while (row < CURSOR_H) : (row += 1) {
-        const w = widths[@intCast(row)];
-        if (w == 0) continue;
-        // Black outline first, white fill inside it, so the pointer stays
-        // visible over both light and dark content.
-        s.fill(.{ .x = x, .y = y + row, .w = w + 1, .h = 1 }, 0x000000);
-        s.fill(.{ .x = x + 1, .y = y + row, .w = w - 1, .h = 1 }, 0xFFFFFF);
-    }
+    ui.icon(s, .pointer, x, y, 20);
 }
 
 // ── Painting ────────────────────────────────────────────────────────────────
@@ -213,18 +340,31 @@ var screen: gfx.Surface = undefined;
 var front: gfx.Surface = undefined;
 var back_handle: i64 = -1;
 
+fn rebuildWallpaper() void {
+    if (wallpaper) |*s| {
+        var y: i32 = 0;
+        while (y < s.height * s.scale) : (y += 1) {
+            var x: i32 = 0;
+            while (x < s.width * s.scale) : (x += 1) s.putPhysical(x, y, desktop.wallpaperPixel(x, y, s.width * s.scale, s.height * s.scale, shell.palette));
+        }
+    }
+}
+
 fn paintWallpaper(clip: Rect) void {
     const full = Rect{ .x = 0, .y = 0, .w = screen.width, .h = screen.height };
     const area = Rect.intersect(clip, full);
     if (area.isEmpty()) return;
 
-    // Gradient computed per row against the full screen height, then clipped,
-    // so a partial repaint matches what a full one would have produced.
-    var y = area.y;
-    while (y < area.bottom()) : (y += 1) {
-        const t: u32 = @intCast(@divTrunc(y * 255, @max(screen.height, 1)));
-        const c = gfx.lerp(BG_TOP, BG_BOTTOM, @intCast(t));
-        screen.fill(.{ .x = area.x, .y = y, .w = area.w, .h = 1 }, c);
+    var y = area.y * screen.scale;
+    while (y < area.bottom() * screen.scale) : (y += 1) {
+        if (wallpaper) |s| {
+            const start: usize = @intCast(y * screen.stride + area.x * screen.scale);
+            const len: usize = @intCast(area.w * screen.scale);
+            @memcpy(screen.pixels[start..][0..len], s.pixels[start..][0..len]);
+        } else {
+            var x = area.x * screen.scale;
+            while (x < area.right() * screen.scale) : (x += 1) screen.putPhysical(x, y, desktop.wallpaperPixel(x, y, screen.width * screen.scale, screen.height * screen.scale, shell.palette));
+        }
     }
 }
 
@@ -232,28 +372,42 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
     if (!w.visible) return;
     if (!Rect.overlaps(w.damageRect(), clip)) return;
 
-    // Shadow: offset down-right, darkening whatever is beneath. Only the
-    // fringe outside the window is visible, since the background fill below
-    // covers the rest - and shading is applied to freshly painted wallpaper
-    // each frame, so it does not accumulate.
-    screen.shade(.{
-        .x = w.rect.x + SHADOW,
-        .y = w.rect.y + SHADOW,
-        .w = w.rect.w,
-        .h = w.rect.h,
-    }, 120);
-
-    screen.fill(w.rect, WIN_BG);
-    screen.fill(w.titleBar(), if (active) WIN_TITLE_ACTIVE else WIN_TITLE);
-    screen.outline(w.rect, BORDER, BORDER_W);
-
-    // Accent stripe along the top of the title bar.
-    screen.fill(.{ .x = w.rect.x, .y = w.rect.y, .w = w.rect.w, .h = 2 }, w.accent);
-
-    font.drawText(&screen, w.title(), w.rect.x + 10, w.rect.y + 9, 1, if (active) TEXT else TEXT_DIM);
-
-    if (w.closable) {
-        font.drawChar(&screen, 'x', w.rect.right() - 18, w.rect.y + 9, 1, TEXT_DIM);
+    var spread: i32 = 14;
+    while (spread >= 2) : (spread -= 1) {
+        // Only the shadow fringe survives the opaque window. Clip to four
+        // disjoint strips instead of blending its entire covered interior.
+        const shadow = Rect{ .x = w.rect.x - spread, .y = w.rect.y - spread + 6, .w = w.rect.w + spread * 2, .h = w.rect.h + spread * 2 };
+        const strips = [_]Rect{
+            .{ .x = shadow.x, .y = shadow.y, .w = shadow.w, .h = w.rect.y - shadow.y },
+            .{ .x = shadow.x, .y = w.rect.bottom(), .w = shadow.w, .h = shadow.bottom() - w.rect.bottom() },
+            .{ .x = shadow.x, .y = w.rect.y, .w = spread, .h = w.rect.h },
+            .{ .x = w.rect.right(), .y = w.rect.y, .w = spread, .h = w.rect.h },
+        };
+        for (strips) |strip| {
+            screen.setClip(Rect.intersect(clip, strip));
+            screen.rounded(shadow, 16 + spread, 0x1F183C, if (active) 5 else 3);
+        }
+    }
+    screen.setClip(clip);
+    // Diffuse the actual underlying desktop before painting opaque content.
+    // Limit title writes to the title while rounding the full frame's top edge.
+    screen.setClip(Rect.intersect(clip, w.titleBar()));
+    screen.frostTop(w.titleBar(), 13, if (active) WIN_TITLE_ACTIVE else WIN_TITLE, if (active) 196 else 172);
+    screen.setClip(Rect.intersect(clip, .{ .x = w.rect.x, .y = w.rect.y + TITLE_H, .w = w.rect.w, .h = w.rect.h - TITLE_H }));
+    screen.rounded(w.rect, 13, WIN_BG, 255);
+    screen.setClip(clip);
+    screen.rounded(.{ .x = w.rect.x + 14, .y = w.rect.y, .w = w.rect.w - 28, .h = 1 }, 0, 0xFFFFFF, 160);
+    screen.rounded(.{ .x = w.rect.x + 1, .y = w.rect.y + TITLE_H - 1, .w = w.rect.w - 2, .h = 1 }, 0, 0x9C95B9, 60);
+    const title = w.title()[0..@min(w.title_len, @as(usize, @intCast(@max(1, @divTrunc(w.rect.w - 200, 8)))))];
+    font.drawText(&screen, title, w.rect.x + @divTrunc(w.rect.w - font.textWidth(title, 1), 2) + 20, w.rect.y + 16, 1, if (active) TEXT else TEXT_DIM);
+    const colors = [_]u32{ 0xFF605C, 0xFFBD44, 0x00CA70 };
+    for (0..3) |i| {
+        if (i == 0 and !w.closable) continue;
+        const c = w.control(@intCast(i));
+        screen.circle(c.x + 11, c.y + 12, 7, colors[i]);
+        if (c.contains(cursor_x, cursor_y)) {
+            ui.icon(&screen, ([_]ui.Icon{ .close, .minimize, .maximize })[i], c.x + 3, c.y + 4, 16);
+        }
     }
 
     // Client content: copy the client's buffer into place. Peel never draws
@@ -262,15 +416,27 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
         const content = w.contentRect();
         const area = Rect.intersect(content, clip);
         if (!area.isEmpty()) {
-            var y = area.y;
-            while (y < area.bottom()) : (y += 1) {
-                const sy = y - content.y;
-                if (sy < 0 or sy >= w.client_h) continue;
-                var x = area.x;
-                while (x < area.right()) : (x += 1) {
-                    const sx = x - content.x;
-                    if (sx < 0 or sx >= w.client_w) continue;
-                    screen.put(x, y, src[@intCast(sy * w.client_w + sx)]);
+            const sc = screen.scale;
+            var y = area.y * sc;
+            while (y < area.bottom() * sc) : (y += 1) {
+                const sy = @divTrunc((y - content.y * sc) * w.client_h, @max(1, content.h));
+                if (sy < 0 or sy >= w.client_h * sc) continue;
+                var x = area.x * sc;
+                while (x < area.right() * sc) : (x += 1) {
+                    const sx = @divTrunc((x - content.x * sc) * w.client_w, @max(1, content.w));
+                    if (sx < 0 or sx >= w.client_w * sc) continue;
+                    // Preserve the frame's rounded lower corners when copying
+                    // client pixels. The shared client buffer stays rectangular.
+                    const dx = @max(@max((w.rect.x + 12) * sc - x, x - (w.rect.right() - 13) * sc), 0);
+                    const dy = @max(y - (w.rect.bottom() - 13) * sc, 0);
+                    if (dx * dx + dy * dy > 144 * sc * sc) continue;
+                    const pixel = src[@intCast(sy * w.client_w * sc + sx)];
+                    const dist = dx * dx + dy * dy;
+                    if (dist > 144 * sc * sc - 24 * sc) {
+                        const alpha: u8 = @intCast(@divTrunc((144 * sc * sc - dist) * 255, 24 * sc));
+                        const offset: usize = @intCast(y * screen.stride + x);
+                        screen.putPhysical(x, y, gfx.lerp(screen.pixels[offset], pixel, alpha));
+                    } else screen.putPhysical(x, y, pixel);
                 }
             }
         }
@@ -279,20 +445,23 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
     }
 }
 
-fn paintPanel(clip: Rect) void {
-    const panel = Rect{ .x = 0, .y = 0, .w = screen.width, .h = 22 };
-    if (!Rect.overlaps(panel, clip)) return;
-
-    screen.fill(panel, 0x14100C);
-    screen.fill(.{ .x = 0, .y = 22, .w = screen.width, .h = 1 }, ORANGE_DEEP);
-    font.drawText(&screen, "Orange OS", 10, 7, 1, ORANGE);
-    font.drawText(&screen, "Peel compositor", 100, 7, 1, TEXT_DIM);
-}
-
 /// Repaint everything intersecting `area`, back to front.
-fn composite(area: Rect) void {
-    const clip = Rect.intersect(area, .{ .x = 0, .y = 0, .w = screen.width, .h = screen.height });
-    if (clip.isEmpty()) return;
+fn composite(area: Rect) Rect {
+    const full = Rect{ .x = 0, .y = 0, .w = screen.width, .h = screen.height };
+    var clip = Rect.intersect(area, full);
+    if (clip.isEmpty()) return clip;
+    syncShell();
+    // Fixed-point closure for stacked glass. Underlying layers are always
+    // repainted before frost samples them; old glass/cursor pixels never feed
+    // the next blur. Keep ordinary client-only damage small.
+    while (true) {
+        const before = clip;
+        for (windows[0..window_count]) |*w| {
+            if (w.visible) clip = gfx.expandForGlass(clip, w.titleBar());
+        }
+        clip = Rect.intersect(desktop.expandDamage(&screen, &shell, clip), full);
+        if (clip.x == before.x and clip.y == before.y and clip.w == before.w and clip.h == before.h) break;
+    }
 
     // Everything drawn this frame is confined to the damage region. Window
     // backgrounds and title bars are drawn unclipped by intent - they are
@@ -302,15 +471,17 @@ fn composite(area: Rect) void {
     defer screen.resetClip();
 
     paintWallpaper(clip);
-    paintPanel(clip);
 
     var i: usize = 0;
     while (i < window_count) : (i += 1) {
         const idx = z_order[i];
-        paintWindow(&windows[idx], i == window_count - 1, clip);
+        paintWindow(&windows[idx], activeWindow() == idx, clip);
     }
 
+    syncShell();
+    desktop.paint(&screen, &shell);
     drawCursor(&screen, cursor_x, cursor_y);
+    return clip;
 }
 
 /// Publish an already-composited rectangle to the visible framebuffer.
@@ -318,12 +489,12 @@ fn present(area: Rect) void {
     const clip = Rect.intersect(area, .{ .x = 0, .y = 0, .w = screen.width, .h = screen.height });
     if (clip.isEmpty()) return;
 
-    var y = clip.y;
-    while (y < clip.bottom()) : (y += 1) {
+    var y = clip.y * screen.scale;
+    while (y < clip.bottom() * screen.scale) : (y += 1) {
         const src_row: usize = @intCast(y * screen.stride);
         const dst_row: usize = @intCast(y * front.stride);
-        const x: usize = @intCast(clip.x);
-        const width: usize = @intCast(clip.w);
+        const x: usize = @intCast(clip.x * screen.scale);
+        const width: usize = @intCast(clip.w * screen.scale);
         @memcpy(front.pixels[dst_row + x ..][0..width], screen.pixels[src_row + x ..][0..width]);
     }
 }
@@ -355,13 +526,13 @@ fn handleCreateWindow(payload: []const u8) void {
         return;
     };
 
-    const w: i32 = @intCast(req.width);
-    const h: i32 = @intCast(req.height);
-    if (w <= 0 or h <= 0 or w > 2000 or h > 2000) {
+    if (req.width == 0 or req.height == 0 or req.width > 2000 or req.height > 2000 or req.scale != @as(u32, @intCast(screen.scale))) {
         sendCreated(reply, 0, req.width, req.height);
         pulp.handleClose(reply);
         return;
     }
+    const w: i32 = @intCast(req.width);
+    const h: i32 = @intCast(req.height);
 
     const title_len = @min(req.title_len, 48);
     const name_len = @min(req.shm_name_len, 32);
@@ -386,7 +557,7 @@ fn handleCreateWindow(payload: []const u8) void {
     const frame_w = w + BORDER_W * 2;
     const frame_h = h + TITLE_H + BORDER_W;
     const idx = addWindow(
-        .{ .x = req.x, .y = req.y, .w = frame_w, .h = frame_h },
+        .{ .x = @max(0, @min(req.x, screen.width - frame_w)), .y = @max(desktop.BAR_H + 10, @min(req.y, screen.height - desktop.DOCK_H - 30 - frame_h)), .w = frame_w, .h = frame_h },
         req.title[0..title_len],
         ACCENTS[window_count % ACCENTS.len],
     ) orelse {
@@ -404,6 +575,7 @@ fn handleCreateWindow(payload: []const u8) void {
     windows[idx].buffer_handle = shm;
     windows[idx].owner_pid = req.pid;
     windows[idx].closable = req.flags & proto.WindowFlags.closable != 0;
+    pending_apps[appIndex(windows[idx].title())] = -1;
 
     // A shared reply port would deliver one client's answer to whichever
     // client happened to read first, so each process owns its own port.
@@ -420,6 +592,9 @@ fn removeWindow(index: usize) void {
     if (index >= window_count) return;
 
     const removed = windows[index];
+    if (pointer_capture == removed.id) pointer_capture = null;
+    if (hover_window == removed.id) hover_window = null;
+    if (dragging == removed.id) dragging = null;
     addDamage(removed.damageRect());
     if (removed.reply_port >= 0) pulp.handleClose(removed.reply_port);
     if (removed.buffer_handle >= 0) pulp.handleClose(removed.buffer_handle);
@@ -439,7 +614,8 @@ fn removeWindow(index: usize) void {
     }
 
     // The newly exposed top window changes from inactive to active.
-    if (window_count > 0) addDamage(windows[z_order[window_count - 1]].damageRect());
+    if (activeWindow()) |idx| addDamage(windows[idx].damageRect());
+    chromeDamage();
     pulp.print("peel: closed window {d} \"{s}\" for pid {d}\n", .{
         removed.id, removed.title(), removed.owner_pid,
     });
@@ -459,6 +635,12 @@ fn handleCommit(payload: []const u8) void {
     var i: usize = 0;
     while (i < window_count) : (i += 1) {
         if (windows[i].id != c.window_id) continue;
+        if (shell.popup == .overview) addDamage(desktop.popupRect(&screen, .overview));
+        if (!windows[i].visible) return;
+        if (windows[i].zoomed) {
+            addDamage(windows[i].contentRect());
+            return;
+        }
         const content = windows[i].contentRect();
         // Client coordinates are relative to its own buffer; translate into
         // screen space before damaging.
@@ -482,21 +664,49 @@ fn pumpClients() void {
         const m = pulp.portRecvMsg(server_port, &buf, false) catch return;
         if (m.len == 0) return;
         switch (m.opcode) {
+            proto.Op.display_info => {
+                if (m.len != 8) continue;
+                const pid = @as(*align(1) const i64, @ptrCast(&buf)).*;
+                var name_buf: [32]u8 = undefined;
+                const reply = pulp.portConnect(proto.replyPortName(&name_buf, pid)) catch continue;
+                const scale: u32 = @intCast(screen.scale);
+                _ = pulp.portSend(reply, proto.Op.display_info_reply, @import("std").mem.asBytes(&scale)) catch {};
+                pulp.handleClose(reply);
+            },
             proto.Op.create_window => handleCreateWindow(buf[0..m.len]),
             proto.Op.commit => handleCommit(buf[0..m.len]),
             proto.Op.destroy => handleDestroy(buf[0..m.len]),
+            proto.Op.launch_app => {
+                if (m.len >= 4) {
+                    const app: *align(1) const u32 = @ptrCast(&buf);
+                    if (app.* < 6) {
+                        launchApp(@intCast(app.*), false);
+                        chromeDamage();
+                    }
+                }
+            },
+            proto.Op.desktop_panel => {
+                if (m.len == 4) {
+                    const action = @as(*align(1) const u32, @ptrCast(&buf)).*;
+                    if (action == desktop.Action.settings or action == desktop.Action.overview) {
+                        shellAction(@intCast(action));
+                        pulp.print("desktop: requested panel {d}\n", .{action});
+                    }
+                }
+            },
             else => {},
         }
     }
 }
 
 var dragging: ?u32 = null;
-var close_pressed: ?u32 = null;
 var pointer_capture: ?u32 = null;
 var hover_window: ?u32 = null;
 var drag_dx: i32 = 0;
 var drag_dy: i32 = 0;
 var buttons: u8 = 0;
+var mouse_remainder_x: i32 = 0;
+var mouse_remainder_y: i32 = 0;
 var frames: u64 = 0;
 
 /// Send an input event to a window's client, in coordinates relative to its
@@ -512,8 +722,8 @@ fn sendInput(idx: usize, kind: u8, code: u8, value: u8, sx: i32, sy: i32) void {
         .code = code,
         .value = value,
         .reserved = 0,
-        .x = sx - content.x,
-        .y = sy - content.y,
+        .x = @divFloor((sx - content.x) * w.client_w, @max(1, content.w)),
+        .y = @divFloor((sy - content.y) * w.client_h, @max(1, content.h)),
     };
     const bytes: [*]const u8 = @ptrCast(&msg);
     _ = pulp.portSend(w.reply_port, proto.Op.input, bytes[0..@sizeOf(proto.Input)]) catch {};
@@ -544,8 +754,12 @@ fn handleMouse(e: *const pulp.InputEvent) void {
     prev_cursor_x = cursor_x;
     prev_cursor_y = cursor_y;
 
-    cursor_x += e.dx;
-    cursor_y += e.dy;
+    mouse_remainder_x += e.dx;
+    mouse_remainder_y += e.dy;
+    cursor_x += @divTrunc(mouse_remainder_x, screen.scale);
+    cursor_y += @divTrunc(mouse_remainder_y, screen.scale);
+    mouse_remainder_x = @rem(mouse_remainder_x, screen.scale);
+    mouse_remainder_y = @rem(mouse_remainder_y, screen.scale);
     cursor_x = @max(0, @min(cursor_x, screen.width - 1));
     cursor_y = @max(0, @min(cursor_y, screen.height - 1));
 
@@ -553,14 +767,50 @@ fn handleMouse(e: *const pulp.InputEvent) void {
     const is_down = e.code & 1 != 0;
     buttons = e.code;
 
+    addDamage(cursorRect(prev_cursor_x, prev_cursor_y));
+    addDamage(cursorRect(cursor_x, cursor_y));
+    if (windowAt(prev_cursor_x, prev_cursor_y)) |idx| {
+        if (windows[idx].titleBar().contains(prev_cursor_x, prev_cursor_y)) addDamage(windows[idx].titleBar());
+    }
+    if (windowAt(cursor_x, cursor_y)) |idx| {
+        if (windows[idx].titleBar().contains(cursor_x, cursor_y)) addDamage(windows[idx].titleBar());
+    }
+    syncShell();
+    const hit = desktop.hit(&screen, &shell, cursor_x, cursor_y);
+    if (hit != shell.hover) {
+        shell.hover = hit;
+        chromeDamage();
+    }
+
+    // Desktop chrome captures a complete press/release pair, including a
+    // release outside the target. Never leak that release into a client.
+    if (dragging == null and control_pressed == null and pointer_capture == null and (hit != 0 or shell_pressed != null)) {
+        if (hover_window) |old| sendInputById(old, pulp.EV_MOUSE, 0, 0, -10000, -10000);
+        hover_window = null;
+        if (is_down and !was_down) shell_pressed = hit;
+        if (!is_down and was_down) {
+            if (shell_pressed) |pressed| if (pressed == hit) {
+                shellAction(hit);
+            };
+            shell_pressed = null;
+        }
+        return;
+    }
+
     if (is_down and !was_down) {
         if (windowAt(cursor_x, cursor_y)) |idx| {
             focusWindow(idx);
             const id = windows[idx].id;
             if (windows[idx].titleBar().contains(cursor_x, cursor_y)) {
-                if (windows[idx].closable and windows[idx].closeButton().contains(cursor_x, cursor_y)) {
-                    close_pressed = id;
-                } else {
+                var control: i32 = 0;
+                while (control < 3) : (control += 1) {
+                    if (control == 0 and !windows[idx].closable) continue;
+                    if (windows[idx].control(control).contains(cursor_x, cursor_y)) {
+                        control_pressed = .{ .id = id, .control = control };
+                        break;
+                    }
+                }
+                if (control_pressed == null and !windows[idx].zoomed) {
                     dragging = id;
                     drag_dx = cursor_x - windows[idx].rect.x;
                     drag_dy = cursor_y - windows[idx].rect.y;
@@ -582,21 +832,35 @@ fn handleMouse(e: *const pulp.InputEvent) void {
         const min_x = -windows[idx].rect.w + 40;
         const max_x = screen.width - 40;
         windows[idx].rect.x = @max(min_x, @min(cursor_x - drag_dx, max_x));
-        windows[idx].rect.y = @max(23, @min(cursor_y - drag_dy, screen.height - TITLE_H));
+        windows[idx].rect.y = @max(desktop.BAR_H, @min(cursor_y - drag_dy, screen.height - desktop.DOCK_H - TITLE_H - 22));
         addDamage(windows[idx].damageRect());
     };
 
     if (!is_down and was_down) {
-        if (close_pressed) |id| {
-            if (findWindowById(id)) |idx| {
-                if (windows[idx].closeButton().contains(cursor_x, cursor_y)) requestClose(id);
+        if (control_pressed) |pressed| {
+            if (findWindowById(pressed.id)) |idx| {
+                if (windows[idx].control(pressed.control).contains(cursor_x, cursor_y)) {
+                    switch (pressed.control) {
+                        0 => requestClose(pressed.id),
+                        1 => {
+                            windows[idx].visible = false;
+                            addDamage(windows[idx].damageRect());
+                            if (activeWindow()) |active| addDamage(windows[active].damageRect());
+                            chromeDamage();
+                            pulp.print("desktop: minimized window {d}\n", .{pressed.id});
+                        },
+                        2 => zoomWindow(idx),
+                        else => {},
+                    }
+                }
             }
+            control_pressed = null;
+            return;
         }
         dragging = null;
-        close_pressed = null;
     }
 
-    if (dragging == null and close_pressed == null) {
+    if (dragging == null and control_pressed == null) {
         var target = pointer_capture;
         if (target == null) {
             if (clientWindowAt(cursor_x, cursor_y)) |idx| target = windows[idx].id;
@@ -625,17 +889,42 @@ fn handleMouse(e: *const pulp.InputEvent) void {
 }
 
 fn handleKey(e: *const pulp.InputEvent) void {
+    if (e.isPress() and e.code == 0x01 and shell.popup != .none) {
+        shellAction(desktop.Action.dismiss);
+        return;
+    }
+    // F3: window overview. F4: appearance. F11: reveal the desktop.
+    if (e.isPress()) switch (e.code) {
+        0x3D => {
+            shellAction(desktop.Action.overview);
+            return;
+        },
+        0x3E => {
+            shellAction(desktop.Action.settings);
+            return;
+        },
+        0x57 => {
+            shellAction(desktop.Action.desktop);
+            return;
+        },
+        else => {},
+    };
+    if (shell.popup != .none) return;
     // Tab cycles focus, so the compositor is demonstrable without a mouse.
     if (e.isPress() and e.code == 0x0F and window_count > 1) {
-        const bottom = z_order[0];
-        focusWindow(bottom);
+        for (0..window_count) |i| {
+            const idx = z_order[i];
+            if (windows[idx].visible) {
+                focusWindow(idx);
+                break;
+            }
+        }
         return;
     }
 
     // Everything else goes to the focused window - the top of the z-order.
     // Peel does not interpret keys; it routes them.
-    if (window_count == 0) return;
-    sendInput(z_order[window_count - 1], e.kind, e.code, e.value, 0, 0);
+    if (activeWindow()) |idx| sendInput(idx, e.kind, e.code, e.value, 0, 0);
 }
 
 // ── Entry ───────────────────────────────────────────────────────────────────
@@ -651,10 +940,12 @@ export fn _start() callconv(.c) noreturn {
         pulp.exit(1);
     };
 
+    const display_scale: i32 = if (info.width >= 2560 and info.height >= 1600) 2 else 1;
     front = .{
         .pixels = framebuffer_pixels,
-        .width = @intCast(info.width),
-        .height = @intCast(info.height),
+        .width = @divTrunc(@as(i32, @intCast(info.width)), display_scale),
+        .height = @divTrunc(@as(i32, @intCast(info.height)), display_scale),
+        .scale = display_scale,
         .stride = @intCast(info.pitch / 4),
     };
 
@@ -671,9 +962,9 @@ export fn _start() callconv(.c) noreturn {
         .pixels = @ptrCast(@alignCast(back_pixels)),
         .width = front.width,
         .height = front.height,
-        .stride = front.width,
+        .stride = front.width * display_scale,
+        .scale = display_scale,
     };
-
     pulp.print("peel: {d}x{d}, {d} bpp, stride {d}, double-buffered\n", .{
         info.width, info.height, info.bpp, front.stride,
     });
@@ -694,15 +985,31 @@ export fn _start() callconv(.c) noreturn {
     // has exactly one thing to wait on.
     pulp.inputBind(server_port);
 
+    // Publish the port before building the wallpaper: Seed starts apps in
+    // parallel and they must be able to queue their window requests now.
+    // Allocation failure simply uses the procedural fallback.
+    if (pulp.shmCreate("", back_bytes)) |h| {
+        if (pulp.shmMap(h, true)) |pixels| {
+            wallpaper = .{ .pixels = @ptrCast(@alignCast(pixels)), .width = screen.width, .height = screen.height, .stride = screen.stride, .scale = screen.scale };
+            rebuildWallpaper();
+        } else |_| {}
+    } else |_| {}
+
     // First frame: everything.
     const full = Rect{ .x = 0, .y = 0, .w = screen.width, .h = screen.height };
-    composite(full);
+    _ = composite(full);
     present(full);
     clearDamage();
 
     var events: [32]pulp.InputEvent = undefined;
     while (true) {
         pumpClients();
+        const seconds = pulp.wallTime();
+        if (seconds != shell.seconds) {
+            if (shell.seconds == null and seconds != null) pulp.print("desktop: wall clock UTC {d}, offset {d} minutes\n", .{ seconds.?, pulp.timezone_minutes });
+            shell.seconds = seconds;
+            addDamage(.{ .x = screen.width - 330, .y = 0, .w = 330, .h = desktop.BAR_H });
+        }
 
         const n = pulp.inputRead(&events);
 
@@ -717,8 +1024,7 @@ export fn _start() callconv(.c) noreturn {
         }
 
         if (!damage.isEmpty()) {
-            composite(damage);
-            present(damage);
+            present(composite(damage));
             clearDamage();
             frames += 1;
         }
@@ -726,8 +1032,7 @@ export fn _start() callconv(.c) noreturn {
         // Sleep until either source has work. input_wait registers before it
         // checks both the input queue and this process's bound client port, so
         // an event landing between this loop and the syscall cannot be lost.
-        // No polling timeout is needed: input drivers and portSend both wake
-        // the same channel.
-        pulp.waitInput(0);
+        // Civil time updates once per second; scheduling stays monotonic.
+        pulp.waitInput(1000 - pulp.uptimeMs() % 1000);
     }
 }

@@ -8,6 +8,7 @@ const limine = @import("boot/limine_req.zig");
 const serial = @import("drivers/char/serial.zig");
 const framebuffer = @import("drivers/video/framebuffer.zig");
 const fbcon = @import("drivers/video/fbcon.zig");
+const splash = @import("drivers/video/splash.zig");
 const console = @import("console.zig");
 const io = @import("arch/x86_64/io.zig");
 const gdt = @import("arch/x86_64/gdt.zig");
@@ -53,7 +54,13 @@ export fn kmain() callconv(.c) noreturn {
     // ── 3. Framebuffer + console. First pixels on screen. ────────────────────
     const have_fb = framebuffer.init() != null and fbcon.init();
 
-    if (have_fb) drawBanner();
+    const graphical_boot = !build_options.mm_test and !build_options.blk_test and !build_options.fs_test and !build_options.fault_test and !build_options.sched_test;
+    if (have_fb) {
+        if (graphical_boot) {
+            fbcon.suspendOutput();
+            splash.show();
+        } else drawBanner();
+    }
 
     console.write("\n");
     console.ok("serial console up (COM1, 115200 8N1)", .{});
@@ -96,22 +103,28 @@ export fn kmain() callconv(.c) noreturn {
 
     // ── 6. Memory. pmm -> vmm -> heap, in that order. ───────────────────────
     mm.init() catch |e| {
+        fbcon.reclaim();
         console.err("memory init failed: {s}", .{@errorName(e)});
         io.hang();
     };
     mm.reportFragmentation();
+    if (have_fb and graphical_boot) splash.progress(2);
 
     if (build_options.mm_test) mm_test.runAll();
 
     // ── 7. Platform: ACPI, APICs, timers, interrupts on. ────────────────────
     console.write("\n");
     platform.init() catch |e| {
+        fbcon.reclaim();
         console.err("platform init failed: {s}", .{@errorName(e)});
         io.hang();
     };
 
+    if (have_fb and graphical_boot) splash.progress(3);
+
     // ── 8. Scheduler. From here the kernel runs as threads. ─────────────────
     sched.init() catch |e| {
+        fbcon.reclaim();
         console.err("scheduler init failed: {s}", .{@errorName(e)});
         io.hang();
     };
@@ -143,8 +156,11 @@ export fn kmain() callconv(.c) noreturn {
         _ = sched.spawn("budget", budgetThread, null, .batch) catch {};
     }
     _ = sched.spawn("init", process.initThread, null, .normal) catch |e| {
+        fbcon.reclaim();
         console.err("could not spawn init: {s}", .{@errorName(e)});
     };
+
+    if (have_fb and graphical_boot) splash.progress(4);
 
     if (build_options.budget) budget.markKernelReady();
 

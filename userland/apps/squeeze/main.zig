@@ -10,7 +10,7 @@
 const pulp = @import("pulp");
 const libpeel = @import("libpeel");
 const proto = libpeel.proto;
-const glyphs = @import("glyphs.zig");
+const typography = @import("typography");
 const keymap = @import("keymap.zig");
 
 const CELL_W: i32 = 8;
@@ -22,8 +22,8 @@ const PAD: i32 = 6;
 const WIN_W: i32 = COLS * CELL_W + PAD * 2;
 const WIN_H: i32 = ROWS * CELL_H + PAD * 2;
 
-const BG: u32 = 0x0F0C0A;
-const FG: u32 = 0xD8CEC4;
+const BG: u32 = 0x202338;
+const FG: u32 = 0xE4E7FF;
 const ACCENT: u32 = 0xFF8C1A;
 const CURSOR: u32 = 0xFF8C1A;
 
@@ -201,16 +201,7 @@ fn feed(c: u8) void {
 var win: libpeel.Window = undefined;
 
 fn drawGlyph(c: u8, px: i32, py: i32, color: u32) void {
-    const g = glyphs.glyph(c);
-    var row: i32 = 0;
-    while (row < 8) : (row += 1) {
-        const bits = g[@intCast(row)];
-        var col: i32 = 0;
-        while (col < 8) : (col += 1) {
-            if (bits & (@as(u8, 0x80) >> @intCast(col)) == 0) continue;
-            win.put(px + col, py + row, color);
-        }
-    }
+    typography.drawMono(&win, c, px, py - 2, color);
 }
 
 var last_cursor_x: i32 = -1;
@@ -257,7 +248,7 @@ fn paint() void {
 export fn _start() callconv(.c) noreturn {
     clearGrid();
 
-    win = libpeel.createWindow("Squeeze - juice", WIN_W, WIN_H, 60, 60) catch {
+    win = libpeel.createWindow("Squeeze - juice", WIN_W, WIN_H, 70, 112) catch {
         pulp.puts("squeeze: no display server\n");
         pulp.exit(1);
     };

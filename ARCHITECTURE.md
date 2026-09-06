@@ -40,7 +40,7 @@
 ## 1. Identity & Vision
 
 Orange OS is a **from-scratch operating system** targeting x86_64, built to be
-**radically lighter** than mainstream desktop systems while presenting a
+**resource-conscious** while presenting a
 **genuinely beautiful** graphical interface.
 
 Three sentences that define the project:
@@ -48,8 +48,9 @@ Three sentences that define the project:
 > **1.** Every line of code in the kernel and core userland is written by us, giving
 > total control over hardware, software, and licensing.
 >
-> **2.** The system should idle in well under 128 MB of RAM with the full desktop
-> running, and stay responsive on a decade-old machine.
+> **2.** Prioritize a rich, smooth desktop with a baseline allowance of **3 GiB
+> RAM and 2 CPU cores**. Use GPU acceleration when implemented; increase the
+> profile when a feature justifies it, recording the reason and measurements.
 >
 > **3.** The interface is a first-class concern, not an afterthought bolted onto a
 > terminal — compositing, animation, and typography are designed in from Phase 0.
@@ -397,7 +398,7 @@ owns it.
  ┌──────┐
  │ 7    │  ══════════  D E S K T O P   R E A D Y  ══════════
  └──────┘  Target cold-boot time: under 2 seconds in QEMU.
-           Target idle RSS with full desktop: under 128 MB.
+           Baseline desktop RAM allowance: up to 3 GiB; see §16.2.
 ```
 
 ---
@@ -492,7 +493,7 @@ Three layers, each built on the one below. Never skip a layer.
    ┌─────────────────────────────────────────────────────────────────────┐
    │  LAYER 1 — BUDDY ALLOCATOR        kernel/mm/pmm.zig                 │
    │  ─────────────────────────────────────────────────────────────────  │
-   │  Physical page frames. Orders 0..10 → 4 KB .. 4 MB contiguous.      │
+   │  Physical page frames. Orders 0..12 → 4 KB .. 16 MB contiguous.     │
    │                                                                     │
    │   order 10  [ 4 MB ]────split────┐                                  │
    │   order  9  [ 2 MB ][ 2 MB ]     │  buddies merge on free           │
@@ -1842,7 +1843,28 @@ assistance**, per our earlier estimate of roughly 2.5× solo-unassisted speed.
 | End of Phase 8 | **~12–18 months** | Something genuinely usable |
 | Phase 9 | **open-ended** | Real hardware, and the honest unknowns |
 
-### 16.2 Resource budget (the differentiator, tracked from Phase 0)
+### 16.2 Resource policy (revised September 6, 2026)
+
+The owner has authorized a feature-rich desktop to use **up to 3 GiB RAM
+(3072 MiB) and 2 CPU cores as the baseline**, including GPU acceleration as
+the driver/rendering stack is implemented. These replace the former 128 MiB
+RAM and mandatory <1% idle-CPU constraints. Two cores is an allocation, not
+a 2% utilization limit; active rendering may use both fully.
+
+More RAM, CPU cores, or GPU resources are permitted when the project needs
+them. Document the reason, chosen profile, and measurements before increasing
+the baseline. Avoid wasteful polling and leaks, but do not sacrifice UI quality
+to the old footprint goals. GPU permission is not GPU support: the current
+renderer is CPU-based, and no GPU VRAM budget is enforced yet. Shared GPU
+buffers count toward system RAM; dedicated VRAM must be measured separately
+when a driver exists. No GPU has been passed through to the guest.
+
+`run-desktop.sh`, the desktop smoke test, and the budget harness default to
+3 GiB / 2 vCPUs; `zig build run` uses the same baseline. Shell launchers accept
+`ORANGE_VM_RAM` and `ORANGE_VM_CPUS`. `ORANGE_RAM_BUDGET_MIB` adjusts the checked
+RAM ceiling (default 3072) for a documented larger profile. Allocated guest
+RAM is capacity, not a target to fill; the idle measurement is not a peak-use
+stress test or a runtime memory quota.
 
 Run it with:
 
@@ -1852,30 +1874,24 @@ Run it with:
 
 That builds with `-Dbudget`, boots the result, collects the measurements the
 kernel and `/bin/bench` emit on the serial line, and compares them against the
-limits below. Measured on QEMU q35, 512 MiB, `-smp 4`, UEFI, root on NVMe.
+limits below. Measured on QEMU q35, 3 GiB, `-smp 2`, UEFI, root on NVMe,
+with the Daybreak desktop on September 6, 2026.
 
 | Metric | Limit | Measured | Class | Emitted by |
 |--------|-------|----------|-------|------------|
-| Kernel image (linked) | < 2 MB | **0.80 MB** | hard | `budget.reportImage` |
-| — of which `.bss` | < 512 KB | **171 KB** | hard | `budget.reportImage` |
-| Full desktop idle RSS | < 128 MB | **22.2 MB** | hard | `budget.reportMemory` |
-| Boot to scheduler | < 2 s | 3.5–4.3 s † | timing | `budget.reportBoot` |
-| Context switch | < 500 ns | **17–60 ns** | timing † | `budget.benchContextSwitch` |
-| Syscall round-trip | < 200 ns | **136–157 ns** † | timing | `userland/bin/bench` |
-| Idle CPU (desktop shown) | < 1 % | **0.00–0.02 %** | hard | `budget.benchIdleCpu` |
+| Kernel image (linked) | < 2 MB (goal) | **0.81 MB** | advisory | `budget.reportImage` |
+| — of which `.bss` | < 512 KB (goal) | **171 KB** | advisory | `budget.reportImage` |
+| Full desktop idle RSS | ≤ 3 GiB | **66.26 MB** | hard, configurable | `budget.reportMemory` |
+| Boot to scheduler | < 2 s | 2.194 s † | timing | `budget.reportBoot` |
+| Context switch | < 500 ns | **36 ns** | timing † | `budget.benchContextSwitch` |
+| Syscall round-trip | < 200 ns | **141 ns** † | timing | `userland/bin/bench` |
+| Idle CPU (desktop shown) | < 1 % (goal) | **3.67 %** | advisory, exceeded | `budget.benchIdleCpu` |
 
-† Development runs QEMU's TCG interpreter emulating x86_64 on an arm64 Mac,
-which is nothing like the hardware these limits describe. Size, memory, and
-idle-CPU figures describe what the build consumes rather than how quickly the
-host can emulate it, so they are **hard**: exceeding one fails `budget.sh` with
-a non-zero exit. Latency and boot-time figures are reported and compared but do
-not fail the script, because a check that is red every run is one everyone
-learns to ignore. They become hard once there is a native-speed reference
-machine to run them on.
-
-> A change that regresses a hard limit is a **failed build**, not a
-> discussion. This is the entire product thesis — it has to be defended
-> mechanically, because it cannot be retrofitted.
+† Development uses QEMU TCG x86_64 emulation on an arm64 Mac. Boot time,
+latency, kernel size, and idle CPU remain visible advisory goals rather than
+feature blockers. Only exceeding the configured RAM ceiling or missing required
+measurements fails the checker. The table records the new 3 GiB / 2-vCPU
+profile; allocated memory and actual guest usage are deliberately separate.
 
 **Where the numbers come from.** `kernel/debug/budget.zig` prints each
 measurement as a rigid `[budget] key value` line; `tools/budget/check.py`

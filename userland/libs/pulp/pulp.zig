@@ -174,6 +174,13 @@ pub fn yield() void {
     _ = syscall0(NR.yield);
 }
 
+pub const calendar = @import("calendar");
+pub const timezone_minutes = @import("ui_options").timezone_minutes;
+pub fn wallTime() ?u64 {
+    const value = syscall0(62);
+    return if (value < 0) null else @intCast(value);
+}
+
 pub fn uptimeMs() u64 {
     const v = syscall0(NR.uptime);
     return if (v < 0) 0 else @intCast(v);

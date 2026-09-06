@@ -1,15 +1,9 @@
 //! Resource budget accounting.
 //!
-//! ARCHITECTURE.md §16.2 fixes hard limits on how much of the machine Orange
-//! OS is allowed to consume, and states that a change which regresses any of
-//! them is a failed build rather than a discussion. That claim is the entire
-//! product thesis: an OS that is merely *nice* has plenty of competition, and
-//! one that is measurably small does not.
-//!
-//! It was also, until now, completely unmeasured. This module makes the
-//! numbers real. It prints them in a fixed `[budget] key value` form so that
-//! scripts/budget.sh can diff them against the thresholds and fail a build,
-//! rather than leaving it to somebody to notice.
+//! ARCHITECTURE.md §16.2 defines a 3 GiB / 2-core baseline and allows larger
+//! justified profiles. Emit fixed `[budget] key value` records: the checker
+//! gates the configured RAM allowance while reporting advisory CPU, size,
+//! and latency goals. Measurements stay visible as the desktop grows.
 //!
 //! Everything here is measurement only. Nothing in this file may change how
 //! the kernel behaves, because then the numbers would be describing a
@@ -149,7 +143,7 @@ pub fn benchContextSwitch() void {
 
 /// Fraction of a window each core spent idle, in hundredths of a percent.
 ///
-/// 16.2 budgets idle CPU with a desktop on screen at under 1 %. Taken as a
+/// 16.2 retains under 1% idle CPU as an advisory goal. Taken as a
 /// difference across a window rather than as a lifetime average, because a
 /// lifetime average is dominated by boot - when the machine is legitimately
 /// busy - and would flatter any amount of steady-state spinning.

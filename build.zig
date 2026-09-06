@@ -53,6 +53,11 @@ pub fn build(b: *std.Build) void {
     ) orelse 1000;
 
     const options = b.addOptions();
+    const ui_options = b.addOptions();
+    const timezone = b.option(i32, "timezone-minutes", "Local offset from UTC in minutes (default India +330)") orelse 330;
+    if (timezone < -720 or timezone > 840) @panic("timezone-minutes must be -720..840");
+    ui_options.addOption(i32, "timezone_minutes", timezone);
+    const calendar_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/pulp/calendar.zig"), .target = target, .optimize = optimize });
     options.addOption(u32, "tick_hz", tick_hz);
     options.addOption(bool, "fault_test", fault_test);
     options.addOption(bool, "mm_test", mm_test);
@@ -96,10 +101,20 @@ pub fn build(b: *std.Build) void {
     // ── Userland ─────────────────────────────────────────────────────────────
     // Every program links against Pulp and nothing else: no libc, no runtime,
     // static ELF, same bare-metal target as the kernel.
+    // Software composition needs optimization even while the kernel is being
+    // debugged. ReleaseSafe retains bounds/overflow checks. Override with
+    // -Duser-optimize=Debug when stepping through userland instructions.
+    const user_optimize = b.option(std.builtin.OptimizeMode, "user-optimize", "Userland optimization mode") orelse
+        (if (optimize == .Debug) .ReleaseSafe else optimize);
+    const typography_mod = b.createModule(.{
+        .root_source_file = b.path("userland/libs/typography/typography.zig"),
+        .target = target,
+        .optimize = user_optimize,
+    });
     const pulp_mod = b.createModule(.{
         .root_source_file = b.path("userland/libs/pulp/pulp.zig"),
         .target = target,
-        .optimize = optimize,
+        .optimize = user_optimize,
         .red_zone = false,
         .pic = false,
         .stack_protector = false,
@@ -111,7 +126,7 @@ pub fn build(b: *std.Build) void {
     const libpeel_mod = b.createModule(.{
         .root_source_file = b.path("userland/libs/libpeel/libpeel.zig"),
         .target = target,
-        .optimize = optimize,
+        .optimize = user_optimize,
         .red_zone = false,
         .pic = false,
         .stack_protector = false,
@@ -120,11 +135,13 @@ pub fn build(b: *std.Build) void {
         .single_threaded = true,
     });
     libpeel_mod.addImport("pulp", pulp_mod);
+    pulp_mod.addOptions("ui_options", ui_options);
+    pulp_mod.addImport("calendar", calendar_mod);
 
     const segment_mod = b.createModule(.{
         .root_source_file = b.path("userland/libs/segment/segment.zig"),
         .target = target,
-        .optimize = optimize,
+        .optimize = user_optimize,
         .red_zone = false,
         .pic = false,
         .stack_protector = false,
@@ -134,6 +151,15 @@ pub fn build(b: *std.Build) void {
     });
     segment_mod.addImport("pulp", pulp_mod);
     segment_mod.addImport("libpeel", libpeel_mod);
+    segment_mod.addImport("typography", typography_mod);
+    const gfx_mod = b.createModule(.{ .root_source_file = b.path("userland/servers/peel/gfx.zig"), .target = target, .optimize = user_optimize });
+    const ui_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/desktop-ui/ui.zig"), .target = target, .optimize = user_optimize });
+    ui_mod.addImport("gfx", gfx_mod);
+    ui_mod.addImport("typography", typography_mod);
+    const files_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/files-view/files.zig"), .target = target, .optimize = user_optimize });
+    files_mod.addImport("ui", ui_mod);
+    files_mod.addImport("pulp", pulp_mod);
+    files_mod.addImport("libpeel", libpeel_mod);
 
     const UserProgram = struct { name: []const u8, path: []const u8 };
     const programs = [_]UserProgram{
@@ -148,6 +174,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "squeeze", .path = "userland/apps/squeeze/main.zig" },
         .{ .name = "grove", .path = "userland/apps/grove/main.zig" },
         .{ .name = "about", .path = "userland/apps/about/main.zig" },
+        .{ .name = "files", .path = "userland/apps/files/main.zig" },
+        .{ .name = "trash", .path = "userland/apps/trash/main.zig" },
         .{ .name = "ping", .path = "userland/bin/ping/main.zig" },
         .{ .name = "net", .path = "userland/bin/net/main.zig" },
         .{ .name = "fetch", .path = "userland/bin/fetch/main.zig" },
@@ -158,7 +186,7 @@ pub fn build(b: *std.Build) void {
         const mod = b.createModule(.{
             .root_source_file = b.path(prog.path),
             .target = target,
-            .optimize = optimize,
+            .optimize = user_optimize,
             .red_zone = false,
             .pic = false,
             .stack_protector = false,
@@ -169,6 +197,10 @@ pub fn build(b: *std.Build) void {
         mod.addImport("pulp", pulp_mod);
         mod.addImport("libpeel", libpeel_mod);
         mod.addImport("segment", segment_mod);
+        mod.addImport("typography", typography_mod);
+        mod.addImport("ui", ui_mod);
+        mod.addImport("files_view", files_mod);
+        mod.addImport("gfx", gfx_mod);
 
         const exe = b.addExecutable(.{
             .name = prog.name,
@@ -197,6 +229,7 @@ pub fn build(b: *std.Build) void {
     });
 
     kernel_mod.addOptions("build_options", options);
+    kernel_mod.addImport("calendar", calendar_mod);
     // Userland is NOT embedded in the kernel. scripts/mkdisk.sh copies the
     // installed binaries onto the CitrusFS image, and they are loaded from
     // disk at runtime.
@@ -230,17 +263,30 @@ pub fn build(b: *std.Build) void {
     // it; AHCI simply reports no disks if the file is missing.
     const qemu_base = [_][]const u8{
         "qemu-system-x86_64",
-        "-M",     "q35",
-        "-m",     "512M",
-        "-cdrom", "build/orange.iso",
-        "-boot",  "d",
-        "-drive", "id=disk0,file=build/disk.img,format=raw,if=none",
-        "-device", "ahci,id=ahci",
-        "-device", "ide-hd,drive=disk0,bus=ahci.0",
-        "-netdev", "user,id=n0",
-        "-device", "e1000,netdev=n0",
-        "-serial", "stdio",
-        "-no-reboot", "-no-shutdown",
+        "-M",
+        "q35",
+        "-m",
+        "3G",
+        "-smp",
+        "2",
+        "-cdrom",
+        "build/orange.iso",
+        "-boot",
+        "d",
+        "-drive",
+        "id=disk0,file=build/disk.img,format=raw,if=none",
+        "-device",
+        "ahci,id=ahci",
+        "-device",
+        "ide-hd,drive=disk0,bus=ahci.0",
+        "-netdev",
+        "user,id=n0",
+        "-device",
+        "e1000,netdev=n0",
+        "-serial",
+        "stdio",
+        "-no-reboot",
+        "-no-shutdown",
     };
 
     const run = b.addSystemCommand(&qemu_base);

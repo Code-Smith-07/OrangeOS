@@ -21,6 +21,13 @@ pub const Op = struct {
     pub const commit: u32 = 2;
     /// Client -> Peel: I am going away.
     pub const destroy: u32 = 3;
+    /// Client -> desktop: focus or launch a built-in application (u32 index).
+    pub const launch_app: u32 = 4;
+    /// Query backing scale before allocating client pixels (payload: i64 pid).
+    pub const display_info: u32 = 5;
+    pub const display_info_reply: u32 = 131;
+    /// Request a public desktop panel (u32 action: overview or appearance).
+    pub const desktop_panel: u32 = 6;
     /// Peel -> client: your window was created.
     pub const created: u32 = 128;
     /// Peel -> client: an input event landed on you.
@@ -42,6 +49,8 @@ pub const CreateWindow = extern struct {
     title_len: u32,
     shm_name_len: u32,
     flags: u32,
+    /// Logical dimensions above; buffer is width*scale by height*scale.
+    scale: u32,
     title: [48]u8,
     shm_name: [32]u8,
 };
