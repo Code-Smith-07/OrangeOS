@@ -148,6 +148,7 @@ fn raise(index: usize) void {
 
 /// Focus a window and repaint both title bars whose active state changed.
 fn focusWindow(index: usize) void {
+    if (windows[index].visible and activeWindow() == index) return;
     if (activeWindow()) |previous| addDamage(windows[previous].damageRect());
     windows[index].visible = true;
     raise(index);

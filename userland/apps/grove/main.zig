@@ -2,6 +2,9 @@
 const pulp = @import("pulp");
 const libpeel = @import("libpeel");
 const ui = @import("ui");
+// Build complete frames privately. The compositor must never observe our
+// wallpaper/blur/card construction in the shared client surface.
+var staging: [430 * 382 * 4]u32 = undefined;
 const targets = [_]ui.Button{
     .{ .id = 1, .rect = .{ .x = 24, .y = 206, .w = 118, .h = 92 } },
     .{ .id = 2, .rect = .{ .x = 156, .y = 206, .w = 118, .h = 92 } },
@@ -10,6 +13,7 @@ const targets = [_]ui.Button{
 };
 fn paint(win: *const libpeel.Window, pointer: ui.Pointer) void {
     var s = ui.surface(win);
+    s.pixels = &staging;
     // The full-resolution aurora is reconstructed before every glass
     // pass, never blurred repeatedly over an old card.
     var y: i32 = 0;
@@ -50,7 +54,9 @@ fn paint(win: *const libpeel.Window, pointer: ui.Pointer) void {
     ui.label(&s, "Your desktop, your way", r.x + 53, r.y + 12, 1, 0x55477C);
     ui.label(&s, "Choose a wallpaper", r.x + 53, r.y + 29, 1, 0x88809D);
     ui.icon(&s, .chevron_right, r.right() - 29, r.y + 14, 20);
+    @memcpy(win.pixels[0..@intCast(win.stride * win.height * win.scale)], staging[0..@intCast(win.stride * win.height * win.scale)]);
     win.commitAll();
+    if (pulp.desktop_profile) pulp.puts("grove: painted\n");
 }
 export fn _start() callconv(.c) noreturn {
     const win = libpeel.createWindow("Welcome", 430, 382, 754, 112) catch pulp.exit(1);
@@ -71,7 +77,7 @@ export fn _start() callconv(.c) noreturn {
             if (ev.kind != pulp.EV_MOUSE) continue;
             const old = pointer;
             const action = pointer.update(ev.x, ev.y, ev.code, &targets);
-            dirty = dirty or old.hover != pointer.hover or old.down != pointer.down;
+            dirty = dirty or pointer.visualChanged(old);
             if (action >= 1 and action <= 3) {
                 const index: u32 = ([_]u32{ 4, 1, 2 })[action - 1];
                 _ = pulp.portSend(win.server, libpeel.proto.Op.launch_app, @import("std").mem.asBytes(&index)) catch {};

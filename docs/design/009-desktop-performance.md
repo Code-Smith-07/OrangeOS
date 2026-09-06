@@ -254,3 +254,16 @@ publications with a longest gap of 63.5 ms. These short emulator observations
 are not a 60 fps or physical-display-latency guarantee. A normal-build smoke
 check now detects the original pale Terminal corner wedges directly in pixels.
 Normal-build regression evidence: `orange-daybreak-r_mkfqzu`.
+
+## Welcome blank-click stability
+
+Welcome now distinguishes visual hover/pressed changes from raw mouse-button
+state. Blank presses/releases do not rebuild its glass, and focusing an already
+active window does not damage the scene. Heavy client painting is staged
+privately before copying the completed frame to shared memory (not an atomic
+buffer-swap protocol).
+
+Profile-build `tools/welcome_smoke.py` verified eight blank clicks produced no
+client paint log entries or pixel changes, and hover restored the original frame
+(`orange-daybreak-mnfha5kw`). Full desktop interaction regression also passed
+(`orange-daybreak-h0aj523z`).

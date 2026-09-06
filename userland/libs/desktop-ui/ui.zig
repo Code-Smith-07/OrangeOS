@@ -10,6 +10,9 @@ pub const Pointer = struct {
     hover: u32 = 0,
     pressed: u32 = 0,
     down: bool = false,
+    pub fn visualChanged(self: Pointer, old: Pointer) bool {
+        return self.hover != old.hover or self.pressed != old.pressed;
+    }
     pub fn update(self: *Pointer, x: i32, y: i32, buttons: u8, targets: []const Button) u32 {
         var hit: u32 = 0;
         for (targets) |t| if (t.rect.contains(x, y)) {
@@ -118,7 +121,9 @@ test "pointer only activates the originally pressed target" {
     const std = @import("std");
     const buttons = [_]Button{ .{ .id = 1, .rect = .{ .x = 10, .y = 10, .w = 20, .h = 20 } }, .{ .id = 2, .rect = .{ .x = 40, .y = 10, .w = 20, .h = 20 } } };
     var p: Pointer = .{};
+    const idle = p;
     try std.testing.expectEqual(@as(u32, 0), p.update(0, 0, 1, &buttons));
+    try std.testing.expect(!p.visualChanged(idle));
     try std.testing.expectEqual(@as(u32, 0), p.update(15, 15, 0, &buttons));
     _ = p.update(15, 15, 1, &buttons);
     try std.testing.expectEqual(@as(u32, 0), p.update(45, 15, 0, &buttons));
