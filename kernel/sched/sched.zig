@@ -322,6 +322,19 @@ pub fn tick() void {
     }
 
     if (t.quantum_left == 0) c.need_resched = true;
+    // An idle thread has a batch-sized slice, but must never make newly ready
+    // work wait for its 64 ticks to expire. This also observes work queued by
+    // another CPU, without writing that CPU's non-atomic scheduler flag.
+    if (idleOf(c) == t) {
+        const state = spinlock.acquireIrqSave(&lock);
+        for (&queues) |*q| {
+            if (q.head != null) {
+                c.need_resched = true;
+                break;
+            }
+        }
+        spinlock.releaseIrqRestore(&lock, state);
+    }
 }
 
 /// Move every ready thread back to the interactive level.
@@ -703,6 +716,13 @@ pub fn wakeChannel(chan: usize) void {
             if (w.state == .blocked) {
                 w.state = .ready;
                 queues[@intFromEnum(w.priority)].push(w);
+                // The next timer epilogue can run the woken task promptly
+                // when this core is idle or running lower/equal-priority work.
+                // Never context-switch here while the wait-list lock is held.
+                const c = cpu();
+                if (currentOf(c)) |running| {
+                    if (idleOf(c) == running or @intFromEnum(w.priority) <= @intFromEnum(running.priority)) c.need_resched = true;
+                }
             }
         } else {
             prev_link = w;

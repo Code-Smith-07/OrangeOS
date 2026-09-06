@@ -17,6 +17,7 @@ const gfx = @import("gfx");
 const ui = @import("ui");
 const font = @import("font.zig");
 const desktop = @import("desktop.zig");
+const pointer = @import("pointer.zig");
 
 const Rect = gfx.Rect;
 const Color = gfx.Color;
@@ -733,8 +734,6 @@ var hover_window: ?u32 = null;
 var drag_dx: i32 = 0;
 var drag_dy: i32 = 0;
 var buttons: u8 = 0;
-var mouse_remainder_x: i32 = 0;
-var mouse_remainder_y: i32 = 0;
 var frames: u64 = 0;
 
 /// Send an input event to a window's client, in coordinates relative to its
@@ -782,14 +781,10 @@ fn handleMouse(e: *const pulp.InputEvent) void {
     prev_cursor_x = cursor_x;
     prev_cursor_y = cursor_y;
 
-    mouse_remainder_x += e.dx;
-    mouse_remainder_y += e.dy;
-    cursor_x += @divTrunc(mouse_remainder_x, screen.scale);
-    cursor_y += @divTrunc(mouse_remainder_y, screen.scale);
-    mouse_remainder_x = @rem(mouse_remainder_x, screen.scale);
-    mouse_remainder_y = @rem(mouse_remainder_y, screen.scale);
-    cursor_x = @max(0, @min(cursor_x, screen.width - 1));
-    cursor_y = @max(0, @min(cursor_y, screen.height - 1));
+    var motion = pointer.Motion{ .x = cursor_x, .y = cursor_y };
+    motion.move(e.dx, e.dy, screen.width, screen.height);
+    cursor_x = motion.x;
+    cursor_y = motion.y;
 
     const was_down = buttons & 1 != 0;
     const is_down = e.code & 1 != 0;
@@ -1034,9 +1029,8 @@ export fn _start() callconv(.c) noreturn {
     presented_cursor_y = cursor_y;
     clearDamage();
 
-    var events: [32]pulp.InputEvent = undefined;
+    var events: [64]pulp.InputEvent = undefined;
     while (true) {
-        pumpClients();
         const seconds = pulp.wallTime();
         if (seconds != shell.seconds) {
             if (shell.seconds == null and seconds != null) pulp.print("desktop: wall clock UTC {d}, offset {d} minutes\n", .{ seconds.?, pulp.timezone_minutes });
@@ -1055,6 +1049,18 @@ export fn _start() callconv(.c) noreturn {
                 else => {},
             }
         }
+
+        // A long scene frame must not delay this batch's pointer until after
+        // blur, window copying or further client message handling.
+        if (cursor_dirty) {
+            present(cursorRect(presented_cursor_x, presented_cursor_y));
+            present(cursorRect(cursor_x, cursor_y));
+            drawCursor(&front, cursor_x, cursor_y);
+            presented_cursor_x = cursor_x;
+            presented_cursor_y = cursor_y;
+            if (pulp.desktop_profile) pulp.print("perf: pointer {d},{d}\n", .{ cursor_x, cursor_y });
+        }
+        pumpClients();
 
         if (damage.count != 0 or cursor_dirty) {
             const started = if (pulp.desktop_profile) pulp.uptimeMs() else 0;

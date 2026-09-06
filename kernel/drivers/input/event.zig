@@ -6,6 +6,7 @@
 
 const sched = @import("../../sched/sched.zig");
 const spinlock = @import("../../sync/spinlock.zig");
+const motion = @import("motion.zig");
 
 pub const Kind = enum(u8) {
     key = 1,
@@ -42,6 +43,8 @@ pub const MouseEvent = struct {
 const CAPACITY = 256;
 
 var queue: [CAPACITY]Event = undefined;
+var mergeable: [CAPACITY]bool = undefined;
+var last_buttons: u8 = 0;
 var head: usize = 0;
 var tail: usize = 0;
 var lock: spinlock.SpinLock = .{};
@@ -50,11 +53,19 @@ fn push(e: Event) void {
     const state = spinlock.acquireIrqSave(&lock);
     defer spinlock.releaseIrqRestore(&lock, state);
 
+    const is_motion = e.kind == @intFromEnum(Kind.mouse) and e.code == last_buttons;
+    if (e.kind == @intFromEnum(Kind.mouse)) last_buttons = e.code;
+    if (is_motion and head != tail) {
+        const previous = (head + CAPACITY - 1) % CAPACITY;
+        // Never move a press/release to the end of a later motion batch.
+        if (mergeable[previous] and motion.merge(&queue[previous], e)) return;
+    }
     const next = (head + 1) % CAPACITY;
     // Full: drop the oldest. For input, the newest state is what matters —
     // a stale mouse delta is worse than a missing one.
     if (next == tail) tail = (tail + 1) % CAPACITY;
     queue[head] = e;
+    mergeable[head] = is_motion;
     head = next;
 }
 

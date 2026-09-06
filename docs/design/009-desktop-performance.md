@@ -78,3 +78,39 @@ pointer appearance/restoration on glass, no trails, repeated panel stability,
 window drag, close/minimize/zoom/restore, app launch and Files/Trash operations.
 Native renderer tests cover damage separation/overflow, diffusion, clipping
 and reconstruction. This does not prove arbitrary frame-rate or load behavior.
+
+## Input delivery follow-up
+
+The first pass did not establish perceived responsiveness. A second inspection
+found two separate problems: relative mouse counts were divided by the Retina
+backing scale, and newly ready input work could wait for an idle task's 64 ms
+batch quantum. Drawing a cursor in 1 ms did not account for that wait.
+
+Relative motion now uses logical pointer units independent of backing scale.
+The kernel combines adjacent same-direction motion without crossing keyboard
+events, button transitions, reversals or integer overflow. Peel drains 64 events
+and publishes the cursor before further client handling and scene rendering.
+The scheduler checks ready work on every idle timer tick; channel wakeups also
+request local rescheduling where priority allows. No remote non-atomic scheduler
+flags are written and no switch occurs while a wait-list lock is held.
+
+`python3 tools/desktop_input_latency.py` injects 40 movements at 60 Hz per
+scenario and observes a serial marker written after guest cursor publication.
+It asserts the final coordinate, including reverse travel. This includes queue
+and scheduler delay, but **not Cocoa display refresh or physical scanout**.
+Coalesced samples are reported explicitly; newest-sample latency alone hides
+stalls, so the probe also reports gaps between publications.
+
+Before/after the scheduler change (both already have corrected motion scaling):
+
+| Scenario | Publications before / after | Median newest-sample ms before / after | Longest gap ms before / after |
+|---|---:|---:|---:|
+| Client motion | 9 / 40 | 12.0 / 3.6 | 84.9 / 19.8 |
+| Glass motion | 17 / 40 | 9.4 / 3.2 | 72.2 / 19.0 |
+| Dock motion | 11 / 21 | 10.5 / 2.9 | 200.8 / 177.7 |
+| Drag motion | 7 / 8 | 12.9 / 7.5 | 199.5 / 161.3 |
+
+Evidence: `orange-daybreak-mg7ozjf9` and `orange-daybreak-r3z5wmpo` under the
+host temporary directory. Full desktop regression after this change:
+`orange-daybreak-j74aqybd`. Expensive scene work still stalls dragging and dock
+hover; this is not a claim of uniformly smooth interaction.

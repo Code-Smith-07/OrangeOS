@@ -87,10 +87,10 @@ class Guest:
         # PS/2 packets carry bounded relative deltas. Let each small movement
         # drain before pressing a button, especially under software emulation.
         while (self.x, self.y) != (x, y):
-            step = 96 // self.scale
+            step = 96
             dx = max(-step, min(step, x - self.x))
             dy = max(-step, min(step, y - self.y))
-            self.monitor(f"mouse_move {dx*self.scale} {dy*self.scale}")
+            self.monitor(f"mouse_move {dx} {dy}")
             self.x += dx
             self.y += dy
             time.sleep(.12)
