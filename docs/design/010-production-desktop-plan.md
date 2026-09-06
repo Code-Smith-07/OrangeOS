@@ -64,6 +64,28 @@ Source-audited on 2026-09-07; source presence is not physical-device certificati
   month navigation, but a repeat test exposed approximately 600 ms calendar
   hover frame work under QEMU TCG. It must pass Phase 1 before shipping.
 
+Live audit evidence: `orange-daybreak-d0z18l8q` in the host temporary directory,
+reproduced with `python3 tools/app_redraw_audit.py` on the profile build. Each
+app received four blank clicks, sampled 24 times. Large-scene counts exclude
+menu-bar-only damage but include legitimate timer work; they are not per-app
+commit counters. The stable Clock probe excludes its changing time text.
+
+| App | Large-scene redraws during blank-click probe | Transient changed samples | Hover leaves original pixels |
+|---|---:|---:|---|
+| Welcome | 0 | 0/24 | Yes |
+| Terminal | 0 | 0/24 | No client hover control tested |
+| About | 8 | 0/24 | Yes |
+| Files | 8 | 1/24 | Yes |
+| Trash | 8 | 0/24 | Yes |
+| Clock | 3 (timer-driven) | 0/24 in stable region | No client hover control tested |
+
+All six settled probes restored their initial pixels. About/Files/Trash still
+need no-op redraw fixes; Files' transient change warrants frame-publication
+repair. Zero sampled changes is not proof of no sub-sample or physical-display
+flicker. Existing desktop smoke covers title controls, dock, overview, Appearance,
+cursor trails and dragging; the new calendar repeat test exposed the slow-hover
+failure above. Further stress and presentation-level instrumentation remain open.
+
 ## 3. Experience direction: colour with purpose
 
 Working design name: **Aurora**, retaining OrangeOS's citrus identity. Aim for
@@ -503,7 +525,7 @@ eviction/tab suspension or a visible resource limit, never an unexplained hang.
 |---|---|---|
 | Production plan | Written; awaiting iterative review | This document; no hardware/browser completion implied |
 | Welcome blank-click fix | Verified locally | `9835784`, `tools/welcome_smoke.py` |
-| Whole-desktop flicker audit | In progress | About/Files/Trash redundant redraw identified in source |
+| Whole-desktop flicker audit | Initial six-app CLI pass complete; expanded stress open | About/Files/Trash 8 redraws per 4 blank clicks; Files 1 transient sample |
 | Welcome/calendar experiment | Uncommitted, not release-ready | Calendar slow-hover regression must be resolved |
 | Aurora Phase 1 | Planned beyond the targeted Welcome fix | Shared publication, all-app audit and performance gates |
 | Aurora Phases 2–16 | Planned | Update each only with tests and local commit evidence |
