@@ -6,6 +6,76 @@
 
 pub const Color = u32;
 
+/// Exact backdrop/result cache for a stable frosted surface. Fixed storage;
+/// partial clips and oversized surfaces fall back to normal rendering. Compare
+/// every source pixel, not a lossy hash: windows/palette changes cannot leave
+/// stale glass. Call only after reconstructing the underlying scene.
+pub fn FrostCache(comptime capacity: usize) type {
+    return struct {
+        before: [capacity]u32 = undefined,
+        after: [capacity]u32 = undefined,
+        valid: bool = false,
+        key: Key = undefined,
+        hits: usize = 0,
+        const Key = struct { rect: Rect, bounds: Rect, scale: i32, radius: i32, tint: Color, opacity: u8, shadow: bool };
+
+        pub fn paint(self: *@This(), s: *const Surface, r: Rect, radius: i32, tint: Color, opacity: u8) void {
+            self.paintImpl(s, r, radius, tint, opacity, false);
+        }
+
+        pub fn paintShadowed(self: *@This(), s: *const Surface, r: Rect, radius: i32, tint: Color, opacity: u8) void {
+            self.paintImpl(s, r, radius, tint, opacity, true);
+        }
+
+        fn render(s: *const Surface, r: Rect, radius: i32, tint: Color, opacity: u8, shadow: bool) void {
+            if (shadow) {
+                var spread: i32 = 8;
+                while (spread > 0) : (spread -= 1) {
+                    s.rounded(.{ .x = r.x - spread, .y = r.y + 3, .w = r.w + spread * 2, .h = r.h + spread }, radius + spread, 0x333153, 4);
+                }
+            }
+            s.frost(r, radius, tint, opacity);
+        }
+
+        fn paintImpl(self: *@This(), s: *const Surface, r: Rect, radius: i32, tint: Color, opacity: u8, shadow: bool) void {
+            const std = @import("std");
+            const extent = if (shadow) shadowExtent(r) else r;
+            const bounds = Rect.intersect(extent, .{ .x = 0, .y = 0, .w = s.width, .h = s.height });
+            const area = s.clipped(extent);
+            if (area.isEmpty()) return;
+            const width: usize = @intCast(area.w * s.scale);
+            const height: usize = @intCast(area.h * s.scale);
+            if (!std.meta.eql(area, bounds) or width * height > capacity) {
+                render(s, r, radius, tint, opacity, shadow);
+                return;
+            }
+            const key = Key{ .rect = r, .bounds = bounds, .scale = s.scale, .radius = radius, .tint = tint, .opacity = opacity, .shadow = shadow };
+            var matches = self.valid and std.meta.eql(self.key, key);
+            for (0..height) |row| {
+                const start: usize = @intCast((area.y * s.scale + @as(i32, @intCast(row))) * s.stride + area.x * s.scale);
+                const source = s.pixels[start..][0..width];
+                const saved = self.before[row * width..][0..width];
+                if (matches and !std.mem.eql(u32, source, saved)) matches = false;
+                @memcpy(saved, source);
+            }
+            if (!matches) render(s, r, radius, tint, opacity, shadow);
+            for (0..height) |row| {
+                const start: usize = @intCast((area.y * s.scale + @as(i32, @intCast(row))) * s.stride + area.x * s.scale);
+                const target = s.pixels[start..][0..width];
+                const saved = self.after[row * width..][0..width];
+                if (matches) @memcpy(target, saved) else @memcpy(saved, target);
+            }
+            if (matches) self.hits +%= 1;
+            self.key = key;
+            self.valid = true;
+        }
+    };
+}
+
+pub fn shadowExtent(r: Rect) Rect {
+    return .{ .x = r.x - 8, .y = r.y, .w = r.w + 16, .h = r.h + 11 };
+}
+
 
 pub const Rect = struct {
     x: i32,
@@ -369,6 +439,29 @@ test "glass damage grows to its dependency and skips unrelated surfaces" {
     try std.testing.expectEqualDeep(far, expandForGlass(far, glass));
 }
 
+test "frost cache matches uncached pixels and invalidates changed backdrops" {
+    const std = @import("std");
+    var cache: FrostCache(1024) = .{};
+    var pixels: [1024]u32 = undefined;
+    var s = Surface{ .pixels = &pixels, .width = 16, .height = 16, .stride = 32, .scale = 2 };
+    const full = Rect{ .x = 0, .y = 0, .w = 16, .h = 16 };
+    for (0..5) |iteration| {
+        for (&pixels, 0..) |*p, i| p.* = @intCast(i * 900 + (if (iteration > 1) @as(usize, 500) else 0));
+        const original = pixels;
+        if (iteration == 3) s.setClip(.{ .x = 2, .y = 3, .w = 4, .h = 5 }) else s.resetClip();
+        s.frost(full, 4, 0xCCDDFF, 170);
+        const expected = pixels;
+        pixels = original;
+        cache.paint(&s, full, 4, 0xCCDDFF, 170);
+        try std.testing.expectEqualSlices(u32, &expected, &pixels);
+    }
+    try std.testing.expectEqual(@as(usize, 2), cache.hits);
+    // A resized or differently tinted surface must not reuse the old material.
+    s.fill(full, 0x8899AA);
+    cache.paint(&s, .{ .x = 1, .y = 1, .w = 12, .h = 12 }, 3, 0xFFFFFF, 100);
+    try std.testing.expectEqual(@as(usize, 2), cache.hits);
+}
+
 test "2x fill and rounded drawing obey logical damage clipping" {
     const std = @import("std");
     var pixels = [_]u32{0} ** 256;
@@ -382,6 +475,27 @@ test "2x fill and rounded drawing obey logical damage clipping" {
     for (0..16) |y| for (0..16) |x| {
         if (x < 4 or x >= 10 or y < 4 or y >= 10) try std.testing.expectEqual(@as(u32, 0), pixels[y * 16 + x]);
     };
+}
+
+test "cached dock shadow is identical and partial repaint stays clipped" {
+    const std = @import("std");
+    var cache: FrostCache(4096) = .{};
+    var pixels: [4096]u32 = undefined;
+    var s = Surface{ .pixels = &pixels, .width = 32, .height = 32, .stride = 64, .scale = 2 };
+    const r = Rect{ .x = 10, .y = 2, .w = 12, .h = 12 };
+    for (0..4) |iteration| {
+        for (&pixels, 0..) |*p, i| p.* = @intCast(i * 700 + (if (iteration > 1) @as(usize, 400) else 0));
+        const original = pixels;
+        if (iteration == 3) s.setClip(.{ .x = 10, .y = 4, .w = 5, .h = 6 }) else s.resetClip();
+        var spread: i32 = 8;
+        while (spread > 0) : (spread -= 1) s.rounded(.{ .x = r.x - spread, .y = r.y + 3, .w = r.w + spread * 2, .h = r.h + spread }, 4 + spread, 0x333153, 4);
+        s.frost(r, 4, 0xEAEAFB, 104);
+        const expected = pixels;
+        pixels = original;
+        cache.paintShadowed(&s, r, 4, 0xEAEAFB, 104);
+        try std.testing.expectEqualSlices(u32, &expected, &pixels);
+    }
+    try std.testing.expectEqual(@as(usize, 1), cache.hits);
 }
 
 pub fn lerp(a: Color, b: Color, t: u8) Color {

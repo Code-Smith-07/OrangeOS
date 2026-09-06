@@ -60,10 +60,12 @@ def main():
             g.monitor("mouse_button 0")
         assert acknowledged == final, f"{name}: input lost or timed out: {acknowledged} != {final}"
         ordered = sorted(samples)
+        issue_times = list(issued.values())
         results[name] = dict(sent=count, publications=len(samples),
                              newest_sample_median_ms=round(statistics.median(samples), 1),
                              newest_sample_p95_ms=round(ordered[min(len(ordered)-1, int(len(ordered)*.95))], 1),
                              longest_publication_gap_ms=round(max(gaps, default=0), 1),
+                             longest_host_injection_gap_ms=round(max((b-a)*1000 for a,b in zip(issue_times, issue_times[1:])), 1),
                              final_position=list(final))
         print(name, results[name], flush=True)
 

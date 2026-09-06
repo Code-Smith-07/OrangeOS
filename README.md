@@ -97,6 +97,12 @@ India time by default (`-Dtimezone-minutes=330`).
 This is the first complete desktop-shell pass, not macOS feature parity.
 See [Daybreak's controls and current limits](docs/design/007-daybreak.md).
 
+**Input responsiveness.** Relative pointer travel is independent of Retina
+scaling, sleeping input consumers wake promptly, and unchanged menu/dock glass
+and shadows are cached. Rapid-input checks now include queue-to-publication
+delay. Large-window dragging remains slow under x86 emulation on Apple Silicon;
+see the [measured results and remaining work](docs/design/009-desktop-performance.md).
+
 **Phase 9e complete.** Orange OS now idles a full two-core desktop at
 **3.67% CPU** with the high-DPI frosted desktop and live clock under the resource-budget harness. This exceeds the old advisory 1% target but is permitted by the revised resource policy. Scheduler sleeps, IPC,
 console and PTY reads, and the Peel compositor all block until real work

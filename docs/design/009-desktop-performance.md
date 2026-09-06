@@ -68,8 +68,8 @@ did not improve this QEMU configuration.
 
 ## Remaining work
 
-Cache stable shell materials and shadows, improve occlusion handling, profile
-actual event-to-present and launch latency, and evaluate a supported accelerated
+Improve occlusion handling and window-drag rendering, profile
+actual host-display and launch latency, and evaluate a supported accelerated
 display path. A native ARM port or x86 host avoids cross-architecture TCG costs;
 enabling HVF cannot virtualize this x86 guest on an ARM Mac.
 
@@ -114,3 +114,34 @@ Evidence: `orange-daybreak-mg7ozjf9` and `orange-daybreak-r3z5wmpo` under the
 host temporary directory. Full desktop regression after this change:
 `orange-daybreak-j74aqybd`. Expensive scene work still stalls dragging and dock
 hover; this is not a claim of uniformly smooth interaction.
+
+## Exact shell material cache
+
+The menu-bar frost and dock frost/eight-layer shadow now use two bounded
+backdrop/result caches (4.8 MB of pixel storage total). Every source pixel and
+geometry/material parameter is compared before reuse. A changed backdrop
+re-renders the material; partial clips and oversized surfaces fall back to
+uncached rendering. The dock shadow participates in damage dependency closure.
+Native tests compare cached/uncached pixels exactly, including 2x backing,
+changed backdrops and partial clips. No blur, shadow layers, or display
+resolution were removed to obtain the speedup.
+
+Final rapid-input run, `orange-daybreak-1mfiy9i4`, with stress threads disabled:
+
+| Scenario | Publications / 40 inputs | Median newest-sample ms | Longest publication gap ms |
+|---|---:|---:|---:|
+| Client | 40 | 4.2 | 19.9 |
+| Glass | 40 | 4.0 | 20.3 |
+| Dock | 40 | 3.3 | 25.5 |
+| Drag | 6 | 15.5 | 174.6 |
+| Reverse motion | 40 | 3.9 | 18.0 |
+
+The probe also records host injection gaps to distinguish delayed injection
+from guest work. These runs remain short, host-dependent samples. The drag
+result explicitly shows the remaining problem: a large scene render still
+blocks input processing, and this cache does not solve window-drag frame rate.
+The ordinary pointer/dock paths improved; drag smoothness is not declared done.
+
+Scheduler stress build: `orange-daybreak-rxxh8yh4`, five checks passed, zero
+failed (register integrity, preemption, concurrent advancement and switching).
+That stress build's timings are not used for the final comparison.

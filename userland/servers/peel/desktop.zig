@@ -175,7 +175,7 @@ fn glass(s: *const Surface, r: Rect, radius: i32, opacity: u8) void {
 pub fn expandDamage(s: *const Surface, state: *const State, damage: Rect) Rect {
     var out = gfx.expandForGlass(damage, .{ .x = 0, .y = 0, .w = s.width, .h = BAR_H });
     const dock = dockRect(s);
-    out = gfx.expandForGlass(out, dock);
+    out = gfx.expandForGlass(out, gfx.shadowExtent(dock));
     if (state.hover != 0 or state.notice.len > 0)
         out = gfx.expandForGlass(out, .{ .x = dock.x - 32, .y = dock.y - 90, .w = dock.w + 64, .h = 90 });
     if (state.popup != .none) out = gfx.expandForGlass(out, popupRect(s, state.popup));
@@ -199,9 +199,13 @@ pub fn hoverDamage(s: *const Surface, state: *const State, old: u16, new: u16) R
     return damage;
 }
 
+// Two bounded caches consume 4.8 MB, preserving the exact frosted pixels.
+var bar_material: gfx.FrostCache(300_000) = .{};
+var dock_material: gfx.FrostCache(300_000) = .{};
+
 pub fn paint(s: *const Surface, state: *const State) void {
     // Translucent top strip with only real, actionable menus/status.
-    s.frost(.{ .x = 0, .y = 0, .w = s.width, .h = BAR_H }, 0, 0xF4ECFF, 186);
+    bar_material.paint(s, .{ .x = 0, .y = 0, .w = s.width, .h = BAR_H }, 0, 0xF4ECFF, 186);
     ui.icon(s, .brand, 12, 6, 24);
     text(s, "Orange OS", 42, 14, INK);
     text(s, state.active[0..@min(state.active.len, 25)], 162, 14, 0x565270);
@@ -219,11 +223,7 @@ pub fn paint(s: *const Surface, state: *const State) void {
 
     const dock = dockRect(s);
     // A translucent pearl shelf with a fine rim and separate utility groups.
-    var spread: i32 = 8;
-    while (spread > 0) : (spread -= 1) {
-        s.rounded(.{ .x = dock.x - spread, .y = dock.y + 3, .w = dock.w + spread * 2, .h = dock.h + spread }, 25 + spread, 0x333153, 4);
-    }
-    s.frost(dock, 25, 0xEAEAFB, 104);
+    dock_material.paintShadowed(s, dock, 25, 0xEAEAFB, 104);
     s.rounded(.{ .x = dock.x + 20, .y = dock.y, .w = dock.w - 40, .h = 1 }, 0, 0xFFFFFF, 185);
     s.rounded(.{ .x = dock.x + 410, .y = dock.y + 20, .w = 1, .h = 49 }, 0, 0x686583, 70);
     s.rounded(.{ .x = dock.x + 575, .y = dock.y + 20, .w = 1, .h = 49 }, 0, 0x686583, 70);
