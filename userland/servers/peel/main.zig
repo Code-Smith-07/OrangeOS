@@ -60,6 +60,7 @@ const Window = struct {
     owner_pid: i64 = -1,
     closable: bool = true,
     id: u32 = 0,
+    revision: u64 = 0,
 
     fn title(self: *const Window) []const u8 {
         return self.title_buf[0..self.title_len];
@@ -194,7 +195,7 @@ fn syncShell() void {
     for (0..window_count) |i| {
         const app = appIndex(windows[i].title());
         shell.running[app] = true;
-        shell.items[i] = .{ .title = windows[i].title(), .hidden = !windows[i].visible, .app = app, .pixels = windows[i].pixels, .width = windows[i].client_w * screen.scale, .height = windows[i].client_h * screen.scale };
+        shell.items[i] = .{ .id = windows[i].id, .revision = windows[i].revision, .title = windows[i].title(), .hidden = !windows[i].visible, .app = app, .pixels = windows[i].pixels, .width = windows[i].client_w * screen.scale, .height = windows[i].client_h * screen.scale };
     }
 }
 
@@ -257,6 +258,7 @@ fn zoomWindow(idx: usize) void {
 }
 
 fn shellAction(action: u16) void {
+    desktop.invalidateOverview();
     shell.notice = "";
     const old = shell.popup;
     shell.popup = .none;
@@ -304,6 +306,7 @@ fn clientWindowAt(x: i32, y: i32) ?usize {
 // ── Damage ──────────────────────────────────────────────────────────────────
 
 var damage: gfx.Damage = .{};
+var overview_damage: gfx.Damage = .{};
 
 fn addDamage(r: Rect) void {
     damage.add(r);
@@ -311,6 +314,7 @@ fn addDamage(r: Rect) void {
 
 fn clearDamage() void {
     damage.count = 0;
+    overview_damage.count = 0;
 }
 
 // ── Cursor ──────────────────────────────────────────────────────────────────
@@ -678,7 +682,15 @@ fn handleCommit(payload: []const u8) void {
     var i: usize = 0;
     while (i < window_count) : (i += 1) {
         if (windows[i].id != c.window_id) continue;
-        if (shell.popup == .overview) addDamage(desktop.popupRect(&screen, .overview));
+        windows[i].revision +%= 1;
+        if (shell.popup == .overview) {
+            // Workspace-switcher semantics: hold the backdrop while live
+            // previews update. On dismissal shellAction repaints the whole
+            // desktop from current client buffers. A clock tick must not
+            // trigger a full blurred multi-window reconstruction every second.
+            overview_damage.add(desktop.windowCard(&screen, i));
+            return;
+        }
         if (!windows[i].visible) return;
         if (windows[i].zoomed) {
             addDamage(windows[i].contentRect());
@@ -701,9 +713,10 @@ fn pumpClients() void {
     if (server_port < 0) return;
 
     var buf: [1024]u8 = undefined;
-    // Non-blocking: the compositor must keep drawing whether or not a client
-    // has anything to say.
-    while (true) {
+    // Bound each batch: a busy client must not keep the compositor in message
+    // handling forever. waitInput observes remaining port messages immediately.
+    var handled: usize = 0;
+    while (handled < 32) : (handled += 1) {
         const m = pulp.portRecvMsg(server_port, &buf, false) catch return;
         if (m.len == 0) return;
         drag_backdrop_valid = false;
@@ -806,22 +819,28 @@ fn handleMouse(e: *const pulp.InputEvent) void {
     buttons = e.code;
 
     cursor_dirty = cursor_dirty or prev_cursor_x != cursor_x or prev_cursor_y != cursor_y;
-    if (windowAt(prev_cursor_x, prev_cursor_y)) |idx| {
+    if (shell.popup == .none) if (windowAt(prev_cursor_x, prev_cursor_y)) |idx| {
         for (0..3) |i| {
             const c = windows[idx].control(@intCast(i));
             if (c.contains(prev_cursor_x, prev_cursor_y) and !c.contains(cursor_x, cursor_y)) addDamage(c);
         }
-    }
-    if (windowAt(cursor_x, cursor_y)) |idx| {
+    };
+    if (shell.popup == .none) if (windowAt(cursor_x, cursor_y)) |idx| {
         for (0..3) |i| {
             const c = windows[idx].control(@intCast(i));
             if (c.contains(cursor_x, cursor_y) and !c.contains(prev_cursor_x, prev_cursor_y)) addDamage(c);
         }
-    }
+    };
     syncShell();
     const hit = desktop.hit(&screen, &shell, cursor_x, cursor_y);
     if (hit != shell.hover) {
         addDamage(desktop.hoverDamage(&screen, &shell, shell.hover, hit));
+        if (shell.popup == .overview) {
+            for ([_]u16{ shell.hover, hit }) |action| {
+                if (action >= desktop.Action.window and action < desktop.Action.window + shell.count)
+                    overview_damage.add(desktop.windowCard(&screen, action - desktop.Action.window));
+            }
+        }
         shell.hover = hit;
     }
 
@@ -1088,7 +1107,11 @@ export fn _start() callconv(.c) noreturn {
         }
         pumpClients();
 
-        if (damage.count != 0 or cursor_dirty) {
+        // If a base is unavailable (e.g. unusual display bounds), use the
+        // ordinary full-glass path. Never restore an uninitialized snapshot.
+        if (overview_damage.count != 0 and shell.popup == .overview and !desktop.overviewValid()) addDamage(desktop.popupRect(&screen, .overview));
+
+        if (damage.count != 0 or overview_damage.count != 0 or cursor_dirty) {
             const started = if (pulp.desktop_profile) pulp.uptimeMs() else 0;
             var repainted_area: i32 = 0;
             if (damage.count != 0) {
@@ -1113,6 +1136,17 @@ export fn _start() callconv(.c) noreturn {
                 }
                 // Publish only after all scene rectangles are complete.
                 for (resolved.rects[0..resolved.count]) |r| present(r);
+            }
+            if (shell.popup == .overview) {
+                syncShell();
+                for (overview_damage.rects[0..overview_damage.count]) |r| {
+                    screen.setClip(r);
+                    if (desktop.paintOverviewUpdate(&screen, &shell)) {
+                        present(r);
+                        repainted_area += r.w * r.h;
+                    }
+                }
+                screen.resetClip();
             }
             present(cursorRect(presented_cursor_x, presented_cursor_y));
             present(cursorRect(cursor_x, cursor_y));

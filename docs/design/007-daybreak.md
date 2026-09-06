@@ -85,6 +85,15 @@ Wallpaper is cached in a separate shared-memory surface. Shadow drawing is
 restricted to the visible fringe. Minimized client commits do not repaint
 the desktop, except when their thumbnails are visible in overview.
 
+The Windows overview holds a captured desktop backdrop while its previews
+remain live. Hover updates restore only the old/new cards from the cached
+glass; thumbnails are cached by stable window ID and commit revision.
+Background apps keep executing, including minimized apps. Dismissing the
+overview reconstructs the desktop from their latest buffers. Window-list changes
+refresh the overview base. This avoids a live clock continually rebuilding the
+entire frosted multi-window scene. See the eight-window measurements in
+[desktop performance](009-desktop-performance.md#eight-window-overview).
+
 The green button scales the existing client surface into the available
 desktop area and transforms mouse coordinates back into client space. This
 keeps real buttons functional without claiming to support app reflow yet.
@@ -116,7 +125,7 @@ Limine requests 2560×1600. Peel uses a 2x backing scale when the framebuffer
 supports it; smaller modes retain 1x drawing. Layout, damage rectangles, and
 client input remain logical coordinates. Clients query the scale before
 allocating their shared buffers. Painting, surface copies, and glyph coverage
-operate in physical pixels; relative pointer deltas retain fractional motion.
+operate in physical pixels; relative pointer travel is independent of backing scale.
 The buddy allocator now supports 16 MiB blocks and the shared-memory cap is
 16 MiB, sufficient for each 2560×1600 32-bit compositor surface.
 

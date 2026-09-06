@@ -6,6 +6,7 @@ const font = @import("font.zig");
 const Rect = gfx.Rect;
 const Surface = gfx.Surface;
 const pulp = @import("pulp");
+const overview = @import("overview.zig");
 
 pub const BAR_H = 36;
 pub const DOCK_H = 92;
@@ -28,6 +29,8 @@ pub const Action = struct {
 };
 pub const Popup = enum { none, menu, overview, settings };
 pub const Item = struct {
+    id: u32 = 0,
+    revision: u64 = 0,
     title: []const u8 = "",
     hidden: bool = false,
     app: usize = 0,
@@ -97,7 +100,7 @@ pub fn popupRect(s: *const Surface, popup: Popup) Rect {
         .overview => .{ .x = @divTrunc(s.width - 650, 2), .y = 92, .w = 650, .h = 428 },
     };
 }
-fn windowCard(s: *const Surface, i: usize) Rect {
+pub fn windowCard(s: *const Surface, i: usize) Rect {
     const p = popupRect(s, .overview);
     return .{ .x = p.x + 20 + @as(i32, @intCast(i % 2)) * 310, .y = p.y + 94 + @as(i32, @intCast(i / 2)) * 76, .w = 298, .h = 64 };
 }
@@ -193,7 +196,7 @@ pub fn hoverDamage(s: *const Surface, state: *const State, old: u16, new: u16) R
             break;
         }
     }
-    if (state.popup != .none and (old >= Action.window or new >= Action.window or
+    if (state.popup != .none and state.popup != .overview and (old >= Action.window or new >= Action.window or
         old == Action.desktop or new == Action.desktop or state.popup == .menu))
         damage = Rect.unionWith(damage, popupRect(s, state.popup));
     return damage;
@@ -202,6 +205,35 @@ pub fn hoverDamage(s: *const Surface, state: *const State, old: u16, new: u16) R
 // Two bounded caches consume 4.8 MB, preserving the exact frosted pixels.
 var bar_material: gfx.FrostCache(300_000) = .{};
 var dock_material: gfx.FrostCache(300_000) = .{};
+var overview_base: overview.Base = .{};
+var previews: [8]overview.Preview = [_]overview.Preview{.{}} ** 8;
+
+pub fn overviewValid() bool {
+    return overview_base.valid;
+}
+
+pub fn invalidateOverview() void {
+    overview_base.valid = false;
+}
+
+pub fn paintOverviewUpdate(s: *const Surface, state: *const State) bool {
+    if (state.popup != .overview or !overview_base.restore(s)) return false;
+    paintOverviewCards(s, state);
+    return true;
+}
+
+fn paintOverviewCards(s: *const Surface, state: *const State) void {
+    for (0..state.count) |i| {
+        const r = windowCard(s, i);
+        if (!Rect.overlaps(r, s.clip)) continue;
+        const item = state.items[i];
+        s.rounded(r, 12, if (state.hover == Action.window + i) 0xB4A5F7 else 0xE9E5FF, if (state.hover == Action.window + i) 90 else 28);
+        s.rounded(.{ .x = r.x + 10, .y = r.y + 9, .w = 76, .h = 46 }, 5, COLORS[item.app % 6], 255);
+        if (item.pixels) |pixels| previews[i].paint(s, pixels, item.id, item.revision, item.width, item.height, r.x + 12, r.y + 15);
+        text(s, item.title[0..@min(26, item.title.len)], r.x + 98, r.y + 17, WHITE);
+        text(s, if (item.hidden) "Minimized - restore" else "Open - switch here", r.x + 98, r.y + 40, MUTED);
+    }
+}
 
 pub fn paint(s: *const Surface, state: *const State) void {
     // Translucent top strip with only real, actionable menus/status.
@@ -251,6 +283,7 @@ pub fn paint(s: *const Surface, state: *const State) void {
     }
     if (state.popup == .none) return;
     const p = popupRect(s, state.popup);
+    if (!Rect.overlaps(gfx.shadowExtent(p), s.clip)) return;
     glass(s, p, 18, 242);
     switch (state.popup) {
         .menu => {
@@ -267,33 +300,8 @@ pub fn paint(s: *const Surface, state: *const State) void {
             font.drawText(s, "Your workspace", p.x + 22, p.y + 24, 2, WHITE);
             text(s, "Every open window. Click to switch or restore.", p.x + 22, p.y + 62, MUTED);
             if (state.count == 0) text(s, "A fresh start. Open an app from the dock.", p.x + 22, p.y + 116, WHITE);
-            for (0..state.count) |i| {
-                const r = windowCard(s, i);
-                const item = state.items[i];
-                s.rounded(r, 12, if (state.hover == Action.window + i) 0xB4A5F7 else 0xE9E5FF, if (state.hover == Action.window + i) 90 else 28);
-                s.rounded(.{ .x = r.x + 10, .y = r.y + 9, .w = 76, .h = 46 }, 5, COLORS[item.app % 6], 255);
-                if (item.pixels) |pixels| {
-                    if (item.width > 0 and item.height > 0) {
-                        var yy: i32 = 0;
-                        while (yy < 37 * s.scale) : (yy += 1) {
-                            var xx: i32 = 0;
-                            while (xx < 72 * s.scale) : (xx += 1) {
-                                const fy = @divTrunc(yy * item.height * 256, 37 * s.scale);
-                                const fx = @divTrunc(xx * item.width * 256, 72 * s.scale);
-                                const sy = @min(item.height - 1, fy >> 8);
-                                const sx = @min(item.width - 1, fx >> 8);
-                                const sy1 = @min(item.height - 1, sy + 1);
-                                const sx1 = @min(item.width - 1, sx + 1);
-                                const top = gfx.lerp(pixels[@intCast(sy * item.width + sx)], pixels[@intCast(sy * item.width + sx1)], @intCast(fx & 255));
-                                const bottom = gfx.lerp(pixels[@intCast(sy1 * item.width + sx)], pixels[@intCast(sy1 * item.width + sx1)], @intCast(fx & 255));
-                                s.putPhysical((r.x + 12) * s.scale + xx, (r.y + 15) * s.scale + yy, gfx.lerp(top, bottom, @intCast(fy & 255)));
-                            }
-                        }
-                    }
-                }
-                text(s, item.title[0..@min(26, item.title.len)], r.x + 98, r.y + 17, WHITE);
-                text(s, if (item.hidden) "Minimized - restore" else "Open - switch here", r.x + 98, r.y + 40, MUTED);
-            }
+            overview_base.capture(s, p);
+            paintOverviewCards(s, state);
         },
         .settings => {
             font.drawText(s, "Make it yours", p.x + 20, p.y + 25, 2, WHITE);

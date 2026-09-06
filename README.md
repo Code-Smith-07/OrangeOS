@@ -102,9 +102,12 @@ scaling, sleeping input consumers wake promptly, and unchanged menu/dock glass
 and shadows are cached. Rapid-input checks now include queue-to-publication
 delay. Large-window dragging remains slow under x86 emulation on Apple Silicon;
 see the [measured results and remaining work](docs/design/009-desktop-performance.md).
+The Windows overview now uses a captured backdrop with live cached previews;
+hovering cards no longer rebuilds the entire frosted workspace. Eight-window
+checks cover switching, minimized previews, and closing/reopening apps.
 
 **Phase 9e complete.** Orange OS now idles a full two-core desktop at
-**0.28% CPU** with the high-DPI frosted desktop and live clock in the latest resource-budget run. This is an idle measurement, not an interaction frame-rate claim. Scheduler sleeps, IPC,
+**0.33% CPU** with the high-DPI frosted desktop and live clock in the latest resource-budget run. This is an idle measurement, not an interaction frame-rate claim. Scheduler sleeps, IPC,
 console and PTY reads, and the Peel compositor all block until real work
 arrives; a static desktop no longer keeps every core runnable. UEFI/NVMe boot,
 panic replay, and the complete size, memory, latency, and idle-CPU budget
@@ -151,11 +154,11 @@ UEFI, and an NVMe root disk (Daybreak desktop, September 6, 2026):
 |--------|------:|---------:|--------|
 | Kernel image | < 2 MB (goal) | **0.81 MB** | Pass, advisory |
 | `.bss` | < 512 KB (goal) | **171 KB** | Pass, advisory |
-| Full desktop idle memory | ≤ 3 GiB | **81.19 MB** | Pass |
-| Full desktop idle CPU | < 1% (goal) | **0.28%** | Pass, advisory |
-| Context switch | < 500 ns | **59 ns** | Pass † |
-| Syscall round-trip | < 200 ns | **159 ns** | Pass † |
-| Boot to scheduler | < 2 s | **2.164 s** | Over † |
+| Full desktop idle memory | ≤ 3 GiB | **85.77 MB** | Pass |
+| Full desktop idle CPU | < 1% (goal) | **0.33%** | Pass, advisory |
+| Context switch | < 500 ns | **22 ns** | Pass † |
+| Syscall round-trip | < 200 ns | **164 ns** | Pass † |
+| Boot to scheduler | < 2 s | **2.245 s** | Over † |
 
 † Development runs QEMU's TCG x86_64 emulation on Apple Silicon. Timing is
 reported rather than failed until it can be measured on native hardware; the

@@ -178,3 +178,59 @@ Resource harness after this phase: 81.19 MB idle memory, 0.28% idle CPU,
 159 ns syscall round trip. All hard gates passed. Idle usage does not measure
 interactive smoothness. Full normal-build regression evidence:
 `orange-daybreak-4xhlu0yp` in the host temporary directory.
+
+## Eight-window overview
+
+The original overview regenerated every thumbnail on every scene paint, even
+when the clip missed the cards. Hover invalidated the entire frosted panel,
+and every client commit also invalidated it. With eight windows, one Clock
+tick could trigger a frame long enough for the next tick to arrive before it
+finished, keeping input behind expensive scene reconstruction.
+
+The overview now uses a captured desktop backdrop with live previews. This is
+an explicit switcher behavior: applications continue executing, but their large
+background surfaces remain at the captured image until dismissal, which forces
+a fresh desktop composition. Window creation/destruction/focus changes refresh
+the base. The top-bar clock and previews continue updating while it is open.
+
+- Cache finished glass/header pixels before drawing cards (4,451,200 bytes).
+- Cache eight bilinear thumbnails by window ID, content revision, dimensions
+  and backing scale (340,992 bytes). Compacted slots cannot inherit another
+  window's preview. No resolution or filtering quality was reduced.
+- Route card hover and preview updates through separate bounded damage regions;
+  restore only those cards, without repainting underlying windows or blurring.
+- Skip thumbnail work outside the clip. Suppress hidden title-control hover
+  damage while a popup captures input. Limit each IPC batch to 32 messages so
+  continuously active clients cannot hold the input loop indefinitely.
+- Fall back to full composition if the cache cannot capture the display bounds.
+
+Reproduce with `zig build -Ddesktop-profile`, `./scripts/mkdisk.sh`, then
+`python3 tools/overview_perf.py` (stop the interactive VM before rebuilding).
+The disposable guest opens six different apps plus two additional terminals.
+The same 12 hover targets, 80 ms injection intervals and one-second settling
+period yielded:
+
+| Eight-window hover phase | Baseline | Optimized |
+|---|---:|---:|
+| Render samples | 3 | 16 |
+| Median guest frame work | 826 ms | 15.5 ms |
+| p95 guest frame work | 837 ms | 23 ms |
+| Largest repainted logical area | 717,912 | 46,080 |
+
+These short samples include incidental clock work, not just hover. They measure
+guest composition/presentation, **not physical display latency or overview
+opening time**. The initial scene/glass capture still costs more than a hover.
+Baseline evidence: `orange-daybreak-c01trlpr`; optimized:
+`orange-daybreak-catqpcvk`, in the host temporary directory. The baseline's
+post-measurement hover-restoration check timed out/failed under sustained redraw;
+the optimized suite passed static-card restoration, switching, reopening,
+minimized Clock updates, and closing/relaunching Clock into a compacted slot.
+
+Native cache tests verify revisions/identity, clipping, partial-capture rejection,
+and pixel-for-pixel bilinear equivalence at 1x and 2x. Full desktop regression
+evidence: `orange-daybreak-74eg6bo6`.
+
+Post-change resource run: 85.77 MB desktop idle memory, 0.33% idle CPU,
+2.245 s boot-to-scheduler, 22 ns context switch, 164 ns syscall round trip.
+All hard gates passed; boot time remains over its advisory goal. These resource
+figures are the standard initial desktop, not eight-window interaction load.
