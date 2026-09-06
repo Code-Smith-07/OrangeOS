@@ -99,6 +99,19 @@ pub fn windowShadow(s: *const Surface, r: Rect, active: bool) void {
 }
 
 fn windowShadowImpl(s: *const Surface, r: Rect, active: bool, fast: bool) void {
+    // Rounded windows expose backdrop INSIDE their rectangular bounds. Paint
+    // the shadow there too; the window silhouette masks it during composition.
+    // Previously the fringe-only optimization left hard square shadow cutouts.
+    const corner_size = @min(13, @divTrunc(@min(r.w, r.h), 2));
+    var layer: i32 = 14;
+    while (layer >= 2) : (layer -= 1) {
+        const shadow = Rect{ .x = r.x - layer, .y = r.y - layer + 6, .w = r.w + layer * 2, .h = r.h + layer * 2 };
+        for ([_]i32{ r.y, r.bottom() - corner_size }) |y| for ([_]i32{ r.x, r.right() - corner_size }) |x| {
+            var corner = s.*;
+            corner.setClip(Rect.intersect(s.clip, .{ .x = x, .y = y, .w = corner_size, .h = corner_size }));
+            corner.rounded(shadow, 16 + layer, 0x1F183C, if (active) 5 else 3);
+        };
+    }
     // Only the corners need rounded coverage evaluated for all thirteen
     // layers. Straight edges use the exact precomputed colour transformation.
     const optimized = fast and r.w >= 64 and r.h >= 64;

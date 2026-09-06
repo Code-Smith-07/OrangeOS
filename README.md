@@ -105,6 +105,8 @@ see the [measured results and remaining work](docs/design/009-desktop-performanc
 The Windows overview now uses a captured backdrop with live cached previews;
 hovering cards no longer rebuilds the entire frosted workspace. Eight-window
 checks cover switching, minimized previews, and closing/reopening apps.
+Window bodies now share a clean antialiased lower edge with their app content:
+no pale corner wedges, mismatched clipping, or bright bottom seams.
 
 **Phase 9e complete.** Orange OS now idles a full two-core desktop at
 **0.33% CPU** with the high-DPI frosted desktop and live clock in the latest resource-budget run. This is an idle measurement, not an interaction frame-rate claim. Scheduler sleeps, IPC,

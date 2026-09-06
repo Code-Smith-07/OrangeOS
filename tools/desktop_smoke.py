@@ -162,6 +162,13 @@ def main():
         print(f"PASS wall time matches host; backing scale {g.scale}x", flush=True)
         time.sleep(1)
         g.screenshot("01-desktop")
+        # Dark Terminal on the warm Daybreak backdrop: the former pale frame
+        # wedges had blue channels near 250 at these lower corners. Neither
+        # the client, backdrop nor their shadow/AA blend should introduce white.
+        for x in (70, 678):
+            corner = g.region(x,514,14,13)
+            assert max(corner[2::3]) < 180, "pale frame wedge at Terminal lower corner"
+        print("PASS rounded Terminal corners have no pale undercoat", flush=True)
         if "--panic" not in sys.argv:
             bar = g.region(1050,10,210,18)
             g.until(lambda: g.region(1050,10,210,18) != bar,"menu clock ticks on screen",5)

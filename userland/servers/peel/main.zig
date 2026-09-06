@@ -18,6 +18,7 @@ const ui = @import("ui");
 const font = @import("font.zig");
 const desktop = @import("desktop.zig");
 const pointer = @import("pointer.zig");
+const window_body = @import("window_body.zig");
 
 const Rect = gfx.Rect;
 const Color = gfx.Color;
@@ -393,18 +394,7 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
     // Limit title writes to the title while rounding the full frame's top edge.
     screen.setClip(Rect.intersect(clip, w.titleBar()));
     screen.frostTop(w.titleBar(), 13, if (active) WIN_TITLE_ACTIVE else WIN_TITLE, if (active) 196 else 172);
-    if (w.pixels != null) {
-        // Clients replace the interior. Only the border/corner fringe needs
-        // a frame background; avoid shading millions of soon-overwritten pixels.
-        for ([_]Rect{
-            .{ .x = w.rect.x, .y = w.rect.y + TITLE_H, .w = 1, .h = w.rect.h - TITLE_H },
-            .{ .x = w.rect.right() - 1, .y = w.rect.y + TITLE_H, .w = 1, .h = w.rect.h - TITLE_H },
-            .{ .x = w.rect.x, .y = w.rect.bottom() - 14, .w = w.rect.w, .h = 14 },
-        }) |strip| {
-            screen.setClip(Rect.intersect(clip, strip));
-            screen.rounded(w.rect, 13, WIN_BG, 255);
-        }
-    } else {
+    if (w.pixels == null) {
         screen.setClip(Rect.intersect(clip, .{ .x = w.rect.x, .y = w.rect.y + TITLE_H, .w = w.rect.w, .h = w.rect.h - TITLE_H }));
         screen.rounded(w.rect, 13, WIN_BG, 255);
     }
@@ -426,40 +416,7 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
     // Client content: copy the client's buffer into place. Peel never draws
     // inside a client window, and the client never touches the screen.
     if (w.pixels) |src| {
-        const content = w.contentRect();
-        const area = Rect.intersect(content, clip);
-        if (!area.isEmpty()) {
-            const sc = screen.scale;
-            var y = area.y * sc;
-            while (y < area.bottom() * sc) : (y += 1) {
-                if (content.w == w.client_w and content.h == w.client_h and y < (w.rect.bottom() - 14) * sc) {
-                    const from: usize = @intCast((y - content.y * sc) * w.client_w * sc + (area.x - content.x) * sc);
-                    const to: usize = @intCast(y * screen.stride + area.x * sc);
-                    const len: usize = @intCast(area.w * sc);
-                    @memcpy(screen.pixels[to..][0..len], src[from..][0..len]);
-                    continue;
-                }
-                const sy = @divTrunc((y - content.y * sc) * w.client_h, @max(1, content.h));
-                if (sy < 0 or sy >= w.client_h * sc) continue;
-                var x = area.x * sc;
-                while (x < area.right() * sc) : (x += 1) {
-                    const sx = @divTrunc((x - content.x * sc) * w.client_w, @max(1, content.w));
-                    if (sx < 0 or sx >= w.client_w * sc) continue;
-                    // Preserve the frame's rounded lower corners when copying
-                    // client pixels. The shared client buffer stays rectangular.
-                    const dx = @max(@max((w.rect.x + 12) * sc - x, x - (w.rect.right() - 13) * sc), 0);
-                    const dy = @max(y - (w.rect.bottom() - 13) * sc, 0);
-                    if (dx * dx + dy * dy > 144 * sc * sc) continue;
-                    const pixel = src[@intCast(sy * w.client_w * sc + sx)];
-                    const dist = dx * dx + dy * dy;
-                    if (dist > 144 * sc * sc - 24 * sc) {
-                        const alpha: u8 = @intCast(@divTrunc((144 * sc * sc - dist) * 255, 24 * sc));
-                        const offset: usize = @intCast(y * screen.stride + x);
-                        screen.putPhysical(x, y, gfx.lerp(screen.pixels[offset], pixel, alpha));
-                    } else screen.putPhysical(x, y, pixel);
-                }
-            }
-        }
+        window_body.paint(&screen, w.rect, w.contentRect(), src, w.client_w, w.client_h);
     } else {
         font.drawText(&screen, "waiting for a client...", w.rect.x + 12, w.rect.y + TITLE_H + 14, 1, TEXT_DIM);
     }
@@ -693,18 +650,28 @@ fn handleCommit(payload: []const u8) void {
         }
         if (!windows[i].visible) return;
         if (windows[i].zoomed) {
-            addDamage(windows[i].contentRect());
+            const r = windows[i].rect;
+            addDamage(.{ .x = r.x, .y = r.y + TITLE_H, .w = r.w, .h = r.h - TITLE_H });
             return;
         }
         const content = windows[i].contentRect();
         // Client coordinates are relative to its own buffer; translate into
         // screen space before damaging.
-        addDamage(.{
-            .x = content.x + c.x,
-            .y = content.y + c.y,
-            .w = c.w,
-            .h = c.h,
-        });
+        // The outside one-point rim repeats the client's edge pixels. Include
+        // it when that edge changes, or live content would leave a stale seam.
+        var changed = Rect.intersect(.{ .x = c.x, .y = c.y, .w = c.w, .h = c.h }, .{ .x = 0, .y = 0, .w = content.w, .h = content.h });
+        if (changed.isEmpty()) return;
+        const right_edge = changed.right() == content.w;
+        const bottom_edge = changed.bottom() == content.h;
+        if (changed.x == 0) {
+            changed.x -= 1;
+            changed.w += 1;
+        }
+        if (right_edge) changed.w += 1;
+        if (bottom_edge) changed.h += 1;
+        changed.x += content.x;
+        changed.y += content.y;
+        addDamage(changed);
         return;
     }
 }

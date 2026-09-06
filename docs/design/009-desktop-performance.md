@@ -234,3 +234,23 @@ Post-change resource run: 85.77 MB desktop idle memory, 0.33% idle CPU,
 2.245 s boot-to-scheduler, 22 ns context switch, 164 ns syscall round trip.
 All hard gates passed; boot time remains over its advisory goal. These resource
 figures are the standard initial desktop, not eight-window interaction load.
+
+## Rounded-body polish regression
+
+The user's marked bottom-corner wedges came from a pale frame undercoat and a
+different client mask/radius. The body now has one antialiased silhouette,
+extending client edge colours into the rim. Small interior corner cutouts also
+receive shadows; normal interior copies and overview caches remain intact.
+See [the rendering notes](007-daybreak.md#frosted-materials).
+
+Native body tests pass at 1x/2x, including symmetry, partial clipping, zoomed
+mapping, off-screen source alignment, and no pale undercoat. Seven renderer
+tests pass. Real-desktop smoke evidence: `orange-daybreak-maqbwzcd`, with
+Terminal, Welcome and Files screenshots inspected. Eight-window overview tests
+passed in `orange-daybreak-qq2snr4l` (23 ms median hover frame work, 35 ms p95).
+Rapid-input evidence `orange-daybreak-19lvv_fq`: all 40 ordinary-client and glass
+updates published, median newest-sample ages 4.0/4.1 ms; drag delivered 18 of 40
+publications with a longest gap of 63.5 ms. These short emulator observations
+are not a 60 fps or physical-display-latency guarantee. A normal-build smoke
+check now detects the original pale Terminal corner wedges directly in pixels.
+Normal-build regression evidence: `orange-daybreak-r_mkfqzu`.

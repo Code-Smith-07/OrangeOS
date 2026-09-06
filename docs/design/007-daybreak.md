@@ -143,6 +143,17 @@ proprietary San Francisco.
 
 ### Frosted materials
 
+Window-body polish: the content now owns one continuous 13-point lower-corner
+silhouette, inspired by the user's rounded/overflow-clipped web UI reference.
+There is no pale frame undercoat beneath a differently rounded client mask.
+Client edge colours extend into the one-point rim, and 4x4 subpixel coverage
+blends the curved edge once against the actual backdrop. Shadows also cover the
+small cutouts inside the window bounds instead of ending at a square rectangle.
+Bulk row copies remain enabled for the ordinary interior; zoom, partial damage,
+off-screen dragging and live edge updates use the same body path. Native tests
+cover symmetry, clipping, source alignment and absence of pale corner wedges.
+The reference is design inspiration, not a React runtime or simulated-app port.
+
 The CPU renderer downsamples the current backdrop, applies two separable
 box-blur passes, bilinearly reconstructs it at physical resolution, then adds
 a material tint and antialiased rounded mask. Two reused scratch arrays are
