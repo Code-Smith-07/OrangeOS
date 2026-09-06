@@ -115,7 +115,7 @@ Being explicit about what we are *not* building is what keeps the project finish
 | **Binary compatibility with Linux** | A Linux ABI shim is a project the size of this one. |
 | **Running Windows games (Wine/Proton)** | Requires a Linux-compatible base + mature Vulkan drivers. Not reachable from a from-scratch kernel by a small team. |
 | **Booting on Apple Silicon MacBooks** | Requires reverse-engineering undocumented Apple silicon. See §16, Phase 9. |
-| **A web browser** | A modern browser engine is larger than this entire OS. |
+| **Writing a modern browser engine from scratch** | A native port of an existing engine is now in scope; it requires staged runtime/security work. See [browser plan](docs/design/008-browser.md). |
 | **SMP in Phase 0–5** | Single-core until the core is provably correct. Locks come later, deliberately. |
 | **Microkernel purity** | We take the pragmatic hybrid. See §4. |
 | **32-bit x86** | Long mode only. Legacy protected mode is boot-time transit, nothing more. |
