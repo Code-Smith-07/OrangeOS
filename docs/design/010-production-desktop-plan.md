@@ -86,6 +86,12 @@ flicker. Existing desktop smoke covers title controls, dock, overview, Appearanc
 cursor trails and dragging; the new calendar repeat test exposed the slow-hover
 failure above. Further stress and presentation-level instrumentation remain open.
 
+Calendar follow-up (`orange-daybreak-tv5u2zf7`): navigation, Today, blank-click
+stability and Clock launch passed after adding a material cache, but warmed
+scene work still included 449–491 ms frames. The optimisation is insufficient:
+keep the experiment uncommitted and the Phase 1 performance gate open. Do not
+report a median including cursor-only frames as calendar hover performance.
+
 ## 3. Experience direction: colour with purpose
 
 Working design name: **Aurora**, retaining OrangeOS's citrus identity. Aim for

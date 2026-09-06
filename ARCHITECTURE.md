@@ -39,6 +39,13 @@
 
 ## 1. Identity & Vision
 
+The next desktop programme is specified in the
+[Aurora production desktop plan](docs/design/010-production-desktop-plan.md):
+16 separately gated phases for rendering correctness, a substantial visual
+redesign, native browser/runtime work, app/service APIs, and real hardware
+integration. Its phase numbers are distinct from the historical kernel roadmap
+below. Planned capabilities must not be read as currently implemented ones.
+
 Orange OS is a **from-scratch operating system** targeting x86_64, built to be
 **resource-conscious** while presenting a
 **genuinely beautiful** graphical interface.
