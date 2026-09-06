@@ -151,6 +151,15 @@ not yet support transparent client surfaces revealing other apps. Title bars,
 the dock, and shell panels do diffuse actual windows/wallpaper underneath.
 The effect is software-rendered, not GPU acceleration or a macOS material API.
 
+### Responsiveness
+
+Peel now keeps its scene buffer cursor-free and draws pointer-only updates
+without recompositing glass. A bounded damage set preserves distant updates,
+and unscaled client rows use bulk copies. Non-Debug userland executables omit
+debug information to reduce disk-loading work. See the
+[measured performance pass](009-desktop-performance.md) for before/after
+results and remaining dragging latency; this is not yet a 60 Hz claim.
+
 Files reads the actual guest VFS. Favourites open `/`, `/etc`, `/bin`, and
 `/Trash`; directories are sorted before files, with `.` and `..` hidden.
 Listings display eight rows per page. The current readdir syscall returns

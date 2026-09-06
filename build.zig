@@ -54,6 +54,7 @@ pub fn build(b: *std.Build) void {
 
     const options = b.addOptions();
     const ui_options = b.addOptions();
+    ui_options.addOption(bool, "desktop_profile", b.option(bool, "desktop-profile", "Emit compositor frame timing for QEMU profiling") orelse false);
     const timezone = b.option(i32, "timezone-minutes", "Local offset from UTC in minutes (default India +330)") orelse 330;
     if (timezone < -720 or timezone > 840) @panic("timezone-minutes must be -720..840");
     ui_options.addOption(i32, "timezone_minutes", timezone);
@@ -187,6 +188,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(prog.path),
             .target = target,
             .optimize = user_optimize,
+            .strip = user_optimize != .Debug,
             .red_zone = false,
             .pic = false,
             .stack_protector = false,

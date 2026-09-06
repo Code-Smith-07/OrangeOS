@@ -302,14 +302,14 @@ fn clientWindowAt(x: i32, y: i32) ?usize {
 
 // ── Damage ──────────────────────────────────────────────────────────────────
 
-var damage: Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+var damage: gfx.Damage = .{};
 
 fn addDamage(r: Rect) void {
-    damage = Rect.unionWith(damage, r);
+    damage.add(r);
 }
 
 fn clearDamage() void {
-    damage = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    damage.count = 0;
 }
 
 // ── Cursor ──────────────────────────────────────────────────────────────────
@@ -321,6 +321,11 @@ var cursor_x: i32 = 0;
 var cursor_y: i32 = 0;
 var prev_cursor_x: i32 = 0;
 var prev_cursor_y: i32 = 0;
+// The scene buffer never contains the cursor. Restore its old front-buffer
+// footprint from the finished scene, then draw only the new pointer.
+var presented_cursor_x: i32 = 0;
+var presented_cursor_y: i32 = 0;
+var cursor_dirty = false;
 
 fn cursorRect(x: i32, y: i32) Rect {
     return .{ .x = x, .y = y, .w = CURSOR_W, .h = CURSOR_H };
@@ -393,8 +398,21 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
     // Limit title writes to the title while rounding the full frame's top edge.
     screen.setClip(Rect.intersect(clip, w.titleBar()));
     screen.frostTop(w.titleBar(), 13, if (active) WIN_TITLE_ACTIVE else WIN_TITLE, if (active) 196 else 172);
-    screen.setClip(Rect.intersect(clip, .{ .x = w.rect.x, .y = w.rect.y + TITLE_H, .w = w.rect.w, .h = w.rect.h - TITLE_H }));
-    screen.rounded(w.rect, 13, WIN_BG, 255);
+    if (w.pixels != null) {
+        // Clients replace the interior. Only the border/corner fringe needs
+        // a frame background; avoid shading millions of soon-overwritten pixels.
+        for ([_]Rect{
+            .{ .x = w.rect.x, .y = w.rect.y + TITLE_H, .w = 1, .h = w.rect.h - TITLE_H },
+            .{ .x = w.rect.right() - 1, .y = w.rect.y + TITLE_H, .w = 1, .h = w.rect.h - TITLE_H },
+            .{ .x = w.rect.x, .y = w.rect.bottom() - 14, .w = w.rect.w, .h = 14 },
+        }) |strip| {
+            screen.setClip(Rect.intersect(clip, strip));
+            screen.rounded(w.rect, 13, WIN_BG, 255);
+        }
+    } else {
+        screen.setClip(Rect.intersect(clip, .{ .x = w.rect.x, .y = w.rect.y + TITLE_H, .w = w.rect.w, .h = w.rect.h - TITLE_H }));
+        screen.rounded(w.rect, 13, WIN_BG, 255);
+    }
     screen.setClip(clip);
     screen.rounded(.{ .x = w.rect.x + 14, .y = w.rect.y, .w = w.rect.w - 28, .h = 1 }, 0, 0xFFFFFF, 160);
     screen.rounded(.{ .x = w.rect.x + 1, .y = w.rect.y + TITLE_H - 1, .w = w.rect.w - 2, .h = 1 }, 0, 0x9C95B9, 60);
@@ -419,6 +437,13 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
             const sc = screen.scale;
             var y = area.y * sc;
             while (y < area.bottom() * sc) : (y += 1) {
+                if (content.w == w.client_w and content.h == w.client_h and y < (w.rect.bottom() - 14) * sc) {
+                    const from: usize = @intCast((y - content.y * sc) * w.client_w * sc + (area.x - content.x) * sc);
+                    const to: usize = @intCast(y * screen.stride + area.x * sc);
+                    const len: usize = @intCast(area.w * sc);
+                    @memcpy(screen.pixels[to..][0..len], src[from..][0..len]);
+                    continue;
+                }
                 const sy = @divTrunc((y - content.y * sc) * w.client_h, @max(1, content.h));
                 if (sy < 0 or sy >= w.client_h * sc) continue;
                 var x = area.x * sc;
@@ -446,7 +471,7 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
 }
 
 /// Repaint everything intersecting `area`, back to front.
-fn composite(area: Rect) Rect {
+fn expandedDamage(area: Rect) Rect {
     const full = Rect{ .x = 0, .y = 0, .w = screen.width, .h = screen.height };
     var clip = Rect.intersect(area, full);
     if (clip.isEmpty()) return clip;
@@ -463,6 +488,11 @@ fn composite(area: Rect) Rect {
         if (clip.x == before.x and clip.y == before.y and clip.w == before.w and clip.h == before.h) break;
     }
 
+    return clip;
+}
+
+fn composite(clip: Rect) void {
+    if (clip.isEmpty()) return;
     // Everything drawn this frame is confined to the damage region. Window
     // backgrounds and title bars are drawn unclipped by intent - they are
     // whole-rectangle fills - so without this a small commit would blank an
@@ -480,8 +510,6 @@ fn composite(area: Rect) Rect {
 
     syncShell();
     desktop.paint(&screen, &shell);
-    drawCursor(&screen, cursor_x, cursor_y);
-    return clip;
 }
 
 /// Publish an already-composited rectangle to the visible framebuffer.
@@ -767,19 +795,24 @@ fn handleMouse(e: *const pulp.InputEvent) void {
     const is_down = e.code & 1 != 0;
     buttons = e.code;
 
-    addDamage(cursorRect(prev_cursor_x, prev_cursor_y));
-    addDamage(cursorRect(cursor_x, cursor_y));
+    cursor_dirty = cursor_dirty or prev_cursor_x != cursor_x or prev_cursor_y != cursor_y;
     if (windowAt(prev_cursor_x, prev_cursor_y)) |idx| {
-        if (windows[idx].titleBar().contains(prev_cursor_x, prev_cursor_y)) addDamage(windows[idx].titleBar());
+        for (0..3) |i| {
+            const c = windows[idx].control(@intCast(i));
+            if (c.contains(prev_cursor_x, prev_cursor_y) and !c.contains(cursor_x, cursor_y)) addDamage(c);
+        }
     }
     if (windowAt(cursor_x, cursor_y)) |idx| {
-        if (windows[idx].titleBar().contains(cursor_x, cursor_y)) addDamage(windows[idx].titleBar());
+        for (0..3) |i| {
+            const c = windows[idx].control(@intCast(i));
+            if (c.contains(cursor_x, cursor_y) and !c.contains(prev_cursor_x, prev_cursor_y)) addDamage(c);
+        }
     }
     syncShell();
     const hit = desktop.hit(&screen, &shell, cursor_x, cursor_y);
     if (hit != shell.hover) {
+        addDamage(desktop.hoverDamage(&screen, &shell, shell.hover, hit));
         shell.hover = hit;
-        chromeDamage();
     }
 
     // Desktop chrome captures a complete press/release pair, including a
@@ -883,9 +916,6 @@ fn handleMouse(e: *const pulp.InputEvent) void {
         sendInputById(old, pulp.EV_MOUSE, buttons, 0, cursor_x, cursor_y);
         hover_window = null;
     }
-
-    addDamage(cursorRect(prev_cursor_x, prev_cursor_y));
-    addDamage(cursorRect(cursor_x, cursor_y));
 }
 
 fn handleKey(e: *const pulp.InputEvent) void {
@@ -997,8 +1027,11 @@ export fn _start() callconv(.c) noreturn {
 
     // First frame: everything.
     const full = Rect{ .x = 0, .y = 0, .w = screen.width, .h = screen.height };
-    _ = composite(full);
+    composite(full);
     present(full);
+    drawCursor(&front, cursor_x, cursor_y);
+    presented_cursor_x = cursor_x;
+    presented_cursor_y = cursor_y;
     clearDamage();
 
     var events: [32]pulp.InputEvent = undefined;
@@ -1023,8 +1056,39 @@ export fn _start() callconv(.c) noreturn {
             }
         }
 
-        if (!damage.isEmpty()) {
-            present(composite(damage));
+        if (damage.count != 0 or cursor_dirty) {
+            const started = if (pulp.desktop_profile) pulp.uptimeMs() else 0;
+            var repainted_area: i32 = 0;
+            if (damage.count != 0) {
+                // Expand/merge glass dependencies to a fixed point BEFORE
+                // drawing. Overlapping regions are then rendered only once.
+                var resolved = damage;
+                while (true) {
+                    var next: gfx.Damage = .{};
+                    var grew = false;
+                    for (resolved.rects[0..resolved.count]) |r| {
+                        const expanded = expandedDamage(r);
+                        grew = grew or expanded.x != r.x or expanded.y != r.y or expanded.w != r.w or expanded.h != r.h;
+                        next.add(expanded);
+                    }
+                    const stable = !grew and next.count == resolved.count;
+                    resolved = next;
+                    if (stable) break;
+                }
+                for (resolved.rects[0..resolved.count]) |r| {
+                    composite(r);
+                    repainted_area += r.w * r.h;
+                }
+                // Publish only after all scene rectangles are complete.
+                for (resolved.rects[0..resolved.count]) |r| present(r);
+            }
+            present(cursorRect(presented_cursor_x, presented_cursor_y));
+            present(cursorRect(cursor_x, cursor_y));
+            drawCursor(&front, cursor_x, cursor_y);
+            presented_cursor_x = cursor_x;
+            presented_cursor_y = cursor_y;
+            cursor_dirty = false;
+            if (pulp.desktop_profile) pulp.print("perf: frame {d}ms area {d} cursor {d},{d}\n", .{ pulp.uptimeMs() - started, repainted_area, cursor_x, cursor_y });
             clearDamage();
             frames += 1;
         }

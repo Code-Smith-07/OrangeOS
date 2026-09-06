@@ -182,6 +182,23 @@ pub fn expandDamage(s: *const Surface, state: *const State, damage: Rect) Rect {
     return out;
 }
 
+/// Only surfaces whose appearance depends on hover need new scene pixels.
+/// Menu-bar labels do not change on hover. A dismiss hit is not a highlight.
+pub fn hoverDamage(s: *const Surface, state: *const State, old: u16, new: u16) Rect {
+    var damage = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    for (DOCK_ACTIONS) |action| {
+        if (old == action or new == action) {
+            const d = dockRect(s);
+            damage = .{ .x = d.x - 12, .y = d.y - 45, .w = d.w + 24, .h = d.h + 65 };
+            break;
+        }
+    }
+    if (state.popup != .none and (old >= Action.window or new >= Action.window or
+        old == Action.desktop or new == Action.desktop or state.popup == .menu))
+        damage = Rect.unionWith(damage, popupRect(s, state.popup));
+    return damage;
+}
+
 pub fn paint(s: *const Surface, state: *const State) void {
     // Translucent top strip with only real, actionable menus/status.
     s.frost(.{ .x = 0, .y = 0, .w = s.width, .h = BAR_H }, 0, 0xF4ECFF, 186);

@@ -6,6 +6,7 @@
 
 pub const Color = u32;
 
+
 pub const Rect = struct {
     x: i32,
     y: i32,
@@ -52,6 +53,48 @@ pub const Rect = struct {
         return !intersect(a, b).isEmpty();
     }
 };
+
+/// Bounded damage set. Distant menu-bar, window and dock updates must not
+/// become one screen-sized bounding box. Overflow remains lossless.
+pub const Damage = struct {
+    rects: [24]Rect = undefined,
+    count: usize = 0,
+    pub fn add(self: *Damage, rect: Rect) void {
+        if (rect.isEmpty()) return;
+        var r = rect;
+        var i: usize = 0;
+        while (i < self.count) {
+            if (Rect.overlaps(r, self.rects[i])) {
+                r = Rect.unionWith(r, self.rects[i]);
+                self.count -= 1;
+                self.rects[i] = self.rects[self.count];
+                i = 0;
+            } else i += 1;
+        }
+        if (self.count == self.rects.len) {
+            for (self.rects[0..self.count]) |old| r = Rect.unionWith(r, old);
+            self.count = 0;
+        }
+        self.rects[self.count] = r;
+        self.count += 1;
+    }
+};
+
+test "damage retains distant rectangles and never loses overflow" {
+    const std = @import("std");
+    var d: Damage = .{};
+    d.add(.{ .x = 0, .y = 0, .w = 100, .h = 10 });
+    d.add(.{ .x = 0, .y = 700, .w = 100, .h = 10 });
+    try std.testing.expectEqual(@as(usize, 2), d.count);
+    d.add(.{ .x = 50, .y = 0, .w = 100, .h = 10 });
+    try std.testing.expectEqual(@as(usize, 2), d.count);
+    for (0..40) |i| d.add(.{ .x = @intCast(i * 10), .y = 400, .w = 2, .h = 2 });
+    for (0..40) |i| {
+        var covered = false;
+        for (d.rects[0..d.count]) |r| covered = covered or r.contains(@intCast(i * 10), 400);
+        try std.testing.expect(covered);
+    }
+}
 
 pub const Surface = struct {
     pixels: [*]u32,

@@ -7,6 +7,7 @@
 //! There is no libc underneath. Pulp *is* the bottom.
 
 const std = @import("std");
+pub const desktop_profile = @import("ui_options").desktop_profile;
 
 // ── Syscall numbers — must match kernel/syscall/syscall.zig ─────────────────
 
