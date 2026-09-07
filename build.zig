@@ -162,9 +162,12 @@ pub fn build(b: *std.Build) void {
     files_mod.addImport("pulp", pulp_mod);
     files_mod.addImport("libpeel", libpeel_mod);
 
+    const host_protocol_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/host-services/protocol.zig"), .target = target, .optimize = user_optimize });
     const UserProgram = struct { name: []const u8, path: []const u8 };
     const programs = [_]UserProgram{
         .{ .name = "init", .path = "userland/servers/seed/main.zig" },
+        .{ .name = "host-agent", .path = "userland/servers/host-agent/main.zig" },
+        .{ .name = "host-probe", .path = "userland/bin/host-probe/main.zig" },
         .{ .name = "juice", .path = "userland/bin/juice/main.zig" },
         .{ .name = "echo", .path = "userland/bin/echo/main.zig" },
         .{ .name = "uname", .path = "userland/bin/uname/main.zig" },
@@ -197,6 +200,7 @@ pub fn build(b: *std.Build) void {
             .single_threaded = true,
         });
         mod.addImport("pulp", pulp_mod);
+        mod.addImport("host_protocol", host_protocol_mod);
         mod.addImport("libpeel", libpeel_mod);
         mod.addImport("segment", segment_mod);
         mod.addImport("typography", typography_mod);

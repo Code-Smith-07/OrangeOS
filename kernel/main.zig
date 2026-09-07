@@ -120,6 +120,7 @@ export fn kmain() callconv(.c) noreturn {
         io.hang();
     };
 
+    @import("drivers/virtio/serial.zig").init();
     if (have_fb and graphical_boot) splash.progress(3);
 
     // ── 8. Scheduler. From here the kernel runs as threads. ─────────────────

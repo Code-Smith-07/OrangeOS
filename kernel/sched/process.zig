@@ -72,6 +72,7 @@ pub fn execImage(image: []const u8) Error!noreturn {
 /// handed to the new thread, which loads and enters it.
 pub const SpawnRequest = struct {
     image: []u8,
+    host_bridge: bool,
 };
 
 /// Start a program with its stdio bound to a PTY.
@@ -97,7 +98,11 @@ pub fn spawnPath(path: []const u8) !u32 {
     if (n != size) return error.IoError;
 
     const req = heap.create(SpawnRequest) catch return error.OutOfMemory;
-    req.* = .{ .image = buf[0..size] };
+    const parent = sched.currentTask();
+    req.* = .{ .image = buf[0..size], .host_bridge = if (parent) |p|
+        p.service_manager and std.mem.eql(u8, path, "/bin/host-agent")
+    else
+        false };
 
     // Name the task after the last path component, so `ps` is readable.
     var name: []const u8 = path;
@@ -107,7 +112,7 @@ pub fn spawnPath(path: []const u8) !u32 {
 
     // Children inherit the terminal they were started from, so a program run
     // from a shell in a window has its output land in that same window.
-    if (sched.currentTask()) |parent| t.pty = parent.pty;
+    if (parent) |p| t.pty = p.pty;
 
     return t.tid;
 }
@@ -116,6 +121,7 @@ pub fn spawnPath(path: []const u8) !u32 {
 fn spawnThread(arg: ?*anyopaque) void {
     const req: *SpawnRequest = @ptrCast(@alignCast(arg.?));
     const image = req.image;
+    sched.currentTask().?.host_bridge = req.host_bridge;
     heap.destroy(req);
 
     execImage(image) catch |e| {
@@ -131,6 +137,7 @@ fn spawnThread(arg: ?*anyopaque) void {
 /// having a filesystem is that programs live on it.
 pub fn initThread(arg: ?*anyopaque) void {
     _ = arg;
+    sched.currentTask().?.service_manager = true;
 
     const path = "/sbin/init";
 

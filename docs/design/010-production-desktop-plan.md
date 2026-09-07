@@ -760,7 +760,7 @@ eviction/tab suspension or a visible resource limit, never an unexplained hang.
 |---|---|---|
 | Production plan | Written; awaiting iterative review | This document; no hardware/browser completion implied |
 | MacBook-first bridge architecture | Planned; explicitly in scope | Swift companion + Zig guest agent; no standalone driver prerequisite |
-| Bridge 9a / 9b | Not implemented | First bridge milestones: channel, grants, capabilities, host-state readback |
+| Bridge 9a / 9b | Read-only transport proof verified; production gates open | [Mac companion and guest bridge](../../host/macos/README.md): authenticated named virtio port, boot-only agent grant, live host time/timezone/version, reconnect and negative probes; no Control Centre binding or hardware adapters yet |
 | Host Wi-Fi / Bluetooth adapters | Not implemented | Phases 10/11: independent operation/permission/real-host gates |
 | Host display / audio / media / power | Not implemented in OrangeOS | Phase 9c/12; qualify built-in devices on user's Mac |
 | Welcome blank-click fix | Verified locally | `9835784`, `tools/welcome_smoke.py` |

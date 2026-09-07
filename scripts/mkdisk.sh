@@ -31,6 +31,8 @@ cat > "$ROOTFS/etc/seed.conf" <<'CONF'
 # Orange OS service configuration
 # <name> <path> <policy>   policy: once | respawn | essential
 peel    /bin/peel    essential
+host-agent /bin/host-agent once
+host-probe /bin/host-probe once
 greetd  /bin/greetd  respawn
 squeeze /bin/squeeze once
 grove   /bin/grove   once
@@ -43,7 +45,7 @@ if [ ! -f zig-out/bin/init ]; then
 fi
 
 cp zig-out/bin/init "$ROOTFS/sbin/init"
-for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench; do
+for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe; do
     if [ -f "zig-out/bin/$prog" ]; then
         cp "zig-out/bin/$prog" "$ROOTFS/bin/$prog"
     fi

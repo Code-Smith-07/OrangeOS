@@ -84,6 +84,7 @@ pub const Nr = enum(u64) {
     tcp_send = 98,
     tcp_recv = 99,
     tcp_close = 100,
+    host_io = 110,
     shm_map = 55,
     handle_close = 56,
     fb_acquire = 70,
@@ -149,6 +150,7 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .tcp_send => sysTcpSend(frame.rdi, frame.rsi, frame.rdx),
         .tcp_recv => sysTcpRecv(frame.rdi, frame.rsi, frame.rdx, frame.r10),
         .tcp_close => sysTcpClose(frame.rdi),
+        .host_io => sysHostIo(frame.rdi, frame.rsi, frame.rdx),
         .shm_map => sysShmMap(frame.rdi, frame.rsi),
         .handle_close => sysHandleClose(frame.rdi),
         .fb_acquire => sysFbAcquire(frame.rdi),
@@ -163,6 +165,27 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
     };
 
     frame.rax = @bitCast(result);
+}
+
+fn sysHostIo(op: u64, ptr: u64, len: u64) i64 {
+    const task = sched.currentTask() orelse return -13;
+    if (!task.host_bridge) return -13;
+    const bridge = @import("../drivers/virtio/serial.zig");
+    var buf: [512]u8 = undefined;
+    if (op == 2) return if (len == 0) bridge.operation(op, buf[0..0]) else -22;
+    if (op > 3 or len == 0 or len > buf.len or (op == 3 and len != 64)) return -22;
+    const n: usize = @intCast(len);
+    if (op == 1) {
+        validate.copyFromUser(task.address_space, &buf, ptr, n) catch return EFAULT;
+    } else {
+        validate.check(task.address_space, ptr, n, true) catch return EFAULT;
+    }
+    const result = bridge.operation(op, buf[0..n]);
+    if (result > 0 and op != 1) {
+        const copied: usize = @intCast(result);
+        validate.copyToUser(task.address_space, ptr, buf[0..copied], copied) catch return EFAULT;
+    }
+    return result;
 }
 
 fn sysExit(code: i64) i64 {

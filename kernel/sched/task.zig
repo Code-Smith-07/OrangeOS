@@ -105,6 +105,9 @@ pub const Task = struct {
     /// Capabilities this task holds. Empty at creation: a process starts with
     /// no authority and receives handles explicitly.
     handles: handle.Table = .{},
+    // Boot-issued authority, never inherited by ordinary spawned programs.
+    service_manager: bool = false,
+    host_bridge: bool = false,
 
     /// Next free virtual address for shared-memory mappings. Grows upward
     /// through a region reserved for the purpose.
