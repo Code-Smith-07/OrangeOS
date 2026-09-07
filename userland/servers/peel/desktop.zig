@@ -24,10 +24,15 @@ pub const Action = struct {
     pub const dismiss: u16 = 10;
     pub const files: u16 = 11;
     pub const trash: u16 = 12;
+    pub const calendar: u16 = 13;
+    pub const previous_month: u16 = 14;
+    pub const next_month: u16 = 15;
+    pub const today: u16 = 16;
+    pub const keep_popup: u16 = 17;
     pub const wallpaper: u16 = 20;
     pub const window: u16 = 100;
 };
-pub const Popup = enum { none, menu, overview, settings };
+pub const Popup = enum { none, menu, overview, settings, calendar };
 pub const Item = struct {
     id: u32 = 0,
     revision: u64 = 0,
@@ -47,6 +52,7 @@ pub const State = struct {
     items: [8]Item = [_]Item{.{}} ** 8,
     count: usize = 0,
     seconds: ?u64 = null,
+    month_offset: i32 = 0,
     notice: []const u8 = "",
 };
 
@@ -97,6 +103,7 @@ pub fn popupRect(s: *const Surface, popup: Popup) Rect {
         .none => .{ .x = 0, .y = 0, .w = 0, .h = 0 },
         .menu => .{ .x = 12, .y = 44, .w = 270, .h = 220 },
         .settings => .{ .x = s.width - 376, .y = 48, .w = 360, .h = 398 },
+        .calendar => .{ .x = s.width - 376, .y = 48, .w = 360, .h = 438 },
         .overview => .{ .x = @divTrunc(s.width - 650, 2), .y = 92, .w = 650, .h = 428 },
     };
 }
@@ -112,7 +119,7 @@ fn paletteCard(s: *const Surface, i: usize) Rect {
 pub fn hit(s: *const Surface, state: *const State, x: i32, y: i32) u16 {
     if (y < BAR_H) {
         if (x < 145) return Action.menu;
-        if (x >= s.width - 240) return Action.clock;
+        if (x >= s.width - 240) return Action.calendar;
         if (x >= s.width - 300) return Action.settings;
         if (x >= 390 and x < 486) return Action.overview;
         if (x >= 500 and x < 600) return Action.desktop;
@@ -140,6 +147,12 @@ pub fn hit(s: *const Surface, state: *const State, x: i32, y: i32) u16 {
                 for (0..3) |i| if (paletteCard(s, i).contains(x, y)) return Action.wallpaper + @as(u16, @intCast(i));
                 if ((Rect{ .x = p.x + 20, .y = p.y + 210, .w = 320, .h = 40 }).contains(x, y)) return Action.desktop;
             },
+            .calendar => {
+                for ([_]u16{ Action.previous_month, Action.next_month, Action.today, Action.clock }) |action| {
+                    if (calendarButton(s, action).contains(x, y)) return action;
+                }
+                return Action.keep_popup;
+            },
             .none => {},
         }
         return Action.dismiss;
@@ -154,11 +167,17 @@ fn centered(s: *const Surface, str: []const u8, r: Rect, color: u32) void {
     text(s, str, r.x + @divTrunc(r.w - font.textWidth(str, 1), 2), r.y + @divTrunc(r.h - 8, 2), color);
 }
 fn glass(s: *const Surface, r: Rect, radius: i32, opacity: u8) void {
+    glassMaterial(s, r, radius, opacity, null);
+}
+// Exact backdrop comparison keeps live underlying windows correct, while
+// stable button hover/navigation does not rerun the expensive blur.
+var calendar_material: gfx.FrostCache(700_000) = .{};
+fn glassMaterial(s: *const Surface, r: Rect, radius: i32, opacity: u8, cache: ?*gfx.FrostCache(700_000)) void {
     var spread: i32 = 8;
     while (spread > 0) : (spread -= 1) {
         s.rounded(.{ .x = r.x - spread, .y = r.y + 3, .w = r.w + spread * 2, .h = r.h + spread }, radius + spread, 0x17182F, 4);
     }
-    s.frost(r, radius, 0x22243D, @min(opacity, 168));
+    if (cache) |material| material.paint(s, r, radius, 0x22243D, @min(opacity, 168)) else s.frost(r, radius, 0x22243D, @min(opacity, 168));
     // Fine luminous rim, without filling the interior a second time.
     const inner = Rect{ .x = r.x + 1, .y = r.y + 1, .w = r.w - 2, .h = r.h - 2 };
     var rim = s.*;
@@ -197,9 +216,70 @@ pub fn hoverDamage(s: *const Surface, state: *const State, old: u16, new: u16) R
         }
     }
     if (state.popup != .none and state.popup != .overview and (old >= Action.window or new >= Action.window or
-        old == Action.desktop or new == Action.desktop or state.popup == .menu))
+        old == Action.desktop or new == Action.desktop or state.popup == .menu or
+        (state.popup == .calendar and (calendarHover(old) or calendarHover(new)))))
         damage = Rect.unionWith(damage, popupRect(s, state.popup));
     return damage;
+}
+
+fn calendarHover(action: u16) bool {
+    return action == Action.clock or (action >= Action.previous_month and action <= Action.today);
+}
+
+fn calendarButton(s: *const Surface, action: u16) Rect {
+    const p = popupRect(s, .calendar);
+    return switch (action) {
+        Action.previous_month => .{ .x = p.x + 264, .y = p.y + 120, .w = 32, .h = 28 },
+        Action.next_month => .{ .x = p.x + 302, .y = p.y + 120, .w = 32, .h = 28 },
+        Action.today => .{ .x = p.x + 244, .y = p.y + 37, .w = 88, .h = 30 },
+        else => .{ .x = p.x + 20, .y = p.y + 382, .w = 320, .h = 36 },
+    };
+}
+
+fn paintCalendar(s: *const Surface, state: *const State) void {
+    const p = popupRect(s, .calendar);
+    const seconds = state.seconds orelse {
+        text(s, "Hardware clock unavailable", p.x + 20, p.y + 30, WHITE);
+        return;
+    };
+    const date = pulp.calendar.fromEpoch(seconds, pulp.timezone_minutes);
+    const month = pulp.calendar.monthAt(date, state.month_offset);
+    const months = [_][]const u8{ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
+    const weekdays = [_][]const u8{ "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+    var buf: [64]u8 = undefined;
+    // A tinted date tile inside the frosted panel, rather than fake weather.
+    s.rounded(.{ .x = p.x + 12, .y = p.y + 12, .w = 336, .h = 90 }, 15, 0xAD98F8, 40);
+    text(s, weekdays[date.weekday], p.x + 25, p.y + 27, 0xFFBCAC);
+    const day = @import("std").fmt.bufPrint(&buf, "{d}", .{date.day}) catch "";
+    font.drawText(s, day, p.x + 24, p.y + 48, 3, WHITE);
+    const time = @import("std").fmt.bufPrint(&buf, "{d}:{d:0>2} {s}", .{ if (date.hour % 12 == 0) @as(u8, 12) else date.hour % 12, date.minute, if (date.hour < 12) "AM" else "PM" }) catch "";
+    text(s, time, p.x + 96, p.y + 56, WHITE);
+    text(s, "LOCAL TIME", p.x + 96, p.y + 77, MUTED);
+    const title = @import("std").fmt.bufPrint(&buf, "{s} {d}", .{ months[month.month - 1], month.year }) catch "";
+    text(s, title, p.x + 24, p.y + 131, WHITE);
+    const names = [_][]const u8{ "S", "M", "T", "W", "T", "F", "S" };
+    for (names, 0..) |name, i| {
+        centered(s, name, .{ .x = p.x + 23 + @as(i32, @intCast(i)) * 45, .y = p.y + 160, .w = 42, .h = 24 }, MUTED);
+    }
+    var d: u8 = 1;
+    while (d <= pulp.calendar.daysInMonth(month.year, month.month)) : (d += 1) {
+        const index: i32 = @as(i32, month.weekday) + d - 1;
+        const r = Rect{ .x = p.x + 23 + @mod(index, 7) * 45, .y = p.y + 188 + @divTrunc(index, 7) * 30, .w = 42, .h = 28 };
+        const today = month.year == date.year and month.month == date.month and d == date.day;
+        if (today) s.rounded(.{ .x = r.x + 7, .y = r.y, .w = 28, .h = 28 }, 14, 0xF2768E, 255);
+        const label = @import("std").fmt.bufPrint(&buf, "{d}", .{d}) catch "";
+        centered(s, label, r, WHITE);
+    }
+    for ([_]u16{ Action.previous_month, Action.next_month, Action.today, Action.clock }) |action| {
+        const r = calendarButton(s, action);
+        if (action == Action.previous_month or action == Action.next_month) {
+            s.rounded(r, 9, WHITE, if (state.hover == action) 240 else 200);
+            ui.icon(s, if (action == Action.previous_month) .chevron_left else .chevron_right, r.x + 6, r.y + 4, 20);
+        } else {
+            s.rounded(r, 9, 0xC5B4FF, if (state.hover == action) 110 else 38);
+            centered(s, if (action == Action.today) "Today" else "Open Clock", r, WHITE);
+        }
+    }
 }
 
 // Two bounded caches consume 4.8 MB, preserving the exact frosted pixels.
@@ -243,6 +323,7 @@ pub fn paint(s: *const Surface, state: *const State) void {
     text(s, state.active[0..@min(state.active.len, 25)], 162, 14, 0x565270);
     text(s, "Windows", 398, 14, INK);
     text(s, "Desktop", 510, 14, INK);
+    if (state.popup == .calendar) s.rounded(.{ .x = s.width - 242, .y = 4, .w = 232, .h = 28 }, 9, WHITE, 100);
     if (state.seconds) |seconds| {
         const date = pulp.calendar.fromEpoch(seconds, pulp.timezone_minutes);
         var date_buf: [32]u8 = undefined;
@@ -284,7 +365,7 @@ pub fn paint(s: *const Surface, state: *const State) void {
     if (state.popup == .none) return;
     const p = popupRect(s, state.popup);
     if (!Rect.overlaps(gfx.shadowExtent(p), s.clip)) return;
-    glass(s, p, 18, 242);
+    if (state.popup == .calendar) glassMaterial(s, p, 18, 242, &calendar_material) else glass(s, p, 18, 242);
     switch (state.popup) {
         .menu => {
             text(s, "A little more possibility.", p.x + 18, p.y + 24, MUTED);
@@ -336,6 +417,7 @@ pub fn paint(s: *const Surface, state: *const State) void {
             text(s, "Green button: zoom / restore", p.x + 20, p.y + 328, MUTED);
             text(s, "Wallpaper choice resets on reboot.", p.x + 20, p.y + 358, MUTED);
         },
+        .calendar => paintCalendar(s, state),
         .none => {},
     }
 }

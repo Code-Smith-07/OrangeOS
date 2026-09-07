@@ -72,6 +72,8 @@ Passed on macOS 15.7 / arm64, QEMU 11.1.0, 3 GiB / 2 vCPU:
 - Companion termination/restart, fresh authentication and resumed heartbeat.
 - No credential in guest/host logs; no guest network device attached.
 - Swift protocol tests and Zig golden-wire/malformed-header tests.
+- Normal boot without the opt-in device cleanly disables the agent; the full
+  existing desktop interaction suite still passes with the bridge-enabled image.
 
 The returned state is currently diagnostic output, **not connected to Control
 Centre or the guest clock**. Wi-Fi, Bluetooth, brightness, audio, battery and

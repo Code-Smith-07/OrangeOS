@@ -40,6 +40,25 @@ pub fn dateText(buf: []u8, d: Date) []const u8 {
     const months = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
     return std.fmt.bufPrint(buf, "{s} {d} {s}", .{ days[d.weekday], d.day, months[d.month - 1] }) catch "";
 }
+
+/// First day of the browsed month; saturate at the civil conversion bounds.
+pub fn monthAt(date: Date, offset: i32) Date {
+    const month = std.math.clamp(@as(i64, date.year) * 12 + date.month - 1 + offset, 1970 * 12, 2399 * 12 + 11);
+    return fromEpoch(toEpoch(@intCast(@divTrunc(month, 12)), @intCast(@mod(month, 12) + 1), 1, 0, 0, 0).?, 0);
+}
+
+test "calendar month browsing crosses years and clamps boundaries" {
+    const january = fromEpoch(toEpoch(2026, 1, 20, 0, 0, 0).?, 0);
+    const previous = monthAt(january, -1);
+    try std.testing.expectEqual(@as(u16, 2025), previous.year);
+    try std.testing.expectEqual(@as(u8, 12), previous.month);
+    try std.testing.expectEqual(@as(u8, 1), previous.day);
+    try std.testing.expectEqual(@as(u8, 1), previous.weekday);
+    const february = monthAt(january, -23);
+    try std.testing.expectEqual(@as(u8, 29), daysInMonth(february.year, february.month));
+    try std.testing.expectEqual(@as(u16, 1970), monthAt(january, -2147483648).year);
+    try std.testing.expectEqual(@as(u16, 2399), monthAt(january, 2147483647).year);
+}
 test "Gregorian validation, leap years and local midnight" {
     try std.testing.expect(toEpoch(2025, 2, 29, 0, 0, 0) == null);
     try std.testing.expect(toEpoch(2026, 0, 1, 0, 0, 0) == null);

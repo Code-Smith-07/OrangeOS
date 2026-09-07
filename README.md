@@ -93,9 +93,24 @@ The desktop now renders at **2560×1600 with a 2x backing scale**, including
 antialiased terminal text and pointer geometry. The top-right corner shows
 the **real weekday, date, and live time** from the hardware clock, using
 India time by default (`-Dtimezone-minutes=330`).
+Click the date for a frosted calendar with month navigation, a Today shortcut,
+and a working Open Clock button. Welcome adds glass-framed artwork and quick
+Windows, Trash, and About shortcuts; blank clicks no longer repaint the hub.
+The calendar is an **experimental preview**: interaction checks pass, but
+large panel redraws remain slow under QEMU TCG and are not performance-qualified.
 
 This is the first complete desktop-shell pass, not macOS feature parity.
 See [Daybreak's controls and current limits](docs/design/007-daybreak.md).
+The next programme is tracked in the
+[Aurora production desktop plan](docs/design/010-production-desktop-plan.md),
+with separate acceptance gates for UI, a native browser, services and real
+hardware controls. These phases are planned, not completed features.
+
+**MacBook host bridge.** The [read-only companion](host/macos/README.md) now
+exchanges authenticated capabilities, live Mac time/timezone and heartbeats with
+the actual QEMU guest, including reconnect testing. Wi-Fi, Bluetooth, brightness
+and other host hardware controls are still planned; this is the transport proof,
+not a completed hardware-control panel.
 
 **Input responsiveness.** Relative pointer travel is independent of Retina
 scaling, sleeping input consumers wake promptly, and unchanged menu/dock glass

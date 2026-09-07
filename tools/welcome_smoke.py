@@ -8,7 +8,7 @@ print(f"Evidence: {g.output}", flush=True)
 try:
     g.until(lambda: 'grove: painted' in g.log() and 'squeeze: window' in g.log(), 'Welcome ready', 45)
     g.scale = 2
-    g.click(900, 310)  # empty subtitle area; focus once
+    g.click(900, 295)  # empty gap below hero; focus once
     time.sleep(.6)
     baseline = g.region(754,150,430,382)
     offset = len(g.log())
@@ -24,7 +24,7 @@ try:
     g.move(820,395)
     time.sleep(.3)
     assert 'grove: painted' in g.log()[offset:], 'button hover failed to repaint'
-    g.move(900,310)
+    g.move(900,295)
     time.sleep(.3)
     assert g.region(754,150,430,382) == baseline, 'hover does not restore original pixels'
     print('PASS hover restores original client frame', flush=True)

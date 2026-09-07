@@ -260,6 +260,7 @@ fn zoomWindow(idx: usize) void {
 }
 
 fn shellAction(action: u16) void {
+    if (action == desktop.Action.keep_popup) return;
     desktop.invalidateOverview();
     shell.notice = "";
     const old = shell.popup;
@@ -271,6 +272,18 @@ fn shellAction(action: u16) void {
         desktop.Action.menu => shell.popup = if (old == .menu) .none else .menu,
         desktop.Action.overview => shell.popup = if (old == .overview) .none else .overview,
         desktop.Action.settings => shell.popup = if (old == .settings) .none else .settings,
+        desktop.Action.calendar => {
+            shell.popup = if (old == .calendar) .none else .calendar;
+            shell.month_offset = 0;
+        },
+        desktop.Action.previous_month, desktop.Action.next_month, desktop.Action.today => {
+            shell.month_offset = switch (action) {
+                desktop.Action.previous_month => @max(-1200, shell.month_offset - 1),
+                desktop.Action.next_month => @min(1200, shell.month_offset + 1),
+                else => 0,
+            };
+            shell.popup = .calendar;
+        },
         desktop.Action.desktop => toggleDesktop(),
         desktop.Action.new_terminal => launchApp(1, true),
         desktop.Action.wallpaper...desktop.Action.wallpaper + 2 => {
@@ -285,7 +298,11 @@ fn shellAction(action: u16) void {
         },
         else => {},
     }
-    addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = screen.height });
+    if (shell.popup == .calendar and old == .calendar) {
+        addDamage(gfx.shadowExtent(desktop.popupRect(&screen, .calendar)));
+    } else addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = screen.height });
+    if (pulp.desktop_profile and shell.popup == .calendar)
+        pulp.print("desktop: calendar offset {d}\n", .{shell.month_offset});
 }
 
 /// Topmost window containing the point, searching front to back.
@@ -1047,6 +1064,8 @@ export fn _start() callconv(.c) noreturn {
         const seconds = pulp.wallTime();
         if (seconds != shell.seconds) {
             if (shell.seconds == null and seconds != null) pulp.print("desktop: wall clock UTC {d}, offset {d} minutes\n", .{ seconds.?, pulp.timezone_minutes });
+            if (shell.popup == .calendar and (seconds == null or shell.seconds == null or seconds.? / 60 != shell.seconds.? / 60))
+                addDamage(gfx.shadowExtent(desktop.popupRect(&screen, .calendar)));
             shell.seconds = seconds;
             addDamage(.{ .x = screen.width - 330, .y = 0, .w = 330, .h = desktop.BAR_H });
         }

@@ -10,6 +10,9 @@ const targets = [_]ui.Button{
     .{ .id = 2, .rect = .{ .x = 156, .y = 206, .w = 118, .h = 92 } },
     .{ .id = 3, .rect = .{ .x = 288, .y = 206, .w = 118, .h = 92 } },
     .{ .id = 4, .rect = .{ .x = 24, .y = 314, .w = 382, .h = 48 } },
+    .{ .id = 5, .rect = .{ .x = 24, .y = 156, .w = 118, .h = 28 } },
+    .{ .id = 6, .rect = .{ .x = 156, .y = 156, .w = 118, .h = 28 } },
+    .{ .id = 7, .rect = .{ .x = 288, .y = 156, .w = 118, .h = 28 } },
 };
 fn paint(win: *const libpeel.Window, pointer: ui.Pointer) void {
     var s = ui.surface(win);
@@ -24,18 +27,27 @@ fn paint(win: *const libpeel.Window, pointer: ui.Pointer) void {
             const ny = @divTrunc(y * 382, s.height * s.scale);
             const peach = @max(0, 255 - @divTrunc((nx - 400) * (nx - 400) + (ny - 70) * (ny - 70), 240));
             const violet = @max(0, 255 - @divTrunc((nx - 25) * (nx - 25) + (ny - 310) * (ny - 310), 390));
-            var c = ui.gfx.lerp(0xF2EEFD, 0xFDC2B1, @intCast(peach));
-            c = ui.gfx.lerp(c, 0xCBC3F2, @intCast(violet));
+            var c = ui.gfx.lerp(0xF2EEFD, 0xFFBBAA, @intCast(peach));
+            c = ui.gfx.lerp(c, 0xBCAAF0, @intCast(violet));
             s.putPhysical(x, y, c);
         }
     }
-    s.rounded(.{ .x = 302, .y = 45, .w = 99, .h = 103 }, 29, 0x9569AE, 22);
-    s.frost(.{ .x = 298, .y = 39, .w = 99, .h = 103 }, 28, 0xFFFFFF, 60);
-    ui.icon(&s, .welcome, 307, 48, 82);
+    // A single inset glass hero, then a compact utility strip and app cards.
+    s.frost(.{ .x = 12, .y = 12, .w = 406, .h = 132 }, 22, 0xFFFFFF, 46);
+    s.rounded(.{ .x = 304, .y = 37, .w = 94, .h = 98 }, 28, 0x9569AE, 22);
+    s.frost(.{ .x = 300, .y = 31, .w = 94, .h = 98 }, 27, 0xFFFFFF, 70);
+    ui.icon(&s, .welcome, 304, 35, 86);
     ui.label(&s, "O R A N G E   O S", 24, 23, 1, 0x7B698D);
-    ui.label(&s, "Make yourself", 24, 61, 2, 0x37334F);
-    ui.label(&s, "at home.", 24, 94, 2, 0x37334F);
-    ui.label(&s, "A little colour. A world of possibility.", 24, 153, 1, 0x726984);
+    ui.label(&s, "Make yourself", 24, 49, 2, 0x37334F);
+    ui.label(&s, "at home.", 24, 82, 2, 0x37334F);
+    ui.label(&s, "A little colour. A world of possibility.", 24, 124, 1, 0x726984);
+    const utility_icons = [_]ui.Icon{ .windows, .trash, .about };
+    const utility_names = [_][]const u8{ "Windows", "Trash", "About" };
+    for (targets[4..], 0..) |t, i| {
+        s.rounded(t.rect, 10, 0xFFFFFF, if (pointer.pressed == t.id) 65 else if (pointer.hover == t.id) 200 else 115);
+        ui.icon(&s, utility_icons[i], t.rect.x + 8, t.rect.y + 4, 20);
+        ui.label(&s, utility_names[i], t.rect.x + 35, t.rect.y + 10, 1, 0x55477C);
+    }
     ui.label(&s, "YOUR EVERYDAY ESSENTIALS", 24, 191, 1, 0x7E7593);
     const kinds = [_]ui.Icon{ .files, .terminal, .clock };
     const titles = [_][]const u8{ "Files", "Terminal", "Clock" };
@@ -81,9 +93,12 @@ export fn _start() callconv(.c) noreturn {
             if (action >= 1 and action <= 3) {
                 const index: u32 = ([_]u32{ 4, 1, 2 })[action - 1];
                 _ = pulp.portSend(win.server, libpeel.proto.Op.launch_app, @import("std").mem.asBytes(&index)) catch {};
-            } else if (action == 4) {
-                const panel: u32 = 6;
+            } else if (action == 4 or action == 5) {
+                const panel: u32 = if (action == 4) 6 else 5;
                 _ = pulp.portSend(win.server, libpeel.proto.Op.desktop_panel, @import("std").mem.asBytes(&panel)) catch {};
+            } else if (action == 6 or action == 7) {
+                const index: u32 = if (action == 6) 5 else 3;
+                _ = pulp.portSend(win.server, libpeel.proto.Op.launch_app, @import("std").mem.asBytes(&index)) catch {};
             }
         }
         if (dirty) paint(&win, pointer);

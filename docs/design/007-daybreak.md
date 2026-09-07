@@ -27,7 +27,7 @@ on OrangeOS's own compositor, processes, IPC, and framebuffer.
   panic handling reclaims the display and replays the retained boot log.
 - Three cached procedural wallpapers: Daybreak, Lagoon, and Orchid.
 - A top menu/status bar showing the active window and a live weekday, date,
-  and 12-hour clock at the far right. Click the date/time to open Clock;
+  and 12-hour clock at the far right. Click the date/time to open Calendar;
   the adjacent sliders open Appearance.
 - An eight-icon pearl-translucent dock: Files, Welcome, Terminal, Clock,
   About, Windows, Appearance, and Trash. Separators distinguish applications,
@@ -51,8 +51,14 @@ on OrangeOS's own compositor, processes, IPC, and framebuffer.
   Terminal text uses antialiased JetBrains Mono instead of the 8×8 bitmap font.
 - Original SVG artwork gives apps consistent highlights, depth, and silhouettes.
   Eight app icons and ten interface symbols replace glyph-based substitutes.
-  Welcome has a peach/lilac aurora, frosted launch cards, and an Appearance
-  link. About and Clock share the softer glass-card styling.
+  Welcome has a peach/lilac aurora, an inset glass hero, frosted launch cards,
+  compact Windows/Trash/About shortcuts, and an Appearance link. About and
+  Clock share the softer glass-card styling.
+- A frosted calendar panel shows the real local date/time, highlighted today,
+  and the correct Gregorian month grid. Previous/next month, Today, and Open
+  Clock work; blank panel clicks are inert. This is a date browser, not an
+  event/reminder application. The panel clock updates each minute, while the
+  menu-bar clock continues to show seconds.
 - A read-only Files browser with sidebar favourites, back/up navigation,
   directory paging, and text previews. The Trash dock icon opens `/Trash`.
 
@@ -65,6 +71,8 @@ on OrangeOS's own compositor, processes, IPC, and framebuffer.
 | Switch or restore any window | Windows menu, dock Windows icon, or F3 |
 | Appearance and wallpaper | Appearance menu, dock sliders icon, or F4 |
 | Reveal/restore desktop | Desktop menu or F11 |
+| Calendar, month browsing, Today | Top-right date/time |
+| Open Clock from Calendar | Open Clock button (or Clock in the dock) |
 | Cycle visible windows | Tab |
 | Dismiss a desktop panel | Escape or a click outside it |
 | Zoom/restore a window | Green title-bar button |
@@ -73,6 +81,42 @@ on OrangeOS's own compositor, processes, IPC, and framebuffer.
 | Files: back / dismiss preview | Back button or Backspace; Escape dismisses preview |
 
 ## Implementation
+
+### Reference-inspired Welcome and Calendar
+
+The supplied React desktop reference informed the inset glass hero, compact
+utility strip, layered launch cards, and a right-aligned calendar/date tile.
+These are native compositor/client features, not a webpage embedded in the OS.
+All icons remain SVG-derived artwork. The reference's simulated wireless,
+weather and browser controls were not presented as real hardware or services.
+
+Welcome builds expensive glass/gradient content in a private frame first and
+only copies the finished result into its shared surface. Pointer transitions
+that do not alter a hover/pressed target do not repaint. The shared copy is
+not an atomic buffer swap; broader frame-publication synchronization remains
+separate compositor work.
+
+Calendar uses the same civil-time conversion as the menu-bar clock, including
+the configured timezone and Gregorian leap years. Month browsing is limited
+to 100 years either side of today and clamped to the supported 1970–2399
+conversion range. Returning to Today resets the offset. No new polling loop
+was added: the existing wall-clock check damages the panel once per minute.
+
+Reproduce the new interaction checks with a profile build and rebuilt disk:
+`python3 tools/welcome_smoke.py` and `python3 tools/calendar_smoke.py`.
+
+7 September 2026 checkpoint: both interaction scripts and all three civil-time
+unit tests passed again. Welcome's eight blank clicks preserve client pixels;
+hover restores its original frame. Calendar month navigation, Today, Clock
+launch and dismiss pass. **Calendar remains an experimental preview, not a
+performance-accepted release:** this TCG run recorded large panel frames of
+541–667 ms, above Aurora's 50 ms warm-hover / 100 ms hard-frame targets. The
+existing blur cache does not eliminate underlying scene reconstruction or
+layered shadow costs. Fixing that and atomic client publication remain open;
+these functional tests must not be cited as proof that all flicker/slowness is
+resolved. Private evidence directories are printed by each test, not committed.
+
+### Shell ownership
 
 Peel owns the dock and menus so their hit testing, z-order, focus, minimized
 state, and app lifecycle use one source of truth. Grove is now a closable
@@ -244,7 +288,7 @@ zig test --dep gfx --dep typography \
   GPU acceleration, vertical synchronization, or general animation framework.
   Text coverage is ASCII. Zoomed client surfaces still scale their existing
   pixels; SVG sources are baked for the normal 1x/2x desktop, not parsed live.
-- File mutations, a browser, editor, notifications, calendar, audio/network controls,
+- File mutations, a browser, editor, notifications, calendar events/reminders, audio/network controls,
   application search, and persistent settings remain subsequent app and
   service work. No nonfunctional controls stand in for those features.
 

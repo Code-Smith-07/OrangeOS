@@ -765,7 +765,7 @@ eviction/tab suspension or a visible resource limit, never an unexplained hang.
 | Host display / audio / media / power | Not implemented in OrangeOS | Phase 9c/12; qualify built-in devices on user's Mac |
 | Welcome blank-click fix | Verified locally | `9835784`, `tools/welcome_smoke.py` |
 | Whole-desktop flicker audit | Initial six-app CLI pass complete; expanded stress open | About/Files/Trash 8 redraws per 4 blank clicks; Files 1 transient sample |
-| Welcome/calendar experiment | Uncommitted, not release-ready | Calendar slow-hover regression must be resolved |
+| Welcome/calendar experiment | Functionally verified checkpoint; not performance accepted | Welcome/calendar QEMU scripts and civil-time tests pass (7 September); large calendar redraws still 541–667 ms under TCG, so performance work remains open |
 | Aurora Phase 1 | Planned beyond the targeted Welcome fix | Shared publication, all-app audit and performance gates |
 | Aurora Phases 2–16 | Planned | Update each only with tests and local commit evidence |
 
