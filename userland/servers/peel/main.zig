@@ -299,8 +299,25 @@ fn shellAction(action: u16) void {
         else => {},
     }
     if (shell.popup == .calendar and old == .calendar) {
-        addDamage(gfx.shadowExtent(desktop.popupRect(&screen, .calendar)));
-    } else addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = screen.height });
+        calendar_damage.add(desktop.popupRect(&screen, .calendar));
+    } else if (shell.popup == .calendar and old == .none) {
+        desktop.invalidateCalendar();
+        calendar_opening = true;
+        // The retained scene already contains current windows. Attach the
+        // panel after pending scene damage instead of redrawing the desktop.
+        addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = desktop.BAR_H });
+    } else if (old == .calendar and shell.popup == .none and
+        (action == desktop.Action.calendar or action == desktop.Action.dismiss))
+    {
+        calendar_opening = false;
+        desktop.invalidateCalendar();
+        addDamage(desktop.popupExtent(&screen, .calendar));
+        addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = desktop.BAR_H });
+    } else {
+        calendar_opening = false;
+        desktop.invalidateCalendar();
+        addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = screen.height });
+    }
     if (pulp.desktop_profile and shell.popup == .calendar)
         pulp.print("desktop: calendar offset {d}\n", .{shell.month_offset});
 }
@@ -326,6 +343,9 @@ fn clientWindowAt(x: i32, y: i32) ?usize {
 
 var damage: gfx.Damage = .{};
 var overview_damage: gfx.Damage = .{};
+var calendar_damage: gfx.Damage = .{};
+var calendar_opening = false;
+var calendar_rebuilding = false;
 
 fn addDamage(r: Rect) void {
     damage.add(r);
@@ -334,6 +354,7 @@ fn addDamage(r: Rect) void {
 fn clearDamage() void {
     damage.count = 0;
     overview_damage.count = 0;
+    calendar_damage.count = 0;
 }
 
 // ── Cursor ──────────────────────────────────────────────────────────────────
@@ -441,7 +462,7 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
 }
 
 /// Repaint everything intersecting `area`, back to front.
-fn expandedDamage(area: Rect) Rect {
+fn expandedDamage(area: Rect, retained_calendar: bool) Rect {
     const full = Rect{ .x = 0, .y = 0, .w = screen.width, .h = screen.height };
     var clip = Rect.intersect(area, full);
     if (clip.isEmpty()) return clip;
@@ -454,7 +475,9 @@ fn expandedDamage(area: Rect) Rect {
         for (windows[0..window_count]) |*w| {
             if (w.visible) clip = gfx.expandForGlass(clip, w.titleBar());
         }
-        clip = Rect.intersect(desktop.expandDamage(&screen, &shell, clip), full);
+        var state = shell;
+        if (retained_calendar) state.popup = .none;
+        clip = Rect.intersect(desktop.expandDamage(&screen, &state, clip), full);
         if (clip.x == before.x and clip.y == before.y and clip.w == before.w and clip.h == before.h) break;
     }
 
@@ -503,7 +526,12 @@ fn composite(clip: Rect) void {
     }
 
     syncShell();
+    const popup = shell.popup;
+    if (popup == .calendar and !calendar_opening and !calendar_rebuilding and !desktop.calendarUnderlayValid())
+        desktop.captureCalendarUnderlay(&screen);
+    if (calendar_opening or calendar_rebuilding) shell.popup = .none;
     desktop.paint(&screen, &shell);
+    shell.popup = popup;
 }
 
 /// Publish an already-composited rectangle to the visible framebuffer.
@@ -820,6 +848,11 @@ fn handleMouse(e: *const pulp.InputEvent) void {
     const hit = desktop.hit(&screen, &shell, cursor_x, cursor_y);
     if (hit != shell.hover) {
         addDamage(desktop.hoverDamage(&screen, &shell, shell.hover, hit));
+        if (shell.popup == .calendar) {
+            for ([_]u16{ shell.hover, hit }) |action| {
+                if (desktop.calendarHover(action)) calendar_damage.add(desktop.calendarButton(&screen, action));
+            }
+        }
         if (shell.popup == .overview) {
             for ([_]u16{ shell.hover, hit }) |action| {
                 if (action >= desktop.Action.window and action < desktop.Action.window + shell.count)
@@ -1065,7 +1098,7 @@ export fn _start() callconv(.c) noreturn {
         if (seconds != shell.seconds) {
             if (shell.seconds == null and seconds != null) pulp.print("desktop: wall clock UTC {d}, offset {d} minutes\n", .{ seconds.?, pulp.timezone_minutes });
             if (shell.popup == .calendar and (seconds == null or shell.seconds == null or seconds.? / 60 != shell.seconds.? / 60))
-                addDamage(gfx.shadowExtent(desktop.popupRect(&screen, .calendar)));
+                calendar_damage.add(desktop.popupRect(&screen, .calendar));
             shell.seconds = seconds;
             addDamage(.{ .x = screen.width - 330, .y = 0, .w = 330, .h = desktop.BAR_H });
         }
@@ -1098,18 +1131,20 @@ export fn _start() callconv(.c) noreturn {
         // ordinary full-glass path. Never restore an uninitialized snapshot.
         if (overview_damage.count != 0 and shell.popup == .overview and !desktop.overviewValid()) addDamage(desktop.popupRect(&screen, .overview));
 
-        if (damage.count != 0 or overview_damage.count != 0 or cursor_dirty) {
+        if (!calendar_opening and calendar_damage.count != 0 and shell.popup == .calendar and !desktop.calendarValid()) addDamage(desktop.popupRect(&screen, .calendar));
+        if (damage.count != 0 or overview_damage.count != 0 or calendar_damage.count != 0 or calendar_opening or cursor_dirty) {
             const started = if (pulp.desktop_profile) pulp.uptimeMs() else 0;
             var repainted_area: i32 = 0;
             if (damage.count != 0) {
                 // Expand/merge glass dependencies to a fixed point BEFORE
                 // drawing. Overlapping regions are then rendered only once.
                 var resolved = damage;
+                const retained_calendar = shell.popup == .calendar and desktop.calendarUnderlayValid() and !calendar_opening;
                 while (true) {
                     var next: gfx.Damage = .{};
                     var grew = false;
                     for (resolved.rects[0..resolved.count]) |r| {
-                        const expanded = expandedDamage(r);
+                        const expanded = expandedDamage(r, retained_calendar);
                         grew = grew or expanded.x != r.x or expanded.y != r.y or expanded.w != r.w or expanded.h != r.h;
                         next.add(expanded);
                     }
@@ -1117,12 +1152,63 @@ export fn _start() callconv(.c) noreturn {
                     resolved = next;
                     if (stable) break;
                 }
+                const panel_extent = desktop.popupExtent(&screen, .calendar);
+                calendar_rebuilding = false;
+                if (retained_calendar) for (resolved.rects[0..resolved.count]) |r| {
+                    if (Rect.overlaps(r, panel_extent)) {
+                        calendar_rebuilding = true;
+                        break;
+                    }
+                };
+                if (calendar_rebuilding) {
+                    screen.resetClip();
+                    _ = desktop.restoreCalendarUnderlay(&screen);
+                }
                 for (resolved.rects[0..resolved.count]) |r| {
                     composite(r);
                     repainted_area += r.w * r.h;
                 }
+                if (calendar_rebuilding) {
+                    screen.setClip(panel_extent);
+                    desktop.captureCalendarUnderlay(&screen);
+                    var changed = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
+                    for (resolved.rects[0..resolved.count]) |r| changed = Rect.unionWith(changed, Rect.intersect(r, panel_extent));
+                    desktop.calendarSourceDamage(changed);
+                    desktop.paint(&screen, &shell);
+                    desktop.calendarSourceDamage(null);
+                    screen.resetClip();
+                    calendar_rebuilding = false;
+                    repainted_area += panel_extent.w * panel_extent.h;
+                    // Publish only finished calendar pixels, not its restored
+                    // underlay. Raw damage may lie partly outside this panel.
+                    present(panel_extent);
+                }
                 // Publish only after all scene rectangles are complete.
                 for (resolved.rects[0..resolved.count]) |r| present(r);
+            }
+            if (shell.popup == .calendar) {
+                if (calendar_opening) {
+                    const r = desktop.popupExtent(&screen, .calendar);
+                    screen.setClip(r);
+                    desktop.captureCalendarUnderlay(&screen);
+                    desktop.paint(&screen, &shell);
+                    present(r);
+                    // Calendar's selected date label is outside the panel.
+                    screen.setClip(.{ .x = 0, .y = 0, .w = screen.width, .h = desktop.BAR_H });
+                    // Reconstruct the bar; never blur its already-painted text.
+                    calendar_opening = false;
+                    composite(screen.clip);
+                    present(.{ .x = 0, .y = 0, .w = screen.width, .h = desktop.BAR_H });
+                    repainted_area += r.w * r.h;
+                }
+                for (calendar_damage.rects[0..calendar_damage.count]) |r| {
+                    screen.setClip(r);
+                    if (desktop.paintCalendarUpdate(&screen, &shell)) {
+                        present(r);
+                        repainted_area += r.w * r.h;
+                    }
+                }
+                screen.resetClip();
             }
             if (shell.popup == .overview) {
                 syncShell();

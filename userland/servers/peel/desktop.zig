@@ -172,10 +172,34 @@ fn glass(s: *const Surface, r: Rect, radius: i32, opacity: u8) void {
 // Exact backdrop comparison keeps live underlying windows correct, while
 // stable button hover/navigation does not rerun the expensive blur.
 var calendar_material: gfx.FrostCache(700_000) = .{};
+var calendar_shadow: overview.Base = .{};
+pub fn calendarSourceDamage(damage: ?Rect) void {
+    calendar_material.source_damage = damage;
+}
 fn glassMaterial(s: *const Surface, r: Rect, radius: i32, opacity: u8, cache: ?*gfx.FrostCache(700_000)) void {
-    var spread: i32 = 8;
-    while (spread > 0) : (spread -= 1) {
-        s.rounded(.{ .x = r.x - spread, .y = r.y + 3, .w = r.w + spread * 2, .h = r.h + spread }, radius + spread, 0x17182F, 4);
+    if (cache != null) {
+        // Calendar shadow uses the compositor's edge-only shadow renderer.
+        // Eight translucent fills of its entire interior dominated cold opens.
+        if (calendar_material.source_damage) |changed| {
+            if (calendar_shadow.valid) {
+                var patch = s.*;
+                patch.setClip(Rect.intersect(s.clip, changed));
+                gfx.windowShadow(&patch, r, false);
+                calendar_shadow.refresh(&patch);
+                _ = calendar_shadow.restore(s);
+            } else {
+                gfx.windowShadow(s, r, false);
+                calendar_shadow.capture(s, popupExtent(s, .calendar));
+            }
+        } else {
+            gfx.windowShadow(s, r, false);
+            calendar_shadow.capture(s, popupExtent(s, .calendar));
+        }
+    } else {
+        var spread: i32 = 8;
+        while (spread > 0) : (spread -= 1) {
+            s.rounded(.{ .x = r.x - spread, .y = r.y + 3, .w = r.w + spread * 2, .h = r.h + spread }, radius + spread, 0x17182F, 4);
+        }
     }
     if (cache) |material| material.paint(s, r, radius, 0x22243D, @min(opacity, 168)) else s.frost(r, radius, 0x22243D, @min(opacity, 168));
     // Fine luminous rim, without filling the interior a second time.
@@ -200,7 +224,7 @@ pub fn expandDamage(s: *const Surface, state: *const State, damage: Rect) Rect {
     out = gfx.expandForGlass(out, gfx.shadowExtent(dock));
     if (state.hover != 0 or state.notice.len > 0)
         out = gfx.expandForGlass(out, .{ .x = dock.x - 32, .y = dock.y - 90, .w = dock.w + 64, .h = 90 });
-    if (state.popup != .none) out = gfx.expandForGlass(out, popupRect(s, state.popup));
+    if (state.popup != .none) out = gfx.expandForGlass(out, popupExtent(s, state.popup));
     return out;
 }
 
@@ -209,6 +233,8 @@ pub fn expandDamage(s: *const Surface, state: *const State, damage: Rect) Rect {
 pub fn hoverDamage(s: *const Surface, state: *const State, old: u16, new: u16) Rect {
     var damage = Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
     for (DOCK_ACTIONS) |action| {
+        // Calendar's Open Clock shares the launch action, not dock hover art.
+        if (state.popup == .calendar and calendarHover(action)) continue;
         if (old == action or new == action) {
             const d = dockRect(s);
             damage = .{ .x = d.x - 12, .y = d.y - 45, .w = d.w + 24, .h = d.h + 65 };
@@ -216,17 +242,16 @@ pub fn hoverDamage(s: *const Surface, state: *const State, old: u16, new: u16) R
         }
     }
     if (state.popup != .none and state.popup != .overview and (old >= Action.window or new >= Action.window or
-        old == Action.desktop or new == Action.desktop or state.popup == .menu or
-        (state.popup == .calendar and (calendarHover(old) or calendarHover(new)))))
+        old == Action.desktop or new == Action.desktop or state.popup == .menu))
         damage = Rect.unionWith(damage, popupRect(s, state.popup));
     return damage;
 }
 
-fn calendarHover(action: u16) bool {
+pub fn calendarHover(action: u16) bool {
     return action == Action.clock or (action >= Action.previous_month and action <= Action.today);
 }
 
-fn calendarButton(s: *const Surface, action: u16) Rect {
+pub fn calendarButton(s: *const Surface, action: u16) Rect {
     const p = popupRect(s, .calendar);
     return switch (action) {
         Action.previous_month => .{ .x = p.x + 264, .y = p.y + 120, .w = 32, .h = 28 },
@@ -286,6 +311,46 @@ fn paintCalendar(s: *const Surface, state: *const State) void {
 var bar_material: gfx.FrostCache(300_000) = .{};
 var dock_material: gfx.FrostCache(300_000) = .{};
 var overview_base: overview.Base = .{};
+var calendar_base: overview.Base = .{};
+var calendar_underlay: overview.Base = .{};
+var calendar_finished: overview.Base = .{};
+const CalendarKey = struct { minute: ?u64, month: i32, hover: u16 };
+var calendar_key: ?CalendarKey = null;
+fn calendarKey(state: *const State) CalendarKey {
+    return .{ .minute = if (state.seconds) |seconds| seconds / 60 else null, .month = state.month_offset, .hover = state.hover };
+}
+
+pub fn calendarUnderlayValid() bool {
+    return calendar_underlay.valid;
+}
+pub fn captureCalendarUnderlay(s: *const Surface) void {
+    calendar_underlay.capture(s, popupExtent(s, .calendar));
+}
+pub fn restoreCalendarUnderlay(s: *const Surface) bool {
+    return calendar_underlay.restore(s);
+}
+
+pub fn calendarValid() bool {
+    return calendar_base.valid;
+}
+pub fn popupExtent(s: *const Surface, popup: Popup) Rect {
+    const r = popupRect(s, popup);
+    return if (popup == .calendar) .{ .x = r.x - 14, .y = r.y - 8, .w = r.w + 28, .h = r.h + 28 } else gfx.shadowExtent(r);
+}
+pub fn invalidateCalendar() void {
+    calendar_base.valid = false;
+    calendar_underlay.valid = false;
+    calendar_finished.valid = false;
+    calendar_key = null;
+    calendar_shadow.valid = false;
+}
+pub fn paintCalendarUpdate(s: *const Surface, state: *const State) bool {
+    if (state.popup != .calendar or !calendar_base.restore(s)) return false;
+    paintCalendar(s, state);
+    calendar_finished.refresh(s);
+    calendar_key = calendarKey(state);
+    return true;
+}
 var previews: [8]overview.Preview = [_]overview.Preview{.{}} ** 8;
 
 pub fn overviewValid() bool {
@@ -364,8 +429,10 @@ pub fn paint(s: *const Surface, state: *const State) void {
     }
     if (state.popup == .none) return;
     const p = popupRect(s, state.popup);
-    if (!Rect.overlaps(gfx.shadowExtent(p), s.clip)) return;
+    if (!Rect.overlaps(popupExtent(s, state.popup), s.clip)) return;
+    const material_started = if (pulp.desktop_profile) pulp.uptimeMs() else 0;
     if (state.popup == .calendar) glassMaterial(s, p, 18, 242, &calendar_material) else glass(s, p, 18, 242);
+    const material_finished = if (pulp.desktop_profile) pulp.uptimeMs() else 0;
     switch (state.popup) {
         .menu => {
             text(s, "A little more possibility.", p.x + 18, p.y + 24, MUTED);
@@ -417,7 +484,24 @@ pub fn paint(s: *const Surface, state: *const State) void {
             text(s, "Green button: zoom / restore", p.x + 20, p.y + 328, MUTED);
             text(s, "Wallpaper choice resets on reboot.", p.x + 20, p.y + 358, MUTED);
         },
-        .calendar => paintCalendar(s, state),
+        .calendar => {
+            // Own a finished material layer before content. Hover/date updates
+            // restore this layer, never recomposite the windows behind it.
+            calendar_base.capture(s, p);
+            const key = calendarKey(state);
+            if (calendar_key != null and @import("std").meta.eql(calendar_key.?, key) and calendar_finished.restore(s)) {
+                var content = s.*;
+                content.setClip(Rect.intersect(s.clip, calendar_material.last_damage));
+                _ = calendar_base.restore(&content);
+                paintCalendar(&content, state);
+                calendar_finished.refresh(&content);
+            } else {
+                paintCalendar(s, state);
+                calendar_finished.capture(s, p);
+            }
+            calendar_key = key;
+            if (pulp.desktop_profile) pulp.print("perf: calendar material {d}ms content {d}ms dirty {d}\n", .{ material_finished - material_started, pulp.uptimeMs() - material_finished, calendar_material.last_damage.w * calendar_material.last_damage.h });
+        },
         .none => {},
     }
 }

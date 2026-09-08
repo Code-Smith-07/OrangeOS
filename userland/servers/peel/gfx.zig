@@ -6,6 +6,45 @@
 
 pub const Color = u32;
 
+/// Exact changed pixels, rounded out to logical coordinates for IPC damage.
+pub fn changedPixelBounds(before: []const u32, after: []const u32, stride: i32, scale: i32) Rect {
+    const std = @import("std");
+    std.debug.assert(before.len == after.len and stride > 0 and scale > 0);
+    const width: usize = @intCast(stride);
+    std.debug.assert(before.len % width == 0);
+    var left = width;
+    var right: usize = 0;
+    var top = before.len / width;
+    var bottom: usize = 0;
+    for (0..before.len / width) |row| {
+        const a = before[row * width ..][0..width];
+        const b = after[row * width ..][0..width];
+        if (std.mem.eql(u32, a, b)) continue;
+        top = @min(top, row);
+        bottom = row + 1;
+        for (a, b, 0..) |old, new, col| if (old != new) {
+            left = @min(left, col);
+            right = @max(right, col + 1);
+        };
+    }
+    if (right == 0) return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    const x = @divTrunc(@as(i32, @intCast(left)), scale);
+    const y = @divTrunc(@as(i32, @intCast(top)), scale);
+    return .{ .x = x, .y = y, .w = @divTrunc(@as(i32, @intCast(right)) + scale - 1, scale) - x, .h = @divTrunc(@as(i32, @intCast(bottom)) + scale - 1, scale) - y };
+}
+
+test "changed pixels cover first last and odd backing coordinates" {
+    const std = @import("std");
+    const before = [_]u32{0} ** 64;
+    var after = before;
+    try std.testing.expect(changedPixelBounds(&before, &after, 8, 2).isEmpty());
+    after[3 * 8 + 5] = 1;
+    try std.testing.expectEqualDeep(Rect{ .x = 2, .y = 1, .w = 1, .h = 1 }, changedPixelBounds(&before, &after, 8, 2));
+    after[0] = 1;
+    after[63] = 1;
+    try std.testing.expectEqualDeep(Rect{ .x = 0, .y = 0, .w = 4, .h = 4 }, changedPixelBounds(&before, &after, 8, 2));
+}
+
 /// Exact backdrop/result cache for a stable frosted surface. Fixed storage;
 /// partial clips and oversized surfaces fall back to normal rendering. Compare
 /// every source pixel, not a lossy hash: windows/palette changes cannot leave
@@ -17,6 +56,10 @@ pub fn FrostCache(comptime capacity: usize) type {
         valid: bool = false,
         key: Key = undefined,
         hits: usize = 0,
+        /// Trusted compositor-only hint; all changed backdrop pixels must be
+        /// inside it. Null performs the full exact comparison.
+        source_damage: ?Rect = null,
+        last_damage: Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
         const Key = struct { rect: Rect, bounds: Rect, scale: i32, radius: i32, tint: Color, opacity: u8, shadow: bool };
 
         pub fn paint(self: *@This(), s: *const Surface, r: Rect, radius: i32, tint: Color, opacity: u8) void {
@@ -42,6 +85,7 @@ pub fn FrostCache(comptime capacity: usize) type {
             const extent = if (shadow) shadowExtent(r) else r;
             const bounds = Rect.intersect(extent, .{ .x = 0, .y = 0, .w = s.width, .h = s.height });
             const area = s.clipped(extent);
+            self.last_damage = area;
             if (area.isEmpty()) return;
             const width: usize = @intCast(area.w * s.scale);
             const height: usize = @intCast(area.h * s.scale);
@@ -50,20 +94,68 @@ pub fn FrostCache(comptime capacity: usize) type {
                 return;
             }
             const key = Key{ .rect = r, .bounds = bounds, .scale = s.scale, .radius = radius, .tint = tint, .opacity = opacity, .shadow = shadow };
-            var matches = self.valid and std.meta.eql(self.key, key);
-            for (0..height) |row| {
-                const start: usize = @intCast((area.y * s.scale + @as(i32, @intCast(row))) * s.stride + area.x * s.scale);
-                const source = s.pixels[start..][0..width];
-                const saved = self.before[row * width..][0..width];
-                if (matches and !std.mem.eql(u32, source, saved)) matches = false;
+            const same_key = self.valid and std.meta.eql(self.key, key);
+            var matches = same_key;
+            var min_x: usize = width;
+            var min_y: usize = height;
+            var max_x: usize = 0;
+            var max_y: usize = 0;
+            const scan = if (same_key and !shadow and self.source_damage != null) Rect.intersect(area, self.source_damage.?) else area;
+            const scan_left: usize = if (scan.isEmpty()) 0 else @intCast((scan.x - area.x) * s.scale);
+            const scan_width: usize = if (scan.isEmpty()) 0 else @intCast(scan.w * s.scale);
+            const scan_top: usize = if (scan.isEmpty()) 0 else @intCast((scan.y - area.y) * s.scale);
+            const scan_height: usize = if (scan.isEmpty()) 0 else @intCast(scan.h * s.scale);
+            for (scan_top..scan_top + scan_height) |row| {
+                const start: usize = @as(usize, @intCast((area.y * s.scale + @as(i32, @intCast(row))) * s.stride + area.x * s.scale)) + scan_left;
+                const source = s.pixels[start..][0..scan_width];
+                const saved = self.before[row * width + scan_left ..][0..scan_width];
+                if (same_key and !std.mem.eql(u32, source, saved)) {
+                    matches = false;
+                    min_y = @min(min_y, row);
+                    max_y = row;
+                    if (!shadow) for (source, saved, 0..) |now, old, col| {
+                        if (now != old) {
+                            min_x = @min(min_x, col + scan_left);
+                            max_x = @max(max_x, col + scan_left);
+                        }
+                    };
+                }
                 @memcpy(saved, source);
             }
-            if (!matches) render(s, r, radius, tint, opacity, shadow);
+            var dirty = area;
+            if (same_key and !matches and !shadow) {
+                // Two radius-3 separable blur passes have radius 6 cells.
+                // Include downsample/bilinear support and AA/backdrop pixels.
+                // Samples still come from the FULL fresh source, never cached
+                // glass. Only reconstruction/publication is restricted.
+                const step = @max(4, @max(@divTrunc(bounds.w + FROST_W - 1, FROST_W), @divTrunc(bounds.h + FROST_H - 1, FROST_H)));
+                const pad = step * 8;
+                const x = area.x + @divTrunc(@as(i32, @intCast(min_x)), s.scale);
+                const y = area.y + @divTrunc(@as(i32, @intCast(min_y)), s.scale);
+                const right = area.x + @divTrunc(@as(i32, @intCast(max_x)), s.scale) + 1;
+                const bottom = area.y + @divTrunc(@as(i32, @intCast(max_y)), s.scale) + 1;
+                dirty = Rect.intersect(area, .{ .x = x - pad, .y = y - pad, .w = right - x + pad * 2, .h = bottom - y + pad * 2 });
+            }
+            if (!matches) {
+                var clipped = s.*;
+                clipped.setClip(dirty);
+                render(&clipped, r, radius, tint, opacity, shadow);
+            }
+            self.last_damage = if (matches) .{ .x = 0, .y = 0, .w = 0, .h = 0 } else dirty;
             for (0..height) |row| {
                 const start: usize = @intCast((area.y * s.scale + @as(i32, @intCast(row))) * s.stride + area.x * s.scale);
                 const target = s.pixels[start..][0..width];
-                const saved = self.after[row * width..][0..width];
-                if (matches) @memcpy(target, saved) else @memcpy(saved, target);
+                const saved = self.after[row * width ..][0..width];
+                const y = area.y * s.scale + @as(i32, @intCast(row));
+                if (matches or y < dirty.y * s.scale or y >= dirty.bottom() * s.scale) {
+                    @memcpy(target, saved);
+                } else {
+                    const left: usize = @intCast((dirty.x - area.x) * s.scale);
+                    const right: usize = @intCast((dirty.right() - area.x) * s.scale);
+                    @memcpy(target[0..left], saved[0..left]);
+                    @memcpy(saved[left..right], target[left..right]);
+                    @memcpy(target[right..], saved[right..]);
+                }
             }
             if (matches) self.hits +%= 1;
             self.key = key;
@@ -198,7 +290,6 @@ test "fast window shadows exactly match layered shadows at 1x and 2x" {
         try std.testing.expectEqualSlices(u32, &expected, &pixels);
     };
 }
-
 
 pub const Rect = struct {
     x: i32,
@@ -373,12 +464,12 @@ pub const Surface = struct {
     /// Scratch is process-local, bounded and reused by this single-threaded
     /// renderer. Two separable box passes approximate a soft Gaussian.
     pub fn frost(self: *const Surface, r: Rect, radius: i32, tint: Color, opacity: u8) void {
-        self.frostImpl(r, radius, tint, opacity, false);
+        self.frostImpl(r, radius, tint, opacity, false, true);
     }
     pub fn frostTop(self: *const Surface, r: Rect, radius: i32, tint: Color, opacity: u8) void {
-        self.frostImpl(r, radius, tint, opacity, true);
+        self.frostImpl(r, radius, tint, opacity, true, true);
     }
-    fn frostImpl(self: *const Surface, r: Rect, radius: i32, tint: Color, opacity: u8, top_only: bool) void {
+    fn frostImpl(self: *const Surface, r: Rect, radius: i32, tint: Color, opacity: u8, top_only: bool, fast: bool) void {
         const bounds = Rect.intersect(r, .{ .x = 0, .y = 0, .w = self.width, .h = self.height });
         const area = self.clipped(r);
         if (bounds.isEmpty() or area.isEmpty()) return;
@@ -411,11 +502,25 @@ pub const Surface = struct {
         }
         const sc = self.scale;
         const rad = @max(0, @min(radius, @divTrunc(@min(r.w, r.h), 2))) * sc;
+        const cached = fast and area.w * sc <= frost_top.len;
+        var last_y0: i32 = -1;
         y = area.y * sc;
         while (y < area.bottom() * sc) : (y += 1) {
             const fy = @max(0, @divTrunc((y - bounds.y * sc) * 256, step * sc) - 128);
             const y0 = @min(height - 1, fy >> 8);
             const y1 = @min(height - 1, y0 + 1);
+            if (cached and y0 != last_y0) {
+                var xx = area.x * sc;
+                while (xx < area.right() * sc) : (xx += 1) {
+                    const fx = @max(0, @divTrunc((xx - bounds.x * sc) * 256, step * sc) - 128);
+                    const x0 = @min(width - 1, fx >> 8);
+                    const x1 = @min(width - 1, x0 + 1);
+                    const index: usize = @intCast(xx - area.x * sc);
+                    frost_top[index] = lerp(frost_a[@intCast(y0 * width + x0)], frost_a[@intCast(y0 * width + x1)], @intCast(fx & 255));
+                    frost_bottom[index] = lerp(frost_a[@intCast(y1 * width + x0)], frost_a[@intCast(y1 * width + x1)], @intCast(fx & 255));
+                }
+                last_y0 = y0;
+            }
             var x = area.x * sc;
             while (x < area.right() * sc) : (x += 1) {
                 const dx = @max(@max(r.x * sc + rad - x - 1, x - (r.right() * sc - rad)), 0);
@@ -425,13 +530,16 @@ pub const Surface = struct {
                 const fx = @max(0, @divTrunc((x - bounds.x * sc) * 256, step * sc) - 128);
                 const x0 = @min(width - 1, fx >> 8);
                 const x1 = @min(width - 1, x0 + 1);
-                const top = lerp(frost_a[@intCast(y0 * width + x0)], frost_a[@intCast(y0 * width + x1)], @intCast(fx & 255));
-                const bottom = lerp(frost_a[@intCast(y1 * width + x0)], frost_a[@intCast(y1 * width + x1)], @intCast(fx & 255));
+                const index: usize = @intCast(x - area.x * sc);
+                const top = if (cached) frost_top[index] else lerp(frost_a[@intCast(y0 * width + x0)], frost_a[@intCast(y0 * width + x1)], @intCast(fx & 255));
+                const bottom = if (cached) frost_bottom[index] else lerp(frost_a[@intCast(y1 * width + x0)], frost_a[@intCast(y1 * width + x1)], @intCast(fx & 255));
                 const diffused = lerp(top, bottom, @intCast(fy & 255));
                 const material = lerp(diffused, tint, opacity);
                 const edge = @max(1, 2 * rad);
                 const coverage: u8 = if (rad > 0 and d > rad * rad - edge) @intCast(@divTrunc((rad * rad - d) * 255, edge)) else 255;
-                self.putPhysical(x, y, lerp(self.getPhysical(x, y), material, coverage));
+                // The loop is already confined to clipped physical bounds.
+                const target: usize = @intCast(y * self.stride + x);
+                self.pixels[target] = if (coverage == 255) material else lerp(self.pixels[target], material, coverage);
             }
         }
     }
@@ -504,27 +612,82 @@ const FROST_W = 384;
 const FROST_H = 256;
 var frost_a: [FROST_W * FROST_H]u32 = undefined;
 var frost_b: [FROST_W * FROST_H]u32 = undefined;
+// Horizontal interpolation repeats for each row in a downsample cell. Keep
+// exact rounded RGB results; no lower-resolution final surface or changed AA.
+var frost_top: [4096]u32 = undefined;
+var frost_bottom: [4096]u32 = undefined;
+
+test "row-cached frost exactly matches scalar reconstruction" {
+    const std = @import("std");
+    var pixels: [96 * 80 * 4]u32 = undefined;
+    for ([_]i32{ 1, 2 }) |scale| for ([_]bool{ false, true }) |top_only| for (0..3) |clip| {
+        for (&pixels, 0..) |*p, i| p.* = @intCast((i * 71893) & 0xFFFFFF);
+        const original = pixels;
+        var s = Surface{ .pixels = &pixels, .width = 96, .height = 80, .stride = 96 * scale, .scale = scale };
+        if (clip == 1) s.setClip(.{ .x = 7, .y = 8, .w = 60, .h = 42 });
+        const r = Rect{ .x = if (clip == 2) -4 else 2, .y = 3, .w = 91, .h = 75 };
+        s.frostImpl(r, 18, 0x22243D, 168, top_only, false);
+        const expected = pixels;
+        pixels = original;
+        s.frostImpl(r, 18, 0x22243D, 168, top_only, true);
+        try std.testing.expectEqualSlices(u32, &expected, &pixels);
+    };
+}
 
 fn blurPass(src: []const u32, dst: []u32, width: i32, height: i32, horizontal: bool) void {
-    var y: i32 = 0;
-    while (y < height) : (y += 1) {
-        var x: i32 = 0;
-        while (x < width) : (x += 1) {
+    const lines = if (horizontal) height else width;
+    const length = if (horizontal) width else height;
+    const step = if (horizontal) @as(i32, 1) else width;
+    var line: i32 = 0;
+    while (line < lines) : (line += 1) {
+        const start = if (horizontal) line * width else line;
+        var red: u32 = 0;
+        var green: u32 = 0;
+        var blue: u32 = 0;
+        var delta: i32 = -3;
+        while (delta <= 3) : (delta += 1) {
+            const c = src[@intCast(start + @max(0, @min(length - 1, delta)) * step)];
+            red += (c >> 16) & 255;
+            green += (c >> 8) & 255;
+            blue += c & 255;
+        }
+        var at: i32 = 0;
+        while (at < length) : (at += 1) {
+            dst[@intCast(start + at * step)] = ((red / 7) << 16) | ((green / 7) << 8) | (blue / 7);
+            const old = src[@intCast(start + @max(0, at - 3) * step)];
+            const new = src[@intCast(start + @min(length - 1, at + 4) * step)];
+            red = red - ((old >> 16) & 255) + ((new >> 16) & 255);
+            green = green - ((old >> 8) & 255) + ((new >> 8) & 255);
+            blue = blue - (old & 255) + (new & 255);
+        }
+    }
+}
+
+test "rolling blur is exactly the seven-tap clamped convolution" {
+    const std = @import("std");
+    var source: [21 * 17]u32 = undefined;
+    for (&source, 0..) |*p, i| p.* = @intCast((i * 18271) & 0xFFFFFF);
+    var actual: [21 * 17]u32 = undefined;
+    for ([_][2]i32{ .{ 1, 1 }, .{ 2, 3 }, .{ 21, 17 } }) |size| for ([_]bool{ false, true }) |horizontal| {
+        blurPass(&source, &actual, size[0], size[1], horizontal);
+        for (0..@intCast(size[0] * size[1])) |i| {
+            const x = @mod(@as(i32, @intCast(i)), size[0]);
+            const y = @divTrunc(@as(i32, @intCast(i)), size[0]);
             var red: u32 = 0;
             var green: u32 = 0;
             var blue: u32 = 0;
             var delta: i32 = -3;
             while (delta <= 3) : (delta += 1) {
-                const sx = if (horizontal) @max(0, @min(width - 1, x + delta)) else x;
-                const sy = if (horizontal) y else @max(0, @min(height - 1, y + delta));
-                const c = src[@intCast(sy * width + sx)];
+                const sx = if (horizontal) std.math.clamp(x + delta, 0, size[0] - 1) else x;
+                const sy = if (horizontal) y else std.math.clamp(y + delta, 0, size[1] - 1);
+                const c = source[@intCast(sy * size[0] + sx)];
                 red += (c >> 16) & 255;
                 green += (c >> 8) & 255;
                 blue += c & 255;
             }
-            dst[@intCast(y * width + x)] = ((red / 7) << 16) | ((green / 7) << 8) | (blue / 7);
+            try std.testing.expectEqual(((red / 7) << 16) | ((green / 7) << 8) | (blue / 7), actual[i]);
         }
-    }
+    };
 }
 
 /// Dependency closure helper: glass must be reconstructed in full whenever
@@ -583,6 +746,46 @@ test "frost cache matches uncached pixels and invalidates changed backdrops" {
     s.fill(full, 0x8899AA);
     cache.paint(&s, .{ .x = 1, .y = 1, .w = 12, .h = 12 }, 3, 0xFFFFFF, 100);
     try std.testing.expectEqual(@as(usize, 2), cache.hits);
+}
+
+test "incremental frost halo exactly matches full repaint after local mutations" {
+    const std = @import("std");
+    const capacity = 180 * 130 * 4;
+    const cache = try std.testing.allocator.create(FrostCache(capacity));
+    defer std.testing.allocator.destroy(cache);
+    const source = try std.testing.allocator.alloc(u32, capacity);
+    defer std.testing.allocator.free(source);
+    const pixels = try std.testing.allocator.alloc(u32, capacity);
+    defer std.testing.allocator.free(pixels);
+    const expected = try std.testing.allocator.alloc(u32, capacity);
+    defer std.testing.allocator.free(expected);
+    for ([_]i32{ 1, 2 }) |scale| {
+        cache.* = .{};
+        for (source, 0..) |*p, i| p.* = @intCast((i * 91813) & 0xFFFFFF);
+        var s = Surface{ .pixels = pixels.ptr, .width = 180, .height = 130, .stride = 180 * scale, .scale = scale };
+        const r = Rect{ .x = 0, .y = 0, .w = 180, .h = 130 };
+        for (0..30) |iteration| {
+            const pos = (iteration * 3191) % @as(usize, @intCast(180 * 130 * scale * scale));
+            source[pos] ^= 0xFFFFFF;
+            // Include patches large enough to hit every downsample phase,
+            // not only isolated pixels which the four-tap sampler may skip.
+            const stride: usize = @intCast(180 * scale);
+            const x = (iteration * 13) % (stride - 9);
+            const y = (iteration * 7) % (@as(usize, @intCast(130 * scale)) - 7);
+            for (0..7) |dy| for (0..9) |dx| {
+                source[(y + dy) * stride + x + dx] ^= 0x9F7F3F;
+            };
+            @memcpy(pixels, source);
+            s.frost(r, 18, 0x22243D, 168);
+            @memcpy(expected, pixels);
+            @memcpy(pixels, source);
+            const point = Rect{ .x = @intCast((pos % stride) / @as(usize, @intCast(scale))), .y = @intCast((pos / stride) / @as(usize, @intCast(scale))), .w = 1, .h = 1 };
+            const patch = Rect{ .x = @intCast(x / @as(usize, @intCast(scale))), .y = @intCast(y / @as(usize, @intCast(scale))), .w = 10, .h = 8 };
+            cache.source_damage = if (iteration % 2 == 0) Rect.unionWith(point, patch) else null;
+            cache.paint(&s, r, 18, 0x22243D, 168);
+            try std.testing.expectEqualSlices(u32, expected, pixels);
+        }
+    }
 }
 
 test "2x fill and rounded drawing obey logical damage clipping" {

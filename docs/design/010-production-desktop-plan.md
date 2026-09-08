@@ -765,12 +765,12 @@ eviction/tab suspension or a visible resource limit, never an unexplained hang.
 | Host display / audio / media / power | Not implemented in OrangeOS | Phase 9c/12; qualify built-in devices on user's Mac |
 | Welcome blank-click fix | Verified locally | `9835784`, `tools/welcome_smoke.py` |
 | Whole-desktop flicker audit | Initial six-app CLI pass complete; expanded stress open | About/Files/Trash 8 redraws per 4 blank clicks; Files 1 transient sample |
-| Welcome/calendar experiment | Functionally verified checkpoint; not performance accepted | Welcome/calendar QEMU scripts and civil-time tests pass (7 September); large calendar redraws still 541–667 ms under TCG, so performance work remains open |
+| Calendar redraw correction | Eight-window warm performance gate passed | `tools/calendar_perf.py --stress`: 146 frames, 41 ms p95 / 45 ms max, navigation max 43 ms, live Clock behind glass verified; cold open 109 ms separate; shared atomic publication still open |
 | Aurora Phase 1 | Planned beyond the targeted Welcome fix | Shared publication, all-app audit and performance gates |
 | Aurora Phases 2–16 | Planned | Update each only with tests and local commit evidence |
 
 Immediate order: finish the all-app baseline audit; fix rendering/publication and
-calendar slowdown; agree the design system. In the next platform work, start
+remaining non-calendar slow paths; agree the design system. In the next platform work, start
 Phase 9a companion/schema/transport and minimum Phase 3 runtime together, then
 9b host readback and Wi-Fi/Bluetooth adapter probes. Runtime/HTTPS/browser proof
 continues as its own critical path; wireless and optional motion do **not** block

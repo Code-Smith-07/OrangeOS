@@ -105,16 +105,38 @@ was added: the existing wall-clock check damages the panel once per minute.
 Reproduce the new interaction checks with a profile build and rebuilt disk:
 `python3 tools/welcome_smoke.py` and `python3 tools/calendar_smoke.py`.
 
-7 September 2026 checkpoint: both interaction scripts and all three civil-time
-unit tests passed again. Welcome's eight blank clicks preserve client pixels;
-hover restores its original frame. Calendar month navigation, Today, Clock
-launch and dismiss pass. **Calendar remains an experimental preview, not a
-performance-accepted release:** this TCG run recorded large panel frames of
-541–667 ms, above Aurora's 50 ms warm-hover / 100 ms hard-frame targets. The
-existing blur cache does not eliminate underlying scene reconstruction or
-layered shadow costs. Fixing that and atomic client publication remain open;
-these functional tests must not be cited as proof that all flicker/slowness is
-resolved. Private evidence directories are printed by each test, not committed.
+7 September 2026 performance correction: the original 541–667 ms calendar
+redraws were caused by scene-wide damage, repeated shadow work and Clock
+publishing its whole client every second. The fix uses separately owned raw
+backdrop, shadow, material and finished-content layers. Button/month/minute
+updates restore material directly; background commits refresh their precise
+region before repainting the glass. Opening attaches the panel to the retained
+scene. Dismissal restores current client content, not an old screenshot.
+
+The shared frost renderer now uses exact rolling-sum box blur, reused horizontal
+interpolation and a conservative eight-cell dirty halo. Only the compositor's
+trusted source-damage hint skips unchanged comparisons; ordinary callers still
+compare the complete source. Pixel-equivalence tests cover both backing scales,
+clamped edges, local patches, partial clips and cache invalidation. Text drawing
+skips clipped glyph pixels, including safe handling of the unbounded Retina clip.
+Clock builds text privately over a cached background and publishes only changed
+logical pixel bounds. This reduces exposure to partially constructed frames,
+but is **not** the general atomic client-buffer publication protocol.
+
+Acceptance: `python3 tools/calendar_perf.py --stress`, built with
+`-Ddesktop-profile`, on 3 GiB / 2 vCPU QEMU TCG. With eight windows and a live
+Clock behind the calendar, 146 warm nonempty frames measured **41 ms p95,
+45 ms maximum**; month navigation maximum **43 ms**. Cold opening **109 ms** is
+reported separately, not included in the warm gate. The test requires p95 below
+50 ms and maximum at most 100 ms, verifies live pixels through glass and saves
+diagnostic results. Run without `--stress` for static restored-pixel comparison;
+`--quick` is diagnostic only. These are guest compositor-work measurements,
+not end-to-end latency, 60 Hz proof, or a guarantee for arbitrary workloads.
+
+Calendar's four retained layer buffers reserve about 17.8 MB, plus its existing
+5.6 MB material cache; Clock uses about 2.4 MB for two private buffers. They are
+bounded and reused, within the user's 3 GiB baseline. Broader client-publication
+and other-app flicker gates remain open independently of this calendar fix.
 
 ### Shell ownership
 

@@ -71,6 +71,20 @@ pub const Base = struct {
         self.valid = true;
     }
 
+    /// Update just the repainted part of an already-owned complete layer.
+    pub fn refresh(self: *Base, s: *const gfx.Surface) void {
+        if (!self.valid or self.scale != s.scale) return;
+        const area = gfx.Rect.intersect(gfx.Rect.intersect(self.rect, s.clip), .{ .x = 0, .y = 0, .w = s.width, .h = s.height });
+        if (area.isEmpty()) return;
+        var y = area.y * s.scale;
+        while (y < area.bottom() * s.scale) : (y += 1) {
+            const to: usize = @intCast((y - self.rect.y * s.scale) * self.rect.w * s.scale + (area.x - self.rect.x) * s.scale);
+            const from: usize = @intCast(y * s.stride + area.x * s.scale);
+            const len: usize = @intCast(area.w * s.scale);
+            @memcpy(self.pixels[to..][0..len], s.pixels[from..][0..len]);
+        }
+    }
+
     pub fn restore(self: *const Base, s: *const gfx.Surface) bool {
         if (!self.valid or self.scale != s.scale) return false;
         const area = gfx.Rect.intersect(gfx.Rect.intersect(self.rect, s.clip), .{ .x = 0, .y = 0, .w = s.width, .h = s.height });
@@ -119,6 +133,14 @@ test "base restores only damaged pixels and rejects partial capture" {
     try std.testing.expect(cache.restore(&s));
     try std.testing.expectEqual(@as(u32, 0x123456), pixels[2 * 8 + 2]);
     try std.testing.expectEqual(@as(u32, 0), pixels[1 * 8 + 1]);
+    pixels[2 * 8 + 2] = 0xABCDEF;
+    cache.refresh(&s);
+    @memset(&pixels, 0);
+    s.resetClip();
+    try std.testing.expect(cache.restore(&s));
+    try std.testing.expectEqual(@as(u32, 0xABCDEF), pixels[2 * 8 + 2]);
+    try std.testing.expectEqual(@as(u32, 0x123456), pixels[1 * 8 + 1]);
+    s.setClip(.{ .x = 2, .y = 2, .w = 2, .h = 2 });
     cache.capture(&s, .{ .x = 1, .y = 1, .w = 6, .h = 6 });
     try std.testing.expect(!cache.valid);
 }
