@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import HostProtocol
+import HostHardware
 
 enum RunError: Error { case arguments, unsafePath, connection, io }
 
@@ -50,9 +51,9 @@ func connectSocket(_ path: String) throws -> Int32 {
     return fd
 }
 
-func serve(_ fd: Int32, token: Data) throws {
+func serve(_ fd: Int32, token: Data, monitor: HardwareMonitor) throws {
     var decoder = Decoder()
-    var session = try Session(token:token)
+    var session = try Session(token:token, hardware: { monitor.current() })
     var input = [UInt8](repeating:0,count:4096)
     var period = ProcessInfo.processInfo.systemUptime
     var count = 0
@@ -87,16 +88,25 @@ func serve(_ fd: Int32, token: Data) throws {
 
 do {
     let args = CommandLine.arguments
+    if args.count == 2 && args[1] == "--probe-hardware" {
+        let monitor = HardwareMonitor()
+        let deadline = Date().addingTimeInterval(5)
+        while monitor.current().freshness == "unavailable" && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
+        print(String(decoding: try encoder.encode(monitor.current()), as: UTF8.self))
+        exit(0)
+    }
     guard args.count == 5, args[1] == "--socket", args[3] == "--token-file" else { throw RunError.arguments }
     let token = try readToken(args[4])
     _ = try Session(token: token)
+    let monitor = HardwareMonitor()
     print("orange-host: read-only companion; host mutations disabled")
     fflush(stdout)
     while true {
         let fd: Int32
         do { fd = try connectSocket(args[2]) }
         catch RunError.connection { Thread.sleep(forTimeInterval:0.25); continue }
-        do { try serve(fd,token:token) }
+        do { try serve(fd,token:token,monitor:monitor) }
         catch { fputs("orange-host: rejected session or transport failure\n",stderr) }
         close(fd)
         Thread.sleep(forTimeInterval:0.25)

@@ -6,8 +6,8 @@ This is not yet a settings application or a Wi-Fi/Bluetooth controller.
 The companion connects to a QEMU-owned Unix socket in a same-user 0700 directory.
 It reads a 64-character lowercase hex credential from an owned, non-symlink,
 0600 (or stricter) file; the launcher supplies the same per-run credential to
-the guest. No TCP listener, host commands, files, radio or media operations are
-exposed. Same-user hostile host processes and a compromised host are outside
+the guest. No TCP listener, host commands, files, radio changes or media capture
+are exposed. Same-user hostile host processes and a compromised host are outside
 this initial channel's isolation boundary; a guest credential is not app trust.
 
 Protocol ORHB v1: 16-byte little-endian header (`ORHB`, version u8, flags u8,
@@ -22,12 +22,13 @@ within a connection; malformed headers, bad authentication or replay close it.
 | 2 capabilities | Empty | Actual allowlist; hardware controls not implemented |
 | 3 snapshot | Empty | Host UTC seconds, timezone/offset, OS version |
 | 4 ping | Empty | Pong |
+| 5 hardware | Empty | Versioned, non-identifying Wi-Fi/Bluetooth/display readback, source, permission and freshness |
 | Other | Any | Denied (or invalid argument); no host mutation |
 
 Responses contain bounded JSON; framing itself is binary. Fragmentation and
 coalescing are handled independently of device packet boundaries. A connection
 permits at most 32 requests/second. Credential/payload content is never logged.
-Streaming subscriptions, per-feature consent UI, service supervision, snapshot
+Streaming subscriptions, per-feature consent UI, service supervision,
 credential rotation and production sandbox qualification are later 9a work.
 
 ## Verified host/guest vertical slice (7 September 2026)
@@ -75,9 +76,79 @@ Passed on macOS 15.7 / arm64, QEMU 11.1.0, 3 GiB / 2 vCPU:
 - Normal boot without the opt-in device cleanly disables the agent; the full
   existing desktop interaction suite still passes with the bridge-enabled image.
 
-The returned state is currently diagnostic output, **not connected to Control
-Centre or the guest clock**. Wi-Fi, Bluetooth, brightness, audio, battery and
-media adapters remain unimplemented. No physical Mac settings were changed.
-This completes the first transport proof within Phase 9a/9b, not their full
+The time snapshot is diagnostic output, **not connected to the guest clock**.
+This completed the first transport proof within Phase 9a/9b, not their full
 production acceptance gates. Transport layout follows the
 [Virtio specification](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html).
+
+## Hardware readback and native status view (9 September 2026)
+
+Open **Appearance → Mac hardware status** (or run `/bin/hardware`). A normal VM
+without the opt-in channel shows a disconnected explanation. There are no
+pretend toggles: this milestone reads state and does not change Mac hardware.
+
+After building, use `python3 tools/host_bridge_preview.py` for the full-screen
+bridge-enabled preview. Closing QEMU stops its companion and deletes the
+per-session key. VM disk changes are disposable; the Mac's existing network is
+shared through QEMU NAT independently of the radio status panel. Do not rebuild
+the image while this preview is running.
+
+| Provider | Actual Mac result | Important boundary |
+|---|---|---|
+| CoreWLAN `powerOn()` | Wi-Fi on | A false return also permits query failure, so it is reported as unknown, never fabricated as off. No SSID, scan or network credentials. |
+| CoreBluetooth authorization + IOBluetooth `powerState` | Permission already allowed; Bluetooth on | Permission is checked before querying the controller; no manager creation/prompt, discovery, pairing or device-name enumeration. |
+| Public IOKit `IODisplayGetFloatParameter` | Unsupported on this Mac | No readable endpoint returned; no private API fallback or fake brightness slider. Multiple readable displays require selection rather than guessing. |
+
+Queries run every two seconds on a dedicated serial worker. RPC reads a locked
+cache instead of blocking on framework calls. Observations expire after six
+seconds using wall and monotonic time; the timestamp starts before querying.
+The guest agent publishes only method 5 into a bounded 4096-byte kernel cache.
+Syscall 111 operation 0 reads this public, non-identifying snapshot; operation 1
+publishes or clears it and requires the boot-issued agent grant. Ordinary apps
+cannot forge snapshots or access transport/credentials. Copies validate user
+pointers, capacity and maximum length. The guest cache expires independently
+six seconds after guest publication and is cleared on disconnect, protocol
+failure or reconnect. This is not a strict six-second end-to-end observation-age
+guarantee: transport latency can add time after the host checks freshness.
+
+The native window validates the schema/provider and capability fields. It
+compares visible state, not observation timestamps: repeated host samples,
+hover and empty clicks do not repaint. Relaunch focuses the existing window.
+This retains the current staged client publication contract; it does not claim
+the planned atomic surface-ownership protocol has been completed.
+
+Additional qualification commands:
+
+```sh
+host/macos/.build/debug/orange-host --probe-hardware
+zig test userland/apps/hardware/model.zig
+python3 tools/host_bridge_smoke.py
+```
+
+The real guest test compares received hardware status with a direct Mac probe,
+checks publication denial and invalid pointers/capacities, opens the native view,
+checks no-op repaint stability and singleton launch, disconnects/restarts the
+companion, compares restored pixels, freezes the companion to exercise response
+timeout and recovery, and closes the window. These are read-only
+checks on the existing Mac; permission revocation and physical radio changes
+have not been exercised. No Mac setting is changed.
+
+Remaining gates: host consent/revoke UI before any mutation, per-operation
+permissions and adapters, Wi-Fi scan/association, Bluetooth discovery/services,
+an actually supported brightness backend, battery/audio/media readback, and
+production supervision/sandboxing. This is a verified **subset** of 9b and the
+10a/11a/12a feasibility work, not completion of those full phases.
+
+The live window test also exposed and fixed a shared process-entry ABI bug:
+the kernel now supplies a zero return-address slot and correct C stack alignment
+for OrangeOS's `callconv(.c)` entry functions. Inlined allocator instrumentation
+previously read the unmapped upper stack guard page. The boot probe checks the
+entry sentinel; a future POSIX/assembly entry will require its own stack layout.
+
+Qualification evidence (same build): `orange-host-wszabwyw` in `/tmp` passed the
+full hardware/timeout suite; `orange-daybreak-gv7vuq_e` in the macOS temporary
+directory passed `tools/desktop_smoke.py`. Six Swift protocol tests, two Zig
+wire tests and four Zig hardware-model tests passed. Connected/disconnected
+screenshots from `orange-host-l25kw9u3` were visually inspected for clipping,
+rounded corners and truthful labels. The six-second guest cache expired before
+the frozen companion's separate RPC timeout; both fail-closed paths passed.

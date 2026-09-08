@@ -1,4 +1,4 @@
-//! Read-only transport proof. No host state is applied to guest UI yet.
+//! Authenticated readback; only non-identifying hardware state is published.
 const pulp = @import("pulp");
 const wire = @import("host_protocol");
 fn io(op: u64, bytes: []u8) i64 {
@@ -21,6 +21,7 @@ export fn _start() callconv(.c) noreturn {
     // Pointer and length checks must fail before consuming transport data.
     if (pulp.syscall3(110, 3, 0, 64) != -14 or pulp.syscall3(110, 0, 0, 513) != -22) pulp.exit(2);
     pulp.puts("host-agent: PASS invalid buffers rejected\n");
+    if (pulp.syscall3(111, 1, 0, 1) != -14 or pulp.syscall3(111, 1, 0, 4097) != -22) pulp.exit(2);
     var parser: wire.Decoder = .{};
     var epoch: i64 = -1;
     var id: u32 = 0;
@@ -29,14 +30,17 @@ export fn _start() callconv(.c) noreturn {
     var failed = false;
     var deadline: u64 = 0;
     var next_send: u64 = 0;
+    var snapshot_checked = false;
     var input: [512]u8 = undefined;
     while (true) {
         const status = io(2, &empty);
         if (status < 0) {
+            _ = pulp.syscall3(111, 1, 0, 0);
             pulp.puts("host-agent: transport stopped\n");
             pulp.exit(1);
         }
         if (epoch != status >> 8) {
+            _ = pulp.syscall3(111, 1, 0, 0);
             epoch = status >> 8;
             parser.reset();
             id = 0;
@@ -76,21 +80,35 @@ export fn _start() callconv(.c) noreturn {
                         }
                     }
                     if (failed) break;
+                    if (method == 5) {
+                        if (pulp.syscall3(111, 1, @intFromPtr(payload.ptr), payload.len) != payload.len) {
+                            failed = true;
+                            break;
+                        }
+                        if (!snapshot_checked) {
+                            if (pulp.syscall3(111, 0, 0, 4096) != -14 or pulp.syscall3(111, 0, 0, 0) != -22) pulp.exit(2);
+                            snapshot_checked = true;
+                            pulp.puts("host-agent: PASS snapshot bounds and pointers rejected\n");
+                        }
+                    }
                     if (method == 1) pulp.puts("host-agent: authenticated\n");
-                    if (method == 2 or method == 3) {
-                        pulp.puts(if (method == 2) "host-agent: capabilities " else "host-agent: snapshot ");
+                    if (method == 2 or method == 3 or method == 5) {
+                        pulp.puts(if (method == 2) "host-agent: capabilities " else if (method == 5) "host-agent: hardware " else "host-agent: snapshot ");
                         pulp.puts(payload);
                         pulp.puts("\n");
                     }
                     if (method == 4) pulp.puts("host-agent: pong\n");
                     pending = false;
                     parser.reset();
-                    method = if (method < 4) method + 1 else 4;
-                    next_send = now + (if (method == 4) @as(u64, 1000) else 0);
+                    method = if (method < 3) method + 1 else if (method == 3 or method == 4) 5 else 4;
+                    next_send = now + (if (method >= 4) @as(u64, 1000) else 0);
                 }
             };
             if (pending and now > deadline) failed = true;
-            if (failed) pulp.puts("host-agent: session failed; waiting for reconnect\n");
+            if (failed) {
+                _ = pulp.syscall3(111, 1, 0, 0);
+                pulp.puts("host-agent: session failed; waiting for reconnect\n");
+            }
         }
         pulp.sleepMs(20);
     }

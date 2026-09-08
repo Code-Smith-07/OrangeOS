@@ -85,6 +85,7 @@ pub const Nr = enum(u64) {
     tcp_recv = 99,
     tcp_close = 100,
     host_io = 110,
+    host_snapshot = 111,
     shm_map = 55,
     handle_close = 56,
     fb_acquire = 70,
@@ -151,6 +152,7 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .tcp_recv => sysTcpRecv(frame.rdi, frame.rsi, frame.rdx, frame.r10),
         .tcp_close => sysTcpClose(frame.rdi),
         .host_io => sysHostIo(frame.rdi, frame.rsi, frame.rdx),
+        .host_snapshot => sysHostSnapshot(frame.rdi, frame.rsi, frame.rdx),
         .shm_map => sysShmMap(frame.rdi, frame.rsi),
         .handle_close => sysHandleClose(frame.rdi),
         .fb_acquire => sysFbAcquire(frame.rdi),
@@ -165,6 +167,41 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
     };
 
     frame.rax = @bitCast(result);
+}
+
+const snapshot_sync = @import("../sync/spinlock.zig");
+var snapshot_lock: snapshot_sync.SpinLock = .{};
+var host_snapshot: [4096]u8 = undefined;
+var snapshot_len: usize = 0;
+var snapshot_at: u64 = 0;
+fn sysHostSnapshot(op: u64, ptr: u64, len: u64) i64 {
+    const task = sched.currentTask() orelse return -13;
+    if (op > 1 or len > 4096) return -22;
+    if (op == 1 and !task.host_bridge) return -13;
+    var buffer: [4096]u8 = undefined;
+    if (op == 1) validate.copyFromUser(task.address_space, &buffer, ptr, @intCast(len)) catch return EFAULT;
+    const now = @import("../time/time.zig").millisSinceBoot();
+    const irq = snapshot_sync.acquireIrqSave(&snapshot_lock);
+    if (op == 1) {
+        snapshot_len = @intCast(len);
+        @memcpy(host_snapshot[0..snapshot_len], buffer[0..snapshot_len]);
+        snapshot_at = now;
+        snapshot_sync.releaseIrqRestore(&snapshot_lock, irq);
+        return @intCast(len);
+    }
+    if (snapshot_len == 0 or now -| snapshot_at > 6000) {
+        snapshot_sync.releaseIrqRestore(&snapshot_lock, irq);
+        return -11;
+    }
+    const size = snapshot_len;
+    if (len < size) {
+        snapshot_sync.releaseIrqRestore(&snapshot_lock, irq);
+        return -22;
+    }
+    @memcpy(buffer[0..size], host_snapshot[0..size]);
+    snapshot_sync.releaseIrqRestore(&snapshot_lock, irq);
+    validate.copyToUser(task.address_space, ptr, buffer[0..size], size) catch return EFAULT;
+    return @intCast(size);
 }
 
 fn sysHostIo(op: u64, ptr: u64, len: u64) i64 {

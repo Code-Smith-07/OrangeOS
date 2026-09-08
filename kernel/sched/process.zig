@@ -65,7 +65,14 @@ pub fn execImage(image: []const u8) Error!noreturn {
     // address space whenever it switches back to this thread.
     t.address_space = pml4;
     vmm.loadCr3(pml4);
-    user.enter(loaded.entry, USER_STACK_TOP);
+    // Every OrangeOS entry is `callconv(.c) noreturn`, not a POSIX assembly
+    // _start expecting argc/argv. Emulate CALL's 8-byte return slot: RSP must
+    // be 8 mod 16 at entry. Allocator instrumentation can read @returnAddress
+    // even in an inlined entry function; a bare stack-top points it into the
+    // unmapped upper guard page. Zero is a deliberate terminal-frame sentinel.
+    const entry_stack = USER_STACK_TOP - @sizeOf(u64);
+    @as(*u64, @ptrFromInt(entry_stack)).* = 0;
+    user.enter(loaded.entry, entry_stack);
 }
 
 /// A pending program: the image is read in the spawning process's context and

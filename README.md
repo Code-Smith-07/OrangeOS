@@ -110,9 +110,12 @@ hardware controls. These phases are planned, not completed features.
 
 **MacBook host bridge.** The [read-only companion](host/macos/README.md) now
 exchanges authenticated capabilities, live Mac time/timezone and heartbeats with
-the actual QEMU guest, including reconnect testing. Wi-Fi, Bluetooth, brightness
-and other host hardware controls are still planned; this is the transport proof,
-not a completed hardware-control panel.
+the actual QEMU guest, including reconnect testing. **Appearance → Mac hardware
+status** now shows real read-only Mac Wi-Fi/Bluetooth state and display-adapter
+availability. Unchanged snapshots do not trigger redraws; companion loss clears
+the readings. The current public IOKit adapter found no brightness endpoint on
+this Mac, so brightness is labelled unsupported, not zero. Radio changes,
+pairing and brightness controls still need consent and qualified backends.
 
 **Input responsiveness.** Relative pointer travel is independent of Retina
 scaling, sleeping input consumers wake promptly, and unchanged menu/dock glass

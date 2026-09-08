@@ -54,11 +54,13 @@ public struct Session {
     private let token: Data
     private var authenticated = false
     private var lastRequest: UInt32 = 0
-    public init(token: Data) throws {
+    private let hardware: (() -> HardwareSnapshot)?
+    public init(token: Data, hardware: (() -> HardwareSnapshot)? = nil) throws {
         guard token.count == 64, token.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
             throw WireError.authentication
         }
         self.token = token
+        self.hardware = hardware
     }
     public mutating func respond(_ frame: Frame, now: Date = Date()) throws -> Frame {
         guard frame.flags == 0, frame.request > lastRequest else { throw WireError.sequence }
@@ -75,8 +77,9 @@ public struct Session {
         switch frame.method {
         case 2:
             return try reply(frame, ["provider":"macos", "mode":"read_only",
-                "operations":["host.capabilities","host.snapshot","host.ping"],
-                "wifi":"not_implemented", "bluetooth":"not_implemented", "brightness":"not_implemented",
+                "operations": hardware == nil ? ["host.capabilities","host.snapshot","host.ping"] : ["host.capabilities","host.snapshot","host.ping","host.hardware"],
+                "hardware_readback": hardware == nil ? "not_implemented" : "available",
+                "wifi_control":"not_implemented", "bluetooth_control":"not_implemented", "brightness_control":"not_implemented",
                 "capture":"disabled", "host_mutations":"denied"])
         case 3:
             return try reply(frame, ["provider":"macos", "unix_seconds":Int64(now.timeIntervalSince1970),
@@ -84,6 +87,10 @@ public struct Session {
                 "utc_offset_seconds":TimeZone.current.secondsFromGMT(for: now),
                 "os_version":ProcessInfo.processInfo.operatingSystemVersionString])
         case 4: return try reply(frame, ["status":"pong"])
+        case 5:
+            guard let hardware else { return try reply(frame, ["error":"unavailable"], error: true) }
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            return Frame(flags: 1, method: frame.method, request: frame.request, payload: try encoder.encode(hardware().aged(now: now)))
         default: return try reply(frame, ["error":"method_denied"], error: true)
         }
     }

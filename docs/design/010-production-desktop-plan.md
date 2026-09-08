@@ -11,7 +11,8 @@ their MacBook, with a native macOS companion bridging host services.** Wi-Fi,
 Bluetooth, brightness, audio and other host integrations are explicitly in
 scope. Standalone PC drivers are a later optional track, not a prerequisite for
 using these features in the VM. This revision supersedes the earlier exclusion
-of a host settings bridge; the bridge itself is not implemented yet.
+of a host settings bridge. Read-only transport and hardware-state milestones
+are now implemented; see the dated execution ledger for current scope.
 
 This document governs the next desktop/platform programme. The numbered phases
 below are **Aurora Phase 1, Phase 2, ...**, independent of the historical kernel
@@ -59,9 +60,13 @@ Source-audited on 2026-09-07; source presence is not physical-device certificati
 | Runtime | Static Zig ELF, Pulp syscall wrappers and bump arena | Reclaimable VM, C/C++ runtime, threads/TLS, FPU/SIMD task isolation |
 | Storage | CitrusFS/AHCI/NVMe, read-only Files API | Durable user writes, file authority, trash transactions, profiles, recovery |
 | Browser | `008-browser.md` only | No engine port, browser executable, modern web rendering or HTTPS UI |
-| Mac integration | Parallels 2.0 reference has Swift host/Windows guest agents and QEMU virtio-serial wiring | OrangeOS virtio-console driver, Zig agent, Swift companion and host capability adapters |
+| Mac integration | Named virtio-serial transport, Zig agent, Swift companion, read-only Wi-Fi/Bluetooth/display probe and native status view | Host consent/revoke UI, qualified mutations, remaining adapters and production isolation |
 
-### Current redraw audit and unfinished work
+### Initial redraw audit and unfinished work
+
+The entries below preserve the 7 September baseline. The calendar slow-redraw
+findings were superseded by the verified eight-window correction in the ledger;
+they are historical evidence, not an instruction to keep that fix uncommitted.
 
 - Welcome blank-click fix: local commit `9835784`. QEMU eight-click test
   observed zero client repaint entries and identical settled pixels.
@@ -759,21 +764,24 @@ eviction/tab suspension or a visible resource limit, never an unexplained hang.
 | Milestone | Status | Evidence / next action |
 |---|---|---|
 | Production plan | Written; awaiting iterative review | This document; no hardware/browser completion implied |
-| MacBook-first bridge architecture | Planned; explicitly in scope | Swift companion + Zig guest agent; no standalone driver prerequisite |
-| Bridge 9a / 9b | Read-only transport proof verified; production gates open | [Mac companion and guest bridge](../../host/macos/README.md): authenticated named virtio port, boot-only agent grant, live host time/timezone/version, reconnect and negative probes; no Control Centre binding or hardware adapters yet |
-| Host Wi-Fi / Bluetooth adapters | Not implemented | Phases 10/11: independent operation/permission/real-host gates |
-| Host display / audio / media / power | Not implemented in OrangeOS | Phase 9c/12; qualify built-in devices on user's Mac |
+| MacBook-first bridge architecture | Initial vertical slice implemented; remaining architecture planned | Swift companion + Zig guest agent; no standalone driver prerequisite |
+| Bridge 9a / 9b | Transport and hardware-state subset verified; production gates open | [Mac companion and guest bridge](../../host/macos/README.md): authenticated named virtio port, boot-only agent grant, live time/timezone and read-only hardware view; bounded snapshot ABI, expiry, reconnect and negative probes |
+| Host Wi-Fi / Bluetooth adapters | Read-only power/permission probes connected, 2026-09-09 | Both radios observed on; Appearance → Mac hardware status. No SSID/scan/pairing/power mutations or silent permission prompts. Phases 10/11 control gates remain open. |
+| Host display adapter | Public IOKit readback probe implemented; no endpoint on this Mac | UI reports unsupported, never zero; qualify a supported brightness backend before control work (12a). |
+| Host audio / media / power | Not implemented in companion | Phase 9c/12; qualify built-in devices on user's Mac |
 | Welcome blank-click fix | Verified locally | `9835784`, `tools/welcome_smoke.py` |
 | Whole-desktop flicker audit | Initial six-app CLI pass complete; expanded stress open | About/Files/Trash 8 redraws per 4 blank clicks; Files 1 transient sample |
 | Calendar redraw correction | Eight-window warm performance gate passed | `tools/calendar_perf.py --stress`: 146 frames, 41 ms p95 / 45 ms max, navigation max 43 ms, live Clock behind glass verified; cold open 109 ms separate; shared atomic publication still open |
 | Aurora Phase 1 | Planned beyond the targeted Welcome fix | Shared publication, all-app audit and performance gates |
-| Aurora Phases 2–16 | Planned | Update each only with tests and local commit evidence |
+| Aurora Phases 2–16 | Planned beyond the partial bridge milestones above | Update each only with tests and local commit evidence |
 
 Immediate order: finish the all-app baseline audit; fix rendering/publication and
-remaining non-calendar slow paths; agree the design system. In the next platform work, start
-Phase 9a companion/schema/transport and minimum Phase 3 runtime together, then
-9b host readback and Wi-Fi/Bluetooth adapter probes. Runtime/HTTPS/browser proof
-continues as its own critical path; wireless and optional motion do **not** block
+remaining non-calendar slow paths; agree the design system. In the next platform
+work, continue Phase 9a with host consent/revoke UI and operation grants before
+mutations; extend 9b beyond the verified radio/display probes to battery/audio.
+Qualify a supported brightness backend on this Mac before adding its slider.
+Runtime/HTTPS/browser proof continues as its own critical path; wireless and
+optional motion do **not** block
 it. No standalone hardware purchase or driver port is on either critical path.
 
 Track bridge milestones individually: 9a channel/security, 9b observed host

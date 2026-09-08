@@ -168,7 +168,7 @@ fn activeWindow() ?usize {
 
 var shell: desktop.State = .{};
 var wallpaper: ?gfx.Surface = null;
-var pending_apps: [6]i64 = .{ -1, -1, -1, -1, -1, -1 };
+var pending_apps: [7]i64 = [_]i64{-1} ** 7;
 var shell_pressed: ?u16 = null;
 var control_pressed: ?struct { id: u32, control: i32 } = null;
 var desktop_hidden: [MAX_WINDOWS]u32 = [_]u32{0} ** MAX_WINDOWS;
@@ -182,6 +182,7 @@ fn chromeDamage() void {
 }
 
 fn appIndex(title: []const u8) usize {
+    if (@import("std").mem.eql(u8, title, "Mac hardware")) return 6;
     if (@import("std").mem.eql(u8, title, "Files")) return 4;
     if (@import("std").mem.eql(u8, title, "Trash")) return 5;
     if (title.len >= 7 and @import("std").mem.eql(u8, title[0..7], "Squeeze")) return 1;
@@ -192,7 +193,7 @@ fn appIndex(title: []const u8) usize {
 
 fn syncShell() void {
     shell.active = if (activeWindow()) |idx| windows[idx].title() else "Desktop";
-    shell.running = .{ false, false, false, false, false, false };
+    shell.running = [_]bool{false} ** 7;
     shell.count = window_count;
     for (0..window_count) |i| {
         const app = appIndex(windows[i].title());
@@ -221,7 +222,7 @@ fn launchApp(app: usize, new_instance: bool) void {
         shell.notice = "Window limit reached. Close a window.";
         return;
     }
-    const paths = [_][]const u8{ "/bin/grove", "/bin/squeeze", "/bin/clock", "/bin/about", "/bin/files", "/bin/trash" };
+    const paths = [_][]const u8{ "/bin/grove", "/bin/squeeze", "/bin/clock", "/bin/about", "/bin/files", "/bin/trash", "/bin/hardware" };
     pending_apps[app] = pulp.spawn(paths[app]) catch {
         shell.notice = "Could not start the application.";
         return;
@@ -269,6 +270,7 @@ fn shellAction(action: u16) void {
         1...4 => launchApp(action - 1, false),
         desktop.Action.files => launchApp(4, false),
         desktop.Action.trash => launchApp(5, false),
+        desktop.Action.hardware => launchApp(6, false),
         desktop.Action.menu => shell.popup = if (old == .menu) .none else .menu,
         desktop.Action.overview => shell.popup = if (old == .overview) .none else .overview,
         desktop.Action.settings => shell.popup = if (old == .settings) .none else .settings,

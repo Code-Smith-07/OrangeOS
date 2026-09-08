@@ -4,6 +4,7 @@ let package = Package(name: "OrangeHost", platforms: [.macOS(.v13)], products: [
     .executable(name: "orange-host", targets: ["OrangeHost"]),
 ], targets: [
     .target(name: "HostProtocol"),
-    .executableTarget(name: "OrangeHost", dependencies: ["HostProtocol"]),
+    .target(name: "HostHardware", dependencies: ["HostProtocol"]),
+    .executableTarget(name: "OrangeHost", dependencies: ["HostProtocol", "HostHardware"]),
     .testTarget(name: "HostProtocolTests", dependencies: ["HostProtocol"]),
 ])

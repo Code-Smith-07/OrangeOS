@@ -29,6 +29,7 @@ pub const Action = struct {
     pub const next_month: u16 = 15;
     pub const today: u16 = 16;
     pub const keep_popup: u16 = 17;
+    pub const hardware: u16 = 18;
     pub const wallpaper: u16 = 20;
     pub const window: u16 = 100;
 };
@@ -48,7 +49,7 @@ pub const State = struct {
     hover: u16 = 0,
     palette: usize = 0,
     active: []const u8 = "Desktop",
-    running: [6]bool = .{ false, false, false, false, false, false },
+    running: [7]bool = [_]bool{false} ** 7,
     items: [8]Item = [_]Item{.{}} ** 8,
     count: usize = 0,
     seconds: ?u64 = null,
@@ -102,7 +103,7 @@ pub fn popupRect(s: *const Surface, popup: Popup) Rect {
     return switch (popup) {
         .none => .{ .x = 0, .y = 0, .w = 0, .h = 0 },
         .menu => .{ .x = 12, .y = 44, .w = 270, .h = 220 },
-        .settings => .{ .x = s.width - 376, .y = 48, .w = 360, .h = 398 },
+        .settings => .{ .x = s.width - 376, .y = 48, .w = 360, .h = 450 },
         .calendar => .{ .x = s.width - 376, .y = 48, .w = 360, .h = 438 },
         .overview => .{ .x = @divTrunc(s.width - 650, 2), .y = 92, .w = 650, .h = 428 },
     };
@@ -146,6 +147,7 @@ pub fn hit(s: *const Surface, state: *const State, x: i32, y: i32) u16 {
             .settings => {
                 for (0..3) |i| if (paletteCard(s, i).contains(x, y)) return Action.wallpaper + @as(u16, @intCast(i));
                 if ((Rect{ .x = p.x + 20, .y = p.y + 210, .w = 320, .h = 40 }).contains(x, y)) return Action.desktop;
+                if (hardwareButton(s).contains(x, y)) return Action.hardware;
             },
             .calendar => {
                 for ([_]u16{ Action.previous_month, Action.next_month, Action.today, Action.clock }) |action| {
@@ -483,6 +485,10 @@ pub fn paint(s: *const Surface, state: *const State) void {
             text(s, dimensions, p.x + 20, p.y + 305, WHITE);
             text(s, "Green button: zoom / restore", p.x + 20, p.y + 328, MUTED);
             text(s, "Wallpaper choice resets on reboot.", p.x + 20, p.y + 358, MUTED);
+            const hardware = hardwareButton(s);
+            s.rounded(hardware, 10, if (state.hover == Action.hardware) 0x8173CB else 0x555071, 255);
+            ui.icon(s, .controls, hardware.x + 10, hardware.y + 8, 24);
+            text(s, "Mac hardware status", hardware.x + 46, hardware.y + 14, WHITE);
         },
         .calendar => {
             // Own a finished material layer before content. Hover/date updates
@@ -504,4 +510,9 @@ pub fn paint(s: *const Surface, state: *const State) void {
         },
         .none => {},
     }
+}
+
+fn hardwareButton(s: *const Surface) Rect {
+    const p = popupRect(s, .settings);
+    return .{ .x = p.x + 20, .y = p.y + 390, .w = 320, .h = 40 };
 }

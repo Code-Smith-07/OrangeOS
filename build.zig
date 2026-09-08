@@ -168,6 +168,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "init", .path = "userland/servers/seed/main.zig" },
         .{ .name = "host-agent", .path = "userland/servers/host-agent/main.zig" },
         .{ .name = "host-probe", .path = "userland/bin/host-probe/main.zig" },
+        .{ .name = "hardware", .path = "userland/apps/hardware/main.zig" },
         .{ .name = "juice", .path = "userland/bin/juice/main.zig" },
         .{ .name = "echo", .path = "userland/bin/echo/main.zig" },
         .{ .name = "uname", .path = "userland/bin/uname/main.zig" },
