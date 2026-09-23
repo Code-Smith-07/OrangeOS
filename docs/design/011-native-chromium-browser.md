@@ -631,6 +631,14 @@ records it in the build state. The default remains two. **45 tests pass**,
 including argument validation and the actual command construction for three
 workers. This adjustment is not a completed compilation or a measured speedup.
 
+On 2026-09-24 the owner requested one additional worker. The three-worker
+invocation was gracefully interrupted at 4,906 actions completed in that
+invocation, zero failed and 27,111 remaining. Compilation resumed incrementally
+with `build --jobs 4`; the live Siso process confirms `-local_jobs=4`. Existing
+objects were retained and macOS reported zero swap usage at restart. No source
+or guest resource-profile change was needed. Totals can change during resumed
+graph evaluation; these counters are not a stable estimate of remaining time.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,
