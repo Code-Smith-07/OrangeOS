@@ -22,6 +22,7 @@ python3 tools/browser_reference.py sync
 python3 tools/browser_reference.py hooks
 python3 tools/browser_reference.py generate
 python3 tools/browser_reference.py build
+python3 tools/browser_smoke.py
 ```
 
 `status` is read-only and reports **recorded** results, not fresh qualification.
@@ -36,6 +37,20 @@ configuration; `build` compiles `content_shell` with two local jobs. A successfu
 build still needs launch/render verification. No step automatically launches a
 host browser, changes shell configuration, touches guest images, installs Xcode
 or makes a Git commit in the OrangeOS repository.
+
+The separate `browser_smoke.py` command **does launch** the built Mac Content
+Shell after requiring a successful build record at the current manifest pins.
+It holds the workspace lock, uses a local file fixture only, saves stdout/stderr
+and JSON evidence externally, and enforces a 90-second deadline with cleanup of
+its own process group. Its five checks cover JavaScript, DOM manipulation,
+CSS flex layout, a canvas pixel readback and an asynchronous timer. Every check,
+one unique completion marker, and a zero exit code are required to pass.
+
+This uses upstream `--run-web-tests`, which changes policy including certificate
+verification. No user-provided URLs are accepted. **It cannot qualify HTTPS,
+sandboxing, general public browsing, visible UI polish, media or OrangeOS**.
+Those require separate normal-browser/guest tests. Harness unit tests are not
+evidence that the engine fixture itself has run successfully.
 
 The tool stage explicitly initializes depot_tools' Python launcher as well as
 vpython. With auto-updates disabled, successfully running `gclient` alone does

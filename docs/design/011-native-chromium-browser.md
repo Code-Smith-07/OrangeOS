@@ -597,6 +597,26 @@ sandboxing, GPU/video capability and websites remain unqualified. Consult
 `python3 tools/browser_reference.py status` for the current local result rather
 than treating this early-progress record as a completed build.
 
+### 11.6 Prepared local engine smoke gate
+
+`tools/browser_smoke.py` is now prepared for the completed Mac reference build.
+It refuses incomplete/stale-pin build records, acquires the same workspace lock,
+and invokes Content Shell against `tools/browser/fixtures/engine-smoke.html`.
+The fixture checks JavaScript computation, DOM updates, CSS flex dimensions,
+canvas pixel readback and asynchronous timers. The harness requires all five
+results, an exact single success marker and a zero exit status; timeout fails
+even if partial output contains success text. Logs and JSON remain external.
+
+The inspected upstream `content/web_test/browser/web_test_browser_main_runner.cc`
+adds `ignore-certificate-errors` in web-test mode. Consequently this harness is
+**local-fixture-only**, exposes no URL argument, and is explicitly excluded from
+HTTPS/sandbox/site qualification. It does not add `--no-sandbox` or single-process
+flags. Separate normal-mode testing remains mandatory.
+
+**43 setup/harness tests passed. The real engine fixture has not run yet**:
+the first Chromium compilation is still in progress at this checkpoint. Do not
+promote harness unit-test results into native browser or reference launch success.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,
