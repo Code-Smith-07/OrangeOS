@@ -1,13 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <defs>
-    <linearGradient id="tile" x1="0" y1="0" x2=".9" y2="1">
-      <stop stop-color="#59d8ca"/><stop offset="1" stop-color="#168eaa"/>
-    </linearGradient>
-  </defs>
-  <rect x="5" y="6" width="54" height="54" rx="14" fill="#126d82" opacity=".12"/>
-  <rect x="4" y="3" width="56" height="56" rx="14" fill="url(#tile)"/>
-  <rect x="4.4" y="3.4" width="55.2" height="55.2" rx="13.6" fill="none" stroke="#fff" stroke-opacity=".38" stroke-width=".8"/>
-  <circle cx="32" cy="31" r="19" fill="#fff" fill-opacity=".1" stroke="#fff" stroke-opacity=".78" stroke-width="1.7"/>
-  <circle cx="32" cy="21" r="2.1" fill="#fff"/>
-  <path d="M29 29H32V42M28 42H36" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="base" x2="0" y2="1"><stop stop-color="#fcfdff"/><stop offset="1" stop-color="#dce5ef"/></linearGradient><linearGradient id="blue" x2="0" y2="1"><stop stop-color="#58b7fb"/><stop offset="1" stop-color="#126cd7"/></linearGradient></defs><path d="M18 4H46C55 4 60 9 60 18V46C60 55 55 60 46 60H18C9 60 4 55 4 46V18C4 9 9 4 18 4Z" fill="url(#base)" stroke="#000" stroke-opacity=".14" stroke-width=".6"/><path d="M18 4.6H46C54.6 4.6 59.4 9.4 59.4 18" fill="none" stroke="#fff" stroke-opacity=".65" stroke-width=".6"/><circle cx="32" cy="32" r="20" fill="url(#blue)" stroke="#1e71c4" stroke-width=".5"/><circle cx="32" cy="21.5" r="2" fill="#fff"/><path d="M29 29H32V43M28 43H36" fill="none" stroke="#fff" stroke-width="2.7" stroke-linecap="round"/></svg>

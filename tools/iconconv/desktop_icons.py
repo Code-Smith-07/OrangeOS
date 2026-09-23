@@ -16,7 +16,8 @@ NAMES = ("welcome", "terminal", "clock", "about", "windows", "appearance",
          "files", "trash", "chevron_left", "chevron_right", "chevron_up",
          "document", "brand", "controls", "close", "minimize", "maximize", "pointer",
          "folder_orange", "folder_green", "folder_purple", "folder_pink", "folder_gold",
-         "wifi", "bluetooth", "speaker", "sun", "battery", "battery_plain")
+         "wifi", "bluetooth", "speaker", "sun", "battery", "battery_plain",
+         "sidebar_home", "sidebar_apps", "sidebar_system", "sidebar_trash")
 
 def main():
     header = bytearray()

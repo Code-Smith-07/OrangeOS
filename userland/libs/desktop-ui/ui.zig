@@ -14,7 +14,8 @@ pub const Color = struct {
     pub const selection: u32 = 0xE5EEFD;
 };
 const font = @import("typography");
-pub const Icon = enum { welcome, terminal, clock, about, windows, appearance, files, trash, chevron_left, chevron_right, chevron_up, document, brand, controls, close, minimize, maximize, pointer, folder_orange, folder_green, folder_purple, folder_pink, folder_gold, wifi, bluetooth, speaker, sun, battery, battery_plain };
+pub const textWidth = font.textWidth;
+pub const Icon = enum { welcome, terminal, clock, about, windows, appearance, files, trash, chevron_left, chevron_right, chevron_up, document, brand, controls, close, minimize, maximize, pointer, folder_orange, folder_green, folder_purple, folder_pink, folder_gold, wifi, bluetooth, speaker, sun, battery, battery_plain, sidebar_home, sidebar_apps, sidebar_system, sidebar_trash };
 pub const Button = struct { id: u32, rect: Rect };
 /// Capture starts on press; moving onto a button while held cannot activate it.
 pub const Pointer = struct {
