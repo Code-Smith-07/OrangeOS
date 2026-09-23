@@ -370,6 +370,14 @@ sized SVG masters baked at their exact 40/46-pixel output dimensions. This is a
 guest-rendering improvement, not a claim to match macOS's text engine: the host
 can still resample the framebuffer to fit a differently sized full-screen view.
 
+The dock's visible shelf is now 54 logical points tall (previously 82), with
+44-point icons, smaller running indicators and a lighter glass tint. Its
+horizontal launch targets remain generous; shortcuts and real app state are
+unchanged. Eight revised original SVG masters use more saturated colour and
+material-specific lighting. Dedicated 88-pixel dock sprites are prefiltered at
+build time, so fine clock/gear/trash details are not sparsely sampled from the
+large app atlas at runtime. This is a native desktop refinement, not a web skin.
+
 - The high-DPI desktop is tested at 2560×1600 (1280×800 logical points).
   QEMU may still resample to fit a different host display size. Arbitrary
   monitor modes, runtime scale changes, and exact panel-native output are

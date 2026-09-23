@@ -19,7 +19,9 @@ NAMES = ("welcome", "terminal", "clock", "about", "windows", "appearance",
          "wifi", "bluetooth", "speaker", "sun", "battery", "battery_plain",
          "sidebar_home", "sidebar_apps", "sidebar_system", "sidebar_trash",
          "menu_wifi", "menu_bluetooth", "menu_speaker", "menu_controls",
-         "menu_battery", "menu_battery_plain", "menu_brand")
+         "menu_battery", "menu_battery_plain", "menu_brand",
+         "dock_welcome", "dock_terminal", "dock_clock", "dock_about",
+         "dock_windows", "dock_appearance", "dock_files", "dock_trash")
 
 def main():
     header = bytearray()
@@ -30,7 +32,10 @@ def main():
         if name.startswith("menu_"):
             # Exact backing size: no 48 -> 40/46 resampling in the Retina bar.
             size = 46 if name.startswith("menu_battery") else 40
-        svg = ROOT / "assets/icons" / (name + ".svg")
+        if name.startswith("dock_"):
+            size = 88  # 44-point icons, prefiltered rather than undersampled.
+        source = name.removeprefix("dock_")
+        svg = ROOT / "assets/icons" / (source + ".svg")
         png = cairosvg.svg2png(url=str(svg), output_width=size * 2, output_height=size * 2)
         rgba = Image.open(io.BytesIO(png)).convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
         if i < 8:

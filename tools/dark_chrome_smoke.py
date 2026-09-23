@@ -20,7 +20,7 @@ def main():
         for name, x, y, width in (
             ("Terminal", 160, 112, 250),
             ("Welcome", 800, 112, 250),
-            ("Dock", 370, 701, 500),
+            ("Dock", 370, 729, 500),
         ):
             delta = contrast(x, y, width)
             print(f"{name} top-edge excess brightness: {delta:.2f}", flush=True)
@@ -39,10 +39,10 @@ def main():
         g.click(900, 131)  # Change focus; both active and inactive frames checked.
         g.move(700, 650)
         dark_edges()
-        before = g.region(370, 701, 500, 1)
-        g.move(590, 730)
+        before = g.region(370, 729, 500, 1)
+        g.move(590, 748)
         g.move(700, 650)
-        g.until(lambda: g.region(370, 701, 500, 1) == before, "dock edge stable after hover")
+        g.until(lambda: g.region(370, 729, 500, 1) == before, "dock edge stable after hover")
         g.click(1150, 10)
         time.sleep(.5)
         assert contrast(970, 48, 160) < 10, "calendar reintroduces a bright glass outline"
@@ -55,7 +55,7 @@ def main():
             g.key("esc")
             g.move(700, 650)
             time.sleep(.5)
-            assert contrast(370, 701, 500) > 10, f"{name}: light-theme dock highlight was removed"
+            assert contrast(370, 729, 500) > 10, f"{name}: light-theme dock highlight was removed"
         assert "KERNEL PANIC" not in g.log() and "[app fault]" not in g.log()
         print("PASS dark outlines removed; focus, hover and light themes preserved", flush=True)
     finally:

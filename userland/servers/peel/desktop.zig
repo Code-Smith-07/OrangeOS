@@ -10,7 +10,7 @@ const overview = @import("overview.zig");
 const host_model = @import("host_model");
 
 pub const BAR_H = 28;
-pub const DOCK_H = 92;
+pub const DOCK_H = 64;
 pub const Action = struct {
     pub const none: u16 = 0;
     pub const home: u16 = 1;
@@ -102,7 +102,7 @@ fn activateTheme(index: usize) void {
 const COLORS = [_]u32{ 0xFF9258, 0x7879F1, 0xFF5B86, 0x39CFC0, 0x63B5FF, 0xA895F3 };
 const LABELS = [_][]const u8{ "Files", "Welcome", "Terminal", "Clock", "About", "Windows", "Appearance", "Trash" };
 const DOCK_ACTIONS = [_]u16{ Action.files, Action.home, Action.terminal, Action.clock, Action.about, Action.overview, Action.settings, Action.trash };
-const DOCK_ICONS = [_]ui.Icon{ .files, .welcome, .terminal, .clock, .about, .windows, .appearance, .trash };
+const DOCK_ICONS = [_]ui.Icon{ .dock_files, .dock_welcome, .dock_terminal, .dock_clock, .dock_about, .dock_windows, .dock_appearance, .dock_trash };
 const DOCK_APPS = [_]?usize{ 4, 0, 1, 2, 3, null, null, 5 };
 // Clean assets derived from the three approved concepts. The BMP resources
 // live on CitrusFS, not inside Peel's ELF (the kernel has an 8 MiB exec cap).
@@ -151,7 +151,7 @@ pub fn dockRect(s: *const Surface) Rect {
 }
 pub fn dockItem(s: *const Surface, index: usize) Rect {
     const d = dockRect(s);
-    return .{ .x = d.x + 16 + @as(i32, @intCast(index)) * 76 + (if (index >= 5) @as(i32, 12) else 0) + (if (index == 7) @as(i32, 12) else 0), .y = d.y + 8, .w = 72, .h = 76 };
+    return .{ .x = d.x + 16 + @as(i32, @intCast(index)) * 76 + (if (index >= 5) @as(i32, 12) else 0) + (if (index == 7) @as(i32, 12) else 0), .y = d.y + 8, .w = 72, .h = 54 };
 }
 pub fn popupRect(s: *const Surface, popup: Popup) Rect {
     return switch (popup) {
@@ -471,18 +471,18 @@ pub fn paint(s: *const Surface, state: *const State) void {
     const dock = dockRect(s);
     // A translucent shelf; only light themes receive a luminous top edge.
     const shelf = Rect{ .x = dock.x, .y = dock.y + 7, .w = dock.w, .h = dock.h - 10 };
-    dock_material.paintShadowed(s, shelf, 20, active_theme.dock, 185);
+    dock_material.paintShadowed(s, shelf, 16, active_theme.dock, 165);
     if (active_theme.edge_highlights) s.rounded(.{ .x = shelf.x + 20, .y = shelf.y, .w = shelf.w - 40, .h = 1 }, 0, active_theme.rim, 115);
-    s.rounded(.{ .x = dock.x + 410, .y = dock.y + 24, .w = 1, .h = 41 }, 0, 0x778397, 60);
-    s.rounded(.{ .x = dock.x + 575, .y = dock.y + 24, .w = 1, .h = 41 }, 0, 0x778397, 60);
+    s.rounded(.{ .x = dock.x + 410, .y = dock.y + 17, .w = 1, .h = 31 }, 0, 0x778397, 60);
+    s.rounded(.{ .x = dock.x + 575, .y = dock.y + 17, .w = 1, .h = 31 }, 0, 0x778397, 60);
     var drawing = s.*;
     for (DOCK_ACTIONS, 0..) |action, i| {
         const r = dockItem(s, i);
         const hovered = state.hover == action;
         // Fixed optical size avoids abrupt magnification jumps on pointer entry.
-        ui.icon(&drawing, DOCK_ICONS[i], r.x + 8, r.y + 3, 56);
+        ui.icon(&drawing, DOCK_ICONS[i], r.x + 14, r.y + 3, 44);
         if (DOCK_APPS[i]) |app| if (state.running[app]) {
-            s.circle(r.x + 36, r.y + 70, 2, INK);
+            s.circle(r.x + 36, r.y + 51, 1, INK);
         };
         if (hovered) {
             const tw = font.textWidth(LABELS[i], 1) + 24;

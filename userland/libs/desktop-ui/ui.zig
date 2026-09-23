@@ -15,7 +15,7 @@ pub const Color = struct {
 };
 const font = @import("typography");
 pub const textWidth = font.textWidth;
-pub const Icon = enum { welcome, terminal, clock, about, windows, appearance, files, trash, chevron_left, chevron_right, chevron_up, document, brand, controls, close, minimize, maximize, pointer, folder_orange, folder_green, folder_purple, folder_pink, folder_gold, wifi, bluetooth, speaker, sun, battery, battery_plain, sidebar_home, sidebar_apps, sidebar_system, sidebar_trash, menu_wifi, menu_bluetooth, menu_speaker, menu_controls, menu_battery, menu_battery_plain, menu_brand };
+pub const Icon = enum { welcome, terminal, clock, about, windows, appearance, files, trash, chevron_left, chevron_right, chevron_up, document, brand, controls, close, minimize, maximize, pointer, folder_orange, folder_green, folder_purple, folder_pink, folder_gold, wifi, bluetooth, speaker, sun, battery, battery_plain, sidebar_home, sidebar_apps, sidebar_system, sidebar_trash, menu_wifi, menu_bluetooth, menu_speaker, menu_controls, menu_battery, menu_battery_plain, menu_brand, dock_welcome, dock_terminal, dock_clock, dock_about, dock_windows, dock_appearance, dock_files, dock_trash };
 pub const Button = struct { id: u32, rect: Rect };
 /// Capture starts on press; moving onto a button while held cannot activate it.
 pub const Pointer = struct {
@@ -146,6 +146,15 @@ test "menu symbols match exact Retina output dimensions" {
         const h = @as(usize, @intFromEnum(kind)) * 8;
         try std.testing.expectEqual(expected, u16at(h));
         try std.testing.expectEqual(expected, u16at(h + 2));
+    }
+}
+
+test "dock icons use prefiltered 88-pixel artwork, not runtime minification" {
+    const std = @import("std");
+    for ([_]Icon{ .dock_welcome, .dock_terminal, .dock_clock, .dock_about, .dock_windows, .dock_appearance, .dock_files, .dock_trash }) |kind| {
+        const h = @as(usize, @intFromEnum(kind)) * 8;
+        try std.testing.expectEqual(@as(usize, 88), u16at(h));
+        try std.testing.expectEqual(@as(usize, 88), u16at(h + 2));
     }
 }
 

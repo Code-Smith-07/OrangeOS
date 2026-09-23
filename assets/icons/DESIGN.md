@@ -19,6 +19,13 @@ The menu bar has a separate optical family: original 20-point SVG symbols and
 1.3–1.5-point strokes, clear silhouettes and two toggle capsules replace generic
 miniature toolbar art. Status tint and unknown/off indications remain real.
 
-Validation: all 40 sprites render within clipping at 1x/2x; monochrome tint,
+The compact dock uses 44-point artwork with dedicated prefiltered 88-pixel
+sprites from the same SVG masters; it no longer samples 192-pixel app artwork
+down to a small dock icon with only a bilinear filter. Warm citrus, cyan folder
+enamel, deep terminal glass, blue information porcelain and layered violet
+windows add colour; dial, gear and wastebasket retain material-specific metal
+and glass detail. Running dots are outside the artwork, not painted into icons.
+
+Validation: all 48 sprites render within clipping at 1x/2x; monochrome tint,
 pointer capture and private publication tests pass. This is a refinement pass,
 not a claim of macOS visual or functional parity.
