@@ -30,6 +30,15 @@ pub fn build(b: *std.Build) void {
         .cpu_features_sub = disabled,
         .cpu_features_add = enabled,
     });
+    // User code may use baseline x86-64 SSE2 now that every task owns eager
+    // FPU state. Never reuse this target for kernel/interrupt code. AVX stays
+    // unavailable until a larger XSAVE context and its policy are implemented.
+    const user_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .freestanding,
+        .abi = .none,
+        .cpu_model = .baseline,
+    });
 
     // ── Build options ────────────────────────────────────────────────────────
     const fault_test = b.option(
@@ -60,6 +69,7 @@ pub fn build(b: *std.Build) void {
     if (timezone < -720 or timezone > 840) @panic("timezone-minutes must be -720..840");
     ui_options.addOption(i32, "timezone_minutes", timezone);
     const calendar_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/pulp/calendar.zig"), .target = target, .optimize = optimize });
+    const user_calendar_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/pulp/calendar.zig"), .target = user_target, .optimize = optimize });
     options.addOption(u32, "tick_hz", tick_hz);
     options.addOption(bool, "fault_test", fault_test);
     options.addOption(bool, "mm_test", mm_test);
@@ -102,7 +112,7 @@ pub fn build(b: *std.Build) void {
 
     // ── Userland ─────────────────────────────────────────────────────────────
     // Every program links against Pulp and nothing else: no libc, no runtime,
-    // static ELF, same bare-metal target as the kernel.
+    // static ELF, baseline SSE2 app target distinct from the soft-float kernel.
     // Software composition needs optimization even while the kernel is being
     // debugged. ReleaseSafe retains bounds/overflow checks. Override with
     // -Duser-optimize=Debug when stepping through userland instructions.
@@ -110,12 +120,12 @@ pub fn build(b: *std.Build) void {
         (if (optimize == .Debug) .ReleaseSafe else optimize);
     const typography_mod = b.createModule(.{
         .root_source_file = b.path("userland/libs/typography/typography.zig"),
-        .target = target,
+        .target = user_target,
         .optimize = user_optimize,
     });
     const pulp_mod = b.createModule(.{
         .root_source_file = b.path("userland/libs/pulp/pulp.zig"),
-        .target = target,
+        .target = user_target,
         .optimize = user_optimize,
         .red_zone = false,
         .pic = false,
@@ -127,7 +137,7 @@ pub fn build(b: *std.Build) void {
 
     const libpeel_mod = b.createModule(.{
         .root_source_file = b.path("userland/libs/libpeel/libpeel.zig"),
-        .target = target,
+        .target = user_target,
         .optimize = user_optimize,
         .red_zone = false,
         .pic = false,
@@ -138,11 +148,11 @@ pub fn build(b: *std.Build) void {
     });
     libpeel_mod.addImport("pulp", pulp_mod);
     pulp_mod.addOptions("ui_options", ui_options);
-    pulp_mod.addImport("calendar", calendar_mod);
+    pulp_mod.addImport("calendar", user_calendar_mod);
 
     const segment_mod = b.createModule(.{
         .root_source_file = b.path("userland/libs/segment/segment.zig"),
-        .target = target,
+        .target = user_target,
         .optimize = user_optimize,
         .red_zone = false,
         .pic = false,
@@ -154,18 +164,18 @@ pub fn build(b: *std.Build) void {
     segment_mod.addImport("pulp", pulp_mod);
     segment_mod.addImport("libpeel", libpeel_mod);
     segment_mod.addImport("typography", typography_mod);
-    const gfx_mod = b.createModule(.{ .root_source_file = b.path("userland/servers/peel/gfx.zig"), .target = target, .optimize = user_optimize });
-    const ui_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/desktop-ui/ui.zig"), .target = target, .optimize = user_optimize });
+    const gfx_mod = b.createModule(.{ .root_source_file = b.path("userland/servers/peel/gfx.zig"), .target = user_target, .optimize = user_optimize });
+    const ui_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/desktop-ui/ui.zig"), .target = user_target, .optimize = user_optimize });
     ui_mod.addImport("gfx", gfx_mod);
     ui_mod.addImport("typography", typography_mod);
-    const files_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/files-view/files.zig"), .target = target, .optimize = user_optimize });
+    const files_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/files-view/files.zig"), .target = user_target, .optimize = user_optimize });
     files_mod.addImport("ui", ui_mod);
     files_mod.addImport("pulp", pulp_mod);
     files_mod.addImport("libpeel", libpeel_mod);
-    files_mod.addImport("keymap", b.createModule(.{ .root_source_file = b.path("userland/apps/squeeze/keymap.zig"), .target = target, .optimize = user_optimize }));
+    files_mod.addImport("keymap", b.createModule(.{ .root_source_file = b.path("userland/apps/squeeze/keymap.zig"), .target = user_target, .optimize = user_optimize }));
 
-    const host_protocol_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/host-services/protocol.zig"), .target = target, .optimize = user_optimize });
-    const host_model_mod = b.createModule(.{ .root_source_file = b.path("userland/apps/hardware/model.zig"), .target = target, .optimize = user_optimize });
+    const host_protocol_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/host-services/protocol.zig"), .target = user_target, .optimize = user_optimize });
+    const host_model_mod = b.createModule(.{ .root_source_file = b.path("userland/apps/hardware/model.zig"), .target = user_target, .optimize = user_optimize });
     const UserProgram = struct { name: []const u8, path: []const u8 };
     const programs = [_]UserProgram{
         .{ .name = "init", .path = "userland/servers/seed/main.zig" },
@@ -173,6 +183,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "host-probe", .path = "userland/bin/host-probe/main.zig" },
         .{ .name = "vm-probe", .path = "userland/bin/vm-probe/main.zig" },
         .{ .name = "simd-probe", .path = "userland/bin/simd-probe/main.zig" },
+        .{ .name = "c-abi-probe", .path = "userland/bin/c-abi-probe/main.zig" },
         .{ .name = "fault-null", .path = "userland/bin/fault-null/main.zig" },
         .{ .name = "fault-ro", .path = "userland/bin/fault-ro/main.zig" },
         .{ .name = "fault-nx", .path = "userland/bin/fault-nx/main.zig" },
@@ -199,7 +210,7 @@ pub fn build(b: *std.Build) void {
     for (programs) |prog| {
         const mod = b.createModule(.{
             .root_source_file = b.path(prog.path),
-            .target = target,
+            .target = user_target,
             .optimize = user_optimize,
             .strip = user_optimize != .Debug,
             .red_zone = false,
@@ -218,6 +229,10 @@ pub fn build(b: *std.Build) void {
         mod.addImport("ui", ui_mod);
         mod.addImport("files_view", files_mod);
         mod.addImport("gfx", gfx_mod);
+        if (std.mem.eql(u8, prog.name, "c-abi-probe")) mod.addCSourceFile(.{
+            .file = b.path("userland/bin/c-abi-probe/probe.c"),
+            .flags = &.{ "-std=c11", "-ffreestanding", "-fno-stack-protector", "-mno-red-zone", "-mno-avx", "-Wall", "-Wextra", "-Werror" },
+        });
 
         const exe = b.addExecutable(.{
             .name = prog.name,

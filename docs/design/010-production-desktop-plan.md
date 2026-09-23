@@ -486,7 +486,9 @@ no clipped text, mismatched corners, emoji stand-ins or unusable controls.
 eager per-task x87/SSE2 state isolation are implemented. Two waves of six native
 processes validate clean initial state, distinct register/rounding patterns and
 cross-CPU migration. AP entry stack alignment was corrected. Kernel SIMD stays
-disabled; AVX/XSAVE and the remaining runtime/lifecycle gates are not complete.
+disabled; apps now compile with SSE2. Four concurrent freestanding C/Zig ABI
+probes cover FP arguments, mixed struct returns, callbacks and blocking calls.
+AVX/XSAVE, libc/C++ and the remaining runtime/lifecycle gates are not complete.
 
 Depends on: baseline kernel; can progress alongside design after Phase 1.
 

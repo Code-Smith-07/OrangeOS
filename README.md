@@ -155,6 +155,9 @@ See the [native Control Center screenshot](docs/screenshots/control-center.png).
 **Browser runtime progress.** Apps can now allocate, protect and release private
 memory. Synchronous app faults terminate the affected process while the OS
 continues. Memory conservation and four actual faulting apps are tested in QEMU.
+Per-process x87/SSE2 state is now isolated across CPU switches, and apps compile
+with native SSE2 support. Concurrent guest probes check register isolation and
+freestanding C/Zig floating-point calls, callbacks and blocking syscalls.
 The modern browser engine, HTTPS and remaining runtime work are still tracked
 in the [browser plan](docs/design/008-browser.md).
 

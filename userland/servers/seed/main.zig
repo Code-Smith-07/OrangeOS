@@ -148,6 +148,13 @@ export fn _start() callconv(.c) noreturn {
             }
         }
         pulp.puts("runtime: PASS concurrent SIMD process isolation\n");
+        var c_probes: [4]i64 = undefined;
+        for (&c_probes) |*pid| pid.* = pulp.spawn("/bin/c-abi-probe") catch pulp.exit(99);
+        for (c_probes) |pid| {
+            const code = pulp.wait(pid) catch pulp.exit(100);
+            if (code != 0) pulp.exit(101);
+        }
+        pulp.puts("runtime: PASS freestanding C floating-point ABI\n");
     }
     loadConfig();
 

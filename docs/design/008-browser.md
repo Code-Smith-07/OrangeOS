@@ -1,6 +1,6 @@
 # A modern browser for OrangeOS
 
-Status: compatibility investigation, not an installed browser.
+Status: runtime foundations in progress, not an installed browser.
 User requirement (September 6, 2026): full modern-web functionality with a
 lightweight shell; a plain-HTTP text viewer is not an acceptable substitute.
 
@@ -29,9 +29,9 @@ network security, process isolation, font shaping or media stack.
 
 | Area | Current implementation | Work needed |
 |---|---|---|
-| Executables | Static freestanding Zig ELF, no libc underneath Pulp | C/C++ runtime and target/toolchain support |
+| Executables | Static freestanding Zig/C ELF; native C floating-point ABI probe; no libc underneath Pulp | General libc, allocator and C++ runtime/toolchain support |
 | Heap | Owned anonymous mapping/release/protection API plus legacy 256 KiB scratch arena | General C/C++ allocator, partial mappings, thread-safe VM, larger workloads |
-| CPU state | Eager per-task x87/SSE2 save/restore on every CPU; clean initial registers; AVX disabled | Enable native userland compiler target after regression testing; XSAVE/AVX remain unsupported |
+| CPU state | Eager per-task x87/SSE2 save/restore on every CPU; apps compile for baseline SSE2; kernel remains soft-float | XSAVE/AVX remain unsupported; retain CPU isolation and ABI regression gates |
 | Threads | Kernel scheduler, no pthread-compatible user API | User threads, thread-local storage, synchronization |
 | Network | DNS and blocking TCP; receive conflates timeout and EOF | Nonblocking/polling sockets with precise errors and cancellation |
 | HTTPS | No TLS library, trust store or secure randomness API | Audited TLS port, entropy, certificate and hostname validation |
@@ -140,3 +140,28 @@ CPU-state contract: [Intel SDM volume 3A, chapter 13](https://cdrdv2-public.inte
 This is one browser-runtime prerequisite, **not an installed browser or an
 engine port**. C/C++ runtime, threads/TLS, lifecycle reclamation, HTTPS and the
 engine/platform integration still gate the native browser.
+
+## Runtime milestone: native SSE2 apps and C ABI (23 September 2026)
+
+`build.zig` now separates the soft-float kernel target from baseline x86-64
+userland. All app modules use the same SSE2-enabled target, including their
+shared graphics and Pulp code; the kernel's calendar module is separate and
+stays soft-float. No AVX, libc, dynamic linker or host compatibility layer is
+silently enabled.
+
+`/bin/c-abi-probe` links a freestanding C11 translation unit directly into a
+native guest ELF. Four concurrent instances check C/Zig floating-point calls,
+mixed integer/double struct returns, callbacks into Zig, nine double arguments
+(including stack passing) and live FP values over blocking system calls.
+This validates a cross-language ABI subset, **not libc or C++ support**.
+Use the runtime smoke suite for the complete memory/fault/SIMD/C ABI gates;
+`ORANGE_VM_CPUS=1` also checks the single-core fallback.
+Qualification passed on 1, 2 and 4 virtual CPUs; the four-CPU run observed all
+four cores. A simultaneous multi-VM run hit the original C-probe timeout; the
+standalone runs passed, and the software-emulation deadline is now 90 seconds.
+No correctness assertion was removed to accommodate timing.
+`python3 tools/runtime_codegen_audit.py` inspects built ELF instructions: the
+kernel must contain the explicit FX save/restore instructions without MMX/XMM
+register use, while the C probe and Peel must actually emit SSE instructions
+without YMM/ZMM register use. This is a regression audit of emitted register
+classes, not a replacement for the guest state-isolation tests.

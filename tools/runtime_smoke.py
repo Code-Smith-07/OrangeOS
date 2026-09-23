@@ -3,6 +3,7 @@
 
 Build: zig build -Dmm-test -Druntime-test -Ddesktop-profile; scripts/mkdisk.sh
 """
+import os
 import re
 from desktop_smoke import Guest
 
@@ -34,11 +35,16 @@ def main():
         combined = 0
         for mask in masks:
             combined |= mask
-        if combined.bit_count() < 2:
+        cores = int(os.environ.get("ORANGE_VM_CPUS", "2"))
+        if combined.bit_count() < min(cores, 2):
             raise AssertionError(f"SIMD probes did not cover both virtual CPUs: {masks}")
-        assert any(mask.bit_count() > 1 for mask in masks), f"No SIMD process migrated between CPUs: {masks}"
+        if cores > 1:
+            assert any(mask.bit_count() > 1 for mask in masks), f"No SIMD process migrated between CPUs: {masks}"
         assert "simd-probe: FAIL" not in guest.log()
         print(f"PASS eager x87, all sixteen XMM registers, MXCSR and migration; CPU masks={masks}", flush=True)
+        guest.until(lambda: "runtime: PASS freestanding C floating-point ABI" in guest.log(),
+                    "four concurrent compiler-generated C/Zig floating-point probes", 90)
+        assert guest.log().count("c-abi-probe: PASS") == 4
         guest.until(lambda: '"Welcome"' in guest.log() and "squeeze: window" in guest.log(),
                     "desktop starts after runtime stress", 60)
         guest.screenshot("runtime-desktop")

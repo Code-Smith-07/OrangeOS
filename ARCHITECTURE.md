@@ -641,7 +641,7 @@ kernel/
 │   │   ├── syscall_entry.S          syscall/sysret trampoline, stack swap
 │   │   ├── smp.zig              [P7] AP startup (INIT-SIPI-SIPI)
 │   │   ├── trampoline.S         [P7] 16-bit → 64-bit AP bring-up code
-│   │   ├── fpu.zig                  FPU/SSE/AVX state save and restore (XSAVE)
+│   │   ├── fpu.zig                  Eager x87/SSE2 state (FXSAVE64); AVX deferred
 │   │   ├── io.zig                   Port I/O: inb/outb/inw/outw/inl/outl
 │   │   └── serial_early.zig         Raw UART before drivers exist
 │   │
@@ -1742,6 +1742,19 @@ zig build clean
 | `omit_frame_pointer = false` | Frame pointers are what make stack traces possible in a panic. |
 
 ### 15.3 The debug loop
+
+**Implemented browser-runtime prerequisite (23 September 2026):** kernel code
+still uses the flags above, while userland targets baseline
+`x86_64-freestanding-none` with SSE2. Each task owns a 16-byte-aligned 512-byte
+x87/XMM/MXCSR context, eagerly restored on switches, initial scheduling and
+exit. Both BSP and APs initialize the CPU controls; OSXSAVE/AVX are disabled.
+The AP trampoline supplies a proper SysV C call frame. Kernel interrupt and
+syscall handlers may not use SIMD implicitly: they do not separately preserve
+it on entry. A future XSAVE or kernel-vector implementation needs a new audit.
+
+Native regression probes cover concurrent cross-CPU FP state and a freestanding
+C/Zig floating-point ABI subset. These are runtime foundations, not an installed
+browser, libc, thread API or C++ runtime. See [browser gates](docs/design/008-browser.md).
 
 ```
    ┌─────────────────────────────────────────────────────────────────┐
