@@ -382,6 +382,7 @@ pub fn preemptIfNeeded() void {
 /// Terminate the current thread. Never returns.
 pub fn exit(code: i32) noreturn {
     io.cli();
+    if (currentTask()) |t| @import("../mm/user_vm.zig").releaseAll(&t.anonymous_vm, t.address_space);
     lock.acquire();
 
     const c = cpu();

@@ -58,6 +58,9 @@ pub const Nr = enum(u64) {
     yield = 7,
     spawn = 8,
     wait = 9,
+    mmap = 10,
+    munmap = 11,
+    mprotect = 12,
     sleep_ms = 61,
     open = 20,
     close = 21,
@@ -126,6 +129,9 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .read => sysRead(frame.rdi, frame.rsi, frame.rdx),
         .spawn => sysSpawn(frame.rdi, frame.rsi),
         .wait => sysWait(frame.rdi, frame.rsi),
+        .mmap => sysMmap(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9),
+        .munmap => sysMunmap(frame.rdi, frame.rsi),
+        .mprotect => sysMprotect(frame.rdi, frame.rsi, frame.rdx),
         .sleep_ms => sysSleepMs(frame.rdi),
         // Fourth argument is in r10, not rcx: the syscall instruction
         // clobbers rcx with the return address.
@@ -170,6 +176,31 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
 }
 
 const snapshot_sync = @import("../sync/spinlock.zig");
+const user_vm = @import("../mm/user_vm.zig");
+fn vmErrno(e: user_vm.Error) i64 {
+    return switch (e) {
+        error.Invalid => -22,
+        error.Unsupported => -95,
+        error.OutOfMemory => -12,
+    };
+}
+fn sysMmap(address: u64, len: u64, prot: u64, flags: u64, fd: u64, offset: u64) i64 {
+    // MAP_PRIVATE | MAP_ANONYMOUS. No MAP_FIXED, file mappings or hints yet.
+    if (address != 0 or flags != 0x22 or fd != std.math.maxInt(u64) or offset != 0) return -95;
+    const t = sched.currentTask() orelse return -14;
+    return @intCast(user_vm.map(&t.anonymous_vm, t.address_space, len, prot) catch |e| return vmErrno(e));
+}
+fn sysMunmap(address: u64, len: u64) i64 {
+    const t = sched.currentTask() orelse return -14;
+    user_vm.unmap(&t.anonymous_vm, t.address_space, address, len) catch |e| return vmErrno(e);
+    return 0;
+}
+fn sysMprotect(address: u64, len: u64, prot: u64) i64 {
+    const t = sched.currentTask() orelse return -14;
+    user_vm.protect(&t.anonymous_vm, t.address_space, address, len, prot) catch |e| return vmErrno(e);
+    return 0;
+}
+
 var snapshot_lock: snapshot_sync.SpinLock = .{};
 var host_snapshot: [4096]u8 = undefined;
 var snapshot_len: usize = 0;

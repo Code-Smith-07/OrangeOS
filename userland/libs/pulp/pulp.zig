@@ -8,6 +8,7 @@
 
 const std = @import("std");
 pub const desktop_profile = @import("ui_options").desktop_profile;
+pub const runtime_test = @import("ui_options").runtime_test;
 
 // ── Syscall numbers — must match kernel/syscall/syscall.zig ─────────────────
 
@@ -18,6 +19,9 @@ pub const NR = struct {
     pub const yield: u64 = 7;
     pub const spawn: u64 = 8;
     pub const wait: u64 = 9;
+    pub const mmap: u64 = 10;
+    pub const munmap: u64 = 11;
+    pub const mprotect: u64 = 12;
     pub const sleep_ms: u64 = 61;
     pub const open: u64 = 20;
     pub const close: u64 = 21;
@@ -115,6 +119,8 @@ pub inline fn syscall4(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64) i64 {
 // ── Errors ──────────────────────────────────────────────────────────────────
 
 pub const Error = error{
+    InvalidArgument,
+    Unsupported,
     ConnectionReset,
     NotConnected,
     TimedOut,
@@ -132,6 +138,8 @@ pub const Error = error{
 
 fn errno(v: i64) Error {
     return switch (-v) {
+        22 => Error.InvalidArgument,
+        95 => Error.Unsupported,
         104 => Error.ConnectionReset,
         107 => Error.NotConnected,
         110 => Error.TimedOut,
@@ -554,10 +562,42 @@ pub fn print(comptime fmt: []const u8, args: anytype) void {
     puts(s);
 }
 
-// ── Allocator ───────────────────────────────────────────────────────────────
-// A bump allocator over a static arena. There is no brk or mmap syscall yet,
-// so the arena is part of the program's .bss and its size is fixed at link
-// time. Freeing is a no-op; programs here are short-lived.
+// ── Owned virtual memory ────────────────────────────────────────────────────
+pub inline fn syscall6(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) i64 {
+    return asm volatile ("syscall"
+        : [ret] "={rax}" (-> i64),
+        : [nr] "{rax}" (nr),
+          [a0] "{rdi}" (a0),
+          [a1] "{rsi}" (a1),
+          [a2] "{rdx}" (a2),
+          [a3] "{r10}" (a3),
+          [a4] "{r8}" (a4),
+          [a5] "{r9}" (a5),
+        : "rcx", "r11", "memory"
+    );
+}
+pub const MemoryProtection = enum(u64) { none = 0, read = 1, read_write = 3 };
+/// Allocate zeroed anonymous memory. Length is rounded up to a page. Each
+/// allocation is independently releasable; executable memory is unsupported.
+pub fn mapMemory(length: usize, protection: MemoryProtection) Error![]align(4096) u8 {
+    const result = syscall6(NR.mmap, 0, length, @intFromEnum(protection), 0x22, std.math.maxInt(u64), 0);
+    if (result < 0) return errno(result);
+    const pointer: [*]align(4096) u8 = @ptrFromInt(@as(u64, @intCast(result)));
+    return pointer[0..std.mem.alignForward(usize, length, 4096)];
+}
+/// Requires the entire allocation returned by mapMemory, not a subslice.
+pub fn unmapMemory(memory: []align(4096) u8) Error!void {
+    const result = syscall2(NR.munmap, @intFromPtr(memory.ptr), memory.len);
+    if (result < 0) return errno(result);
+}
+pub fn protectMemory(memory: []align(4096) u8, protection: MemoryProtection) Error!void {
+    const result = syscall3(NR.mprotect, @intFromPtr(memory.ptr), memory.len, @intFromEnum(protection));
+    if (result < 0) return errno(result);
+}
+
+// ── Legacy scratch arena ────────────────────────────────────────────────────
+// Retained for existing small callers. Runtime ports should use mapMemory
+// and release their owned mappings; resetting this arena is still bulk-only.
 
 const ARENA_SIZE = 256 * 1024;
 var arena: [ARENA_SIZE]u8 align(16) = undefined;

@@ -223,6 +223,52 @@ fn testWriteXorExecute() void {
     );
 }
 
+fn testUserVm() void {
+    const vm = @import("user_vm.zig");
+    const baseline = pmm.stats().free_pages;
+    const space = vmm.createAddressSpace() catch {
+        check("user VM: address space", false);
+        return;
+    };
+    var state: vm.State = .{};
+    const after_root = pmm.stats().free_pages;
+    var ok = true;
+    for (0..64) |_| {
+        const address = vm.map(&state, space, 65537, 3) catch {
+            ok = false;
+            break;
+        };
+        vm.protect(&state, space, address, 65537, 0) catch {
+            ok = false;
+            break;
+        };
+        if (vmm.leafFlags(space, address).? & vmm.USER != 0) ok = false;
+        vm.protect(&state, space, address, 65537, 1) catch {
+            ok = false;
+            break;
+        };
+        if (vmm.leafFlags(space, address).? & vmm.WRITABLE != 0) ok = false;
+        vm.unmap(&state, space, address, 65537) catch {
+            ok = false;
+            break;
+        };
+        if (vmm.translate(space, address) != null or pmm.stats().free_pages != after_root) ok = false;
+    }
+    check("user VM: 64 cycles return frames AND page tables", ok);
+    _ = vm.map(&state, space, 1048576, 3) catch {
+        check("user VM: exit setup", false);
+        return;
+    };
+    _ = vm.map(&state, space, 4096, 0) catch {
+        check("user VM: protected exit setup", false);
+        return;
+    };
+    vm.releaseAll(&state, space);
+    check("user VM: exit cleanup frees protected and writable memory", pmm.stats().free_pages == after_root);
+    vmm.destroyAddressSpace(space);
+    check("user VM: address-space teardown conserves every page", pmm.stats().free_pages == baseline);
+}
+
 pub fn runAll() void {
     console.write("\n");
     console.info("memory subsystem tests:", .{});
@@ -235,6 +281,7 @@ pub fn runAll() void {
     testPmmContiguous();
     testVmmTranslate();
     testWriteXorExecute();
+    testUserVm();
     testHeap();
     testHeapChurn();
 

@@ -30,7 +30,7 @@ network security, process isolation, font shaping or media stack.
 | Area | Current implementation | Work needed |
 |---|---|---|
 | Executables | Static freestanding Zig ELF, no libc underneath Pulp | C/C++ runtime and target/toolchain support |
-| Heap | 256 KiB bump arena; freeing is a no-op | Reclaimable process VM, allocation and protection APIs |
+| Heap | Owned anonymous mapping/release/protection API plus legacy 256 KiB scratch arena | General C/C++ allocator, partial mappings, thread-safe VM, larger workloads |
 | CPU state | SIMD disabled; context switch saves general registers | Per-task FPU/SIMD initialization and isolation on every CPU |
 | Threads | Kernel scheduler, no pthread-compatible user API | User threads, thread-local storage, synchronization |
 | Network | DNS and blocking TCP; receive conflates timeout and EOF | Nonblocking/polling sockets with precise errors and cancellation |
@@ -74,3 +74,27 @@ remote renderer is part of this native-browser plan.
 The user requires descriptive **local commits after each verified phase**.
 Do not push without explicit permission. Runtime work is necessary engineering,
 not a completed browser; do not add a nonfunctional browser icon as a milestone.
+
+## Runtime milestone: owned anonymous memory (23 September 2026)
+
+Syscalls 10/11/12 now implement a deliberately bounded mmap/munmap/mprotect
+subset, exposed by Pulp's `mapMemory`, `unmapMemory`, `protectMemory`:
+
+- Anonymous private allocations, page-rounded and zero-filled; 128 live regions,
+  64 MiB maximum per mapping, 256 MiB per-process reserved arena.
+- Read/write, read-only and inaccessible protection. Anonymous execution,
+  fixed addresses, file mappings and partial unmap/protect remain unsupported.
+- Released virtual addresses, physical frames and empty page tables are reused.
+  Exit releases owned anonymous mappings. Existing image/stack/shared-object
+  teardown and scheduler zombie reaping still need separate work.
+- One thread per address space; do not expose shared-address-space threads until
+  VM locking and cross-CPU TLB invalidation are implemented.
+
+Qualification: `zig build -Dmm-test -Druntime-test -Ddesktop-profile`,
+`./scripts/mkdisk.sh`, `python3 tools/runtime_smoke.py`. The kernel checks exact
+physical-page conservation over 64 cycles, protection flags, cleanup and table
+teardown. Three ring-3 runs check API rejections, syscall copy permissions,
+zeroing, address reuse and slot exhaustion before the desktop starts.
+
+This removes the first allocation blocker; it is not a completed engine port,
+C library, thread API, SIMD implementation or browser.

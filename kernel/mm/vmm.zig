@@ -379,7 +379,62 @@ pub fn destroyAddressSpace(pml4_phys: u64) void {
 /// Allocate a physical page and map it into `pml4` at `virt`.
 pub fn allocAndMap(pml4_phys: u64, virt: u64, flags: u64) Error!u64 {
     const phys = pmm.allocPageZeroed() catch return Error.OutOfMemory;
+    errdefer pmm.freePage(phys);
     try mapPage(pml4_phys, virt, phys, flags);
+    return phys;
+}
+
+fn emptyTable(table: *const [512]u64) bool {
+    for (table) |entry| if (entry & PRESENT != 0) return false;
+    return true;
+}
+
+/// Reclaim empty lower-half page tables. Never follows huge-page mappings or
+/// shared upper-half kernel entries. Callers own this single-threaded space.
+pub fn pruneEmptyTables(pml4_phys: u64, virt: u64) void {
+    if (virt >= 0x0000_8000_0000_0000) return;
+    const pml4 = tableAt(pml4_phys);
+    const e3 = &pml4[indexOf(virt, 3)];
+    if (e3.* & PRESENT == 0) return;
+    const pdpt = tableAt(e3.*);
+    const e2 = &pdpt[indexOf(virt, 2)];
+    if (e2.* & PRESENT != 0 and e2.* & HUGE == 0) {
+        const pd = tableAt(e2.*);
+        const e1 = &pd[indexOf(virt, 1)];
+        if (e1.* & PRESENT != 0 and e1.* & HUGE == 0 and emptyTable(tableAt(e1.*))) {
+            const phys = e1.* & ADDR_MASK;
+            e1.* = 0;
+            pmm.freePage(phys);
+        }
+        if (emptyTable(pd)) {
+            const phys = e2.* & ADDR_MASK;
+            e2.* = 0;
+            pmm.freePage(phys);
+        }
+    }
+    if (emptyTable(pdpt)) {
+        const phys = e3.* & ADDR_MASK;
+        e3.* = 0;
+        pmm.freePage(phys);
+    }
+}
+
+/// Remove one private 4 KiB mapping and return its frame to the owner.
+pub fn unmapPage(pml4_phys: u64, virt: u64) ?u64 {
+    if (virt >= 0x0000_8000_0000_0000) return null;
+    const pml4 = tableAt(pml4_phys);
+    const e3 = pml4[indexOf(virt, 3)];
+    if (e3 & PRESENT == 0) return null;
+    const e2 = tableAt(e3)[indexOf(virt, 2)];
+    if (e2 & PRESENT == 0 or e2 & HUGE != 0) return null;
+    const e1 = tableAt(e2)[indexOf(virt, 1)];
+    if (e1 & PRESENT == 0 or e1 & HUGE != 0) return null;
+    const leaf = &tableAt(e1)[indexOf(virt, 0)];
+    if (leaf.* & PRESENT == 0) return null;
+    const phys = leaf.* & ADDR_MASK;
+    leaf.* = 0;
+    invalidatePage(virt);
+    pruneEmptyTables(pml4_phys, virt);
     return phys;
 }
 

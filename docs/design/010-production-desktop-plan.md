@@ -799,6 +799,7 @@ eviction/tab suspension or a visible resource limit, never an unexplained hang.
 | Calendar redraw correction | Eight-window warm performance gate passed | `tools/calendar_perf.py --stress`: 146 frames, 41 ms p95 / 45 ms max, navigation max 43 ms, live Clock behind glass verified; cold open 109 ms separate; shared atomic publication still open |
 | Concept theme artwork | Three native image-backed wallpapers verified locally | `c55a78d`; `docs/screenshots/theme-{coastal,citrus,aurora}.png`; session-only selection, full-scene TCG theme repaint remains slow |
 | Concept Files grid | Real-directory 4×2 grid and five original folder sprites; verified locally | `docs/screenshots/theme-files-grid.png`; `tools/desktop_smoke.py`, `tools/app_redraw_audit.py`; read-only, not fictional Home counts |
+| Browser runtime: anonymous VM | Implemented bounded owned mappings, protections and release | `tools/runtime_smoke.py`; see [browser runtime milestone](008-browser.md). Remaining runtime/engine gates are open. |
 | Aurora Phase 1 | Planned beyond the targeted Welcome fix | Shared publication, all-app audit and performance gates |
 | Aurora Phases 2–16 | Planned beyond the partial bridge milestones above | Update each only with tests and local commit evidence |
 

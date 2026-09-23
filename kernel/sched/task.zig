@@ -112,6 +112,7 @@ pub const Task = struct {
     /// Next free virtual address for shared-memory mappings. Grows upward
     /// through a region reserved for the purpose.
     shm_next: u64 = SHM_REGION_BASE,
+    anonymous_vm: @import("../mm/user_vm.zig").State = .{},
 
     /// Physical address of this task's PML4. Kernel threads share the kernel's.
     /// The scheduler reloads CR3 on any switch that changes it — without that,

@@ -109,6 +109,17 @@ fn startService(s: *Service) void {
 
 export fn _start() callconv(.c) noreturn {
     banner();
+    if (pulp.runtime_test) {
+        for (0..3) |_| {
+            const probe = pulp.spawn("/bin/vm-probe") catch pulp.exit(90);
+            const result = pulp.wait(probe) catch pulp.exit(91);
+            if (result != 0) {
+                pulp.puts("runtime: FAIL VM probe\n");
+                pulp.exit(92);
+            }
+        }
+        pulp.puts("runtime: PASS repeated VM processes\n");
+    }
     loadConfig();
 
     pulp.print("  {d} service(s) configured\n\n", .{service_count});

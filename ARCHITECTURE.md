@@ -1324,6 +1324,15 @@ We use the `syscall`/`sysret` instruction pair, not `int 0x80`.
 Roughly 80 calls at Phase 8. Numbers are stable once assigned — **never reuse a
 retired number.**
 
+Implemented memory subset (2026-09-23): calls 10–12 accept anonymous private
+memory only (`addr=0`, `flags=0x22`, `fd=-1`, `off=0`). Protection is 0, 1 or 3
+(none, read, read/write); executable mappings return `-ENOTSUP`. Lengths round
+to 4096 bytes; unmap/protect require a whole owned allocation. Limits are 128
+live mappings, 64 MiB each and a 256 MiB process arena. Invalid arguments return
+`-EINVAL`, exhaustion `-ENOMEM`. Pages and empty page tables are reclaimed on
+unmap; process exit releases these mappings. Other table entries remain design
+targets where they do not appear in `kernel/syscall/syscall.zig`.
+
 | #  | Name | Signature | Phase |
 |----|------|-----------|-------|
 | | **── Process ──** | | |
