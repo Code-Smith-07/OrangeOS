@@ -72,9 +72,9 @@ userland/libs/typography/typography.zig.
    real-site tests, sandbox/crash containment, sustained tab open/close stress
    and update policy. Media/DRM limitations must be explicit.
 
-Current launchers still default to 3 GiB / two vCPUs. The new browser plan
-authorizes a 4 GiB total-guest qualification profile; it is not yet a launcher
-change or a measured browser result. Memory ceilings, background
+Current launchers still default to 3 GiB / two vCPUs. Set
+`ORANGE_VM_PROFILE=browser` for the implemented 4 GiB / two-vCPU test profile.
+This is guest capacity, not a measured browser result. Memory ceilings, background
 tab suspension, lazy startup, bounded caches and minimal browser chrome are
 ways to control overhead; there is no honest fixed RAM promise for arbitrary
 modern websites. No host-browser streaming, TLS-stripping proxy or hidden

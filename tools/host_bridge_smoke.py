@@ -15,11 +15,13 @@ import subprocess
 import tempfile
 import time
 from desktop_smoke import Guest
+from vm_profile import resolve
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def run():
+    profile = resolve()
     output = pathlib.Path(tempfile.mkdtemp(prefix="orange-host-", dir="/tmp"))
     token = output / "key"
     secret = secrets.token_hex(32)
@@ -68,7 +70,7 @@ def run():
     try:
         with (output / "qemu.log").open("wb") as qlog:
             guest = subprocess.Popen([
-                "qemu-system-x86_64", "-M", "q35", "-m", "3G", "-smp", "2",
+                "qemu-system-x86_64", "-M", "q35", *profile.qemu_args(),
                 "-cdrom", str(ROOT / "build/orange.iso"), "-boot", "d",
                 "-drive", f"id=disk0,file={ROOT / 'build/disk.img'},format=raw,if=none,snapshot=on",
                 "-device", "ahci,id=ahci", "-device", "ide-hd,drive=disk0,bus=ahci.0",

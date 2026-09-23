@@ -3,6 +3,7 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+. ./scripts/vm-profile.sh
 
 FW=/opt/homebrew/share/qemu/edk2-x86_64-code.fd
 VARS_TEMPLATE=/opt/homebrew/share/qemu/edk2-i386-vars.fd
@@ -15,7 +16,7 @@ VARS_TEMPLATE=/opt/homebrew/share/qemu/edk2-i386-vars.fd
 cp "$VARS_TEMPLATE" build/uefi-vars.fd
 
 exec qemu-system-x86_64 \
-    -M q35 -m 512M -smp 4 \
+    -M q35 -m "$ORANGE_VM_RAM" -smp "$ORANGE_VM_CPUS" \
     -drive if=pflash,format=raw,unit=0,readonly=on,file="$FW" \
     -drive if=pflash,format=raw,unit=1,file=build/uefi-vars.fd \
     -drive id=usb0,file=build/orange-usb.img,format=raw,if=none \

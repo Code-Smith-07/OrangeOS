@@ -3,7 +3,6 @@
 
 Build: zig build -Dmm-test -Druntime-test -Ddesktop-profile; scripts/mkdisk.sh
 """
-import os
 import re
 from desktop_smoke import Guest
 
@@ -35,7 +34,7 @@ def main():
         combined = 0
         for mask in masks:
             combined |= mask
-        cores = int(os.environ.get("ORANGE_VM_CPUS", "2"))
+        cores = guest.profile.cpus
         if combined.bit_count() < min(cores, 2):
             raise AssertionError(f"SIMD probes did not cover both virtual CPUs: {masks}")
         if cores > 1:

@@ -161,9 +161,17 @@ freestanding C/Zig floating-point calls, callbacks and blocking syscalls.
 The modern browser engine, HTTPS and remaining runtime work are still tracked
 in the [browser runtime ledger](docs/design/008-browser.md). The new
 [native Chromium browser architecture](docs/design/011-native-chromium-browser.md)
-defines a proposed 4 GiB profile, graphics/media integration, essential-site
+defines the 4 GiB profile, graphics/media integration, essential-site
 tests and hardware-dependent 4K/8K qualification. No browser engine or smooth
 video-playback capability is installed or certified yet.
+
+**Browser Phase 1 preparation.** `ORANGE_VM_PROFILE=browser` now selects
+4096 MiB / two vCPUs across the preview, test and run launchers. The default
+desktop remains 3072 MiB / two vCPUs. Headless tests query QEMU to verify the
+actual memory/CPU configuration. The read-only build preflight checks space,
+APFS, a whitespace-free build path, Xcode/SDK and build tools; it records GPU
+limitations without treating an advertised device as qualified acceleration.
+See the [Phase 1 implementation ledger](docs/design/011-native-chromium-browser.md#111-phase-1a-resource-profiles-and-preflight).
 
 **Input responsiveness.** Relative pointer travel is independent of Retina
 scaling, sleeping input consumers wake promptly, and unchanged menu/dock glass
@@ -261,6 +269,9 @@ Then fetch the bootloader, create a disk, and build:
 |---------|--------------|
 | `zig build` | Compile and assemble `build/orange.iso` |
 | `./scripts/run-desktop.sh` | Run the built desktop; full screen with one guest cursor on macOS |
+| `./scripts/run-browser-profile.sh` | Full-screen existing desktop with the 4 GiB browser capacity profile; not a browser engine |
+| `ORANGE_VM_PROFILE=browser zig build run` | Boot the 4 GiB profile through the normal build target |
+| `ORANGE_VM_PROFILE=browser python3 tools/browser_preflight.py` | Read-only Chromium reference-build and QEMU capability checks; exit 2 lists missing prerequisites |
 | `python3 tools/desktop_smoke.py` | Headless QEMU desktop interaction checks and screenshots |
 | `zig build run` | Boot in QEMU with serial on stdio |
 | `zig build debug` | Boot halted, GDB stub on `:1234` |

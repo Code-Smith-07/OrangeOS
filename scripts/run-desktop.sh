@@ -3,6 +3,7 @@
 # hide the host cursor: Peel draws the guest cursor itself.
 set -eu
 cd "$(dirname "$0")/.."
+. ./scripts/vm-profile.sh
 if [ ! -f build/orange.iso ] || [ ! -f build/disk.img ]; then
     echo "Build first: zig build && ./scripts/mkdisk.sh" >&2
     exit 1

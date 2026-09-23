@@ -1886,8 +1886,9 @@ assistance**, per our earlier estimate of roughly 2.5× solo-unassisted speed.
 supported by implemented drivers. See the
 [native Chromium architecture](docs/design/011-native-chromium-browser.md)
 for memory accounting, performance gates and conditional 4K/8K media tiers.
-This is an additional planned profile, not a change to the launchers or the
-historical measurements below. The current desktop default remains 3 GiB;
+An explicit `ORANGE_VM_PROFILE=browser` launch/test profile now selects
+4096 MiB and two CPUs; the historical measurements below remain unchanged.
+The current desktop default remains 3 GiB;
 increasing memory alone does not enable GPU acceleration or video decoding.
 
 The owner has authorized a feature-rich desktop to use **up to 3 GiB RAM
@@ -1904,10 +1905,14 @@ renderer is CPU-based, and no GPU VRAM budget is enforced yet. Shared GPU
 buffers count toward system RAM; dedicated VRAM must be measured separately
 when a driver exists. No GPU has been passed through to the guest.
 
-`run-desktop.sh`, the desktop smoke test, and the budget harness default to
-3 GiB / 2 vCPUs; `zig build run` uses the same baseline. Shell launchers accept
-`ORANGE_VM_RAM` and `ORANGE_VM_CPUS`. `ORANGE_RAM_BUDGET_MIB` adjusts the checked
-RAM ceiling (default 3072) for a documented larger profile. Allocated guest
+Desktop/UEFI launchers, the companion preview, smoke tests, the budget harness
+and Zig run/debug/trace targets share `tools/vm_profile.py`. They default to
+3 GiB / 2 vCPUs; `ORANGE_VM_PROFILE=browser` selects 4 GiB / 2 vCPUs.
+`ORANGE_VM_RAM` (integer MiB or M/G suffix) and `ORANGE_VM_CPUS` override capacity.
+`ORANGE_RAM_BUDGET_MIB` adjusts the checked RAM ceiling (3072 for desktop, 4096
+for browser). Increasing capacity alone does not relax that ceiling. A budget
+above capacity is rejected; low-memory tests must lower both explicitly.
+Allocated guest
 RAM is capacity, not a target to fill; the idle measurement is not a peak-use
 stress test or a runtime memory quota.
 

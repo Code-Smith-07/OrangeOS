@@ -12,11 +12,13 @@ import shutil
 import subprocess
 import tempfile
 import time
+from vm_profile import resolve
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def main():
+    profile = resolve()
     preview = ROOT / "build/OrangeOS Preview.app/Contents/MacOS/orange-qemu"
     if not preview.exists():
         subprocess.run(["sh", str(ROOT / "host/macos/bundle-preview.sh")], check=True)
@@ -42,7 +44,7 @@ def main():
         channel = output / "agent.sock"
         with (output / "qemu.log").open("wb") as log:
             guest = subprocess.Popen([
-                str(preview), "-L", str(firmware), "-M", "q35", "-m", "3G", "-smp", "2",
+                str(preview), "-L", str(firmware), "-M", "q35", *profile.qemu_args(),
                 "-cdrom", str(ROOT / "build/orange.iso"), "-boot", "d",
                 "-drive", f"id=disk0,file={ROOT / 'build/disk.img'},format=raw,if=none,snapshot=on",
                 "-device", "ahci,id=ahci", "-device", "ide-hd,drive=disk0,bus=ahci.0",
@@ -62,6 +64,7 @@ def main():
                 "--socket", str(channel), "--token-file", str(token), "--controls"],
                 stdout=log, stderr=subprocess.STDOUT)
         children.append(host)
+        print(f"Preview profile: {profile}", flush=True)
         print(f"Preview evidence: {output}; QEMU PID {guest.pid}", flush=True)
         disconnect_reported = False
         while guest.poll() is None:

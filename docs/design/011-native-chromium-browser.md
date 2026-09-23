@@ -1,6 +1,6 @@
 # OrangeOS native Chromium browser architecture
 
-Status: **proposed architecture; no browser engine is installed or qualified**.
+Status: **Phase 1 preparation in progress; no browser engine is installed or qualified**.
 Created: 2026-09-23. Owner requirement: a smooth, full-featured browser running
 entirely inside OrangeOS, within a 4 GiB desktop profile, with excellent video
 playback and hardware-dependent 8K support.
@@ -77,7 +77,7 @@ Baseline checked against the repository on 2026-09-23:
 | Graphics | CPU framebuffer and Peel compositor | Chromium Ozone adapter; atomic buffer ownership; presentation feedback; accelerated device/backend |
 | Audio | HDA tone/stop/position API in `kernel/drivers/audio/hda.zig` | Continuous PCM service, mixer, timing, underrun recovery and browser audio adapter |
 | Video | No qualified browser decoder path | Software codec integration, sandboxed hardware decode, shared video surfaces and A/V synchronization |
-| Preview | x86-64 QEMU, 3 GiB/2 vCPUs, Cocoa fullscreen in `tools/host_bridge_preview.py` | Explicit browser profile, GPU/device capability probe, reproducible media test harness |
+| Preview | x86-64 QEMU, default 3 GiB/2 vCPUs; explicit 4 GiB browser profile; Cocoa fullscreen | Qualified GPU/device backend and reproducible media test harness |
 
 The current 32 MiB root image is not a browser installation volume. Its layout,
 installer and persistent storage must be expanded deliberately, preserving user
@@ -119,9 +119,9 @@ thresholds with hysteresis and measured recovery times. Quotas, not voluntary
 JavaScript cooperation, must contain runaway renderers. Prefer terminating an
 offending renderer with a recoverable tab error to wedging the desktop.
 
-The documentation authorizes this browser profile but does **not** change the
-current launchers' 3 GiB defaults. Phase 1 will add an explicit 4 GiB launch/test
-profile, budget settings and larger disk image as reviewed implementation work.
+The explicit 4 GiB launch/test profile is implemented without changing the
+desktop's 3 GiB default. See section 11.1 for commands and qualification.
+A larger browser installation disk and persistent profile storage remain pending.
 
 ### 4.2 Separate correctness from performance qualification
 
@@ -362,8 +362,9 @@ GPU and power/thermal information where available. No invented benchmark numbers
 
 ## 11. Ordered implementation phases and exit gates
 
-All phases below are **planned**, except that some Phase 2 groundwork is already
-recorded in [008-browser.md](008-browser.md). Independent investigations may
+Phase 1 is **in progress**, with the resource-profile/preflight slice below
+implemented. Some Phase 2 groundwork is already recorded in
+[008-browser.md](008-browser.md); no full phase exit gate has passed. Independent investigations may
 overlap, but a later gate cannot waive an earlier security/correctness blocker.
 
 | Phase | Deliverable | Exit gate |
@@ -384,6 +385,87 @@ work. Each phase produces commands, logs, screenshots where relevant, measuremen
 known limitations and a local commit. Store sanitized durable evidence, not only
 temporary-directory paths. Keep real-world media qualification separate from
 mock backend tests and from a successful compilation.
+
+### 11.1 Phase 1a: resource profiles and preflight
+
+Implemented on 2026-09-23:
+
+- One validated resource resolver for Python/shell launchers and Zig's
+  run/debug/trace targets: desktop = 3072 MiB / 2 CPUs; browser = 4096 MiB / 2 CPUs.
+  The UEFI launcher previously used 512 MiB / 4 CPUs and now uses the same
+  explicit profiles. Set all three overrides for a deliberate low-memory run:
+  `ORANGE_VM_RAM=512M ORANGE_VM_CPUS=4 ORANGE_RAM_BUDGET_MIB=512`.
+- Capacity overrides do not silently raise the selected memory budget. Invalid
+  profiles, noninteger capacities, more than 32 CPUs and budgets above capacity
+  fail before launching a VM. This is launch validation, not runtime quota enforcement.
+- Headless guest tests confirm actual memory and CPU counts with QMP and save
+  `vm-profile.json` beside serial logs and screenshots.
+- `tools/browser_preflight.py` is read-only unless asked to create a new JSON
+  report; it never fetches Chromium or changes the machine. It records host
+  tools, build-volume free space/filesystem and advertised QEMU devices.
+  Insufficient space, an unverified/non-APFS volume, spaces in the checkout path
+  or missing tools fail the preliminary build gate. Passing is not a build result.
+
+Local host audit: arm64 Mac with 16 GiB RAM, Xcode 26.3 (17C529), macOS SDK
+26.2 and QEMU 11.1.0. The external APFS project volume has about 268 GiB free
+at audit time, above our 100 GiB planning reserve. QEMU advertises only TCG
+for x86 execution and no accelerated virtio-GPU variant. This is not guest
+GPU/video qualification. `depot_tools` remains missing from the build environment.
+
+Reproduce the verified profile/runtime and desktop checks:
+
+```sh
+python3 -m unittest discover -s tools -p 'test_*.py'
+python3 tools/budget/test_check.py
+ORANGE_VM_PROFILE=browser python3 tools/budget/test_check.py
+zig build -Dmm-test -Druntime-test -Ddesktop-profile
+./scripts/mkdisk.sh
+ORANGE_VM_PROFILE=browser python3 tools/runtime_smoke.py
+zig build -Ddesktop-profile
+./scripts/mkdisk.sh
+ORANGE_VM_PROFILE=browser python3 tools/desktop_smoke.py
+python3 tools/desktop_smoke.py
+ORANGE_VM_PROFILE=browser python3 tools/browser_preflight.py
+```
+
+Qualification record (2026-09-23):
+
+| Check | Observed result |
+|---|---|
+| Profile/preflight unit tests | 20 passed |
+| Budget-checker unit tests | 4 passed under each of desktop and browser profiles |
+| 4 GiB native runtime | VM conservation, 4 fault types, 12 SIMD probes and 4 C/Zig ABI probes passed; each SIMD probe exercised both CPUs |
+| Desktop interaction suite | Passed at both 3072 MiB / 2 CPUs and 4096 MiB / 2 CPUs, independently confirmed through QMP |
+| Emitted-code audit | Soft-float kernel and native SSE2 apps passed; no YMM/ZMM register use |
+| 4 GiB UEFI/NVMe budget boot | All hard limits passed; 159.38 MiB desktop idle memory, 0.42% idle CPU in this run |
+| 3 GiB UEFI/NVMe budget regression | All hard limits passed; 159.38 MiB desktop idle memory, 0.41% idle CPU in this run |
+
+The resource run exposed a stale benchmark call site left over from the FPU
+context-switch API change. The benchmark now supplies separate aligned FPU
+contexts, so its measured 298 ns switch includes eager save/restore. Historical
+22 ns pre-SIMD measurements are not comparable. The 2135 ms browser-profile
+and 2141 ms desktop-profile boot times exceeded the 2000 ms advisory target
+and are reported rather than hidden. None of these
+idle or microbenchmark results qualifies browser performance.
+
+Reproduce the real budget boot separately with
+`ORANGE_VM_PROFILE=browser ./scripts/budget.sh`; it rebuilds the development
+disk and USB image, so do not run it alongside a VM using those images.
+
+The last command currently exits 2 for missing `depot_tools`; that is an
+expected prerequisite failure, not a successful reference build. Runtime and
+desktop qualification use disposable guest disk writes. For evidence on the
+external drive, create `build/tmp` and set `TMPDIR` to its absolute path before
+running the Python tests (keep Unix socket paths short).
+
+Next Phase 1 gates remain: pinned source/toolchain and dependency map, embedding
+decision, upstream reference build, guest installation storage, and a recorded
+native-port feasibility decision. No Chromium binary, YouTube playback or
+browser sandbox is installed by this profile work.
+
+Build-layout checks follow the upstream [macOS build instructions](https://chromium.googlesource.com/chromium/src/+/main/docs/mac_build_instructions.md)
+(checked 2026-09-23). The 100 GiB threshold is our planning reserve, not a quoted
+macOS minimum. Pin-specific SDK/toolchain compatibility still needs a build.
 
 ## 12. Security updates and distribution
 

@@ -16,6 +16,7 @@ const heap = @import("../mm/heap.zig");
 const sched = @import("../sched/sched.zig");
 const tsc = @import("../time/tsc.zig");
 const context = @import("../arch/x86_64/context.zig");
+const fpu = @import("../arch/x86_64/fpu.zig");
 const percpu = @import("../arch/x86_64/percpu.zig");
 const io = @import("../arch/x86_64/io.zig");
 
@@ -87,9 +88,11 @@ pub fn reportBoot() void {
 /// control straight back, so what gets timed is the switch and not the work.
 var bench_main_rsp: u64 = 0;
 var bench_partner_rsp: u64 = 0;
+var bench_main_fpu: fpu.State = .{};
+var bench_partner_fpu: fpu.State = .{};
 
 fn benchPartner() callconv(.c) noreturn {
-    while (true) context.contextSwitch(&bench_partner_rsp, bench_main_rsp);
+    while (true) context.contextSwitch(&bench_partner_rsp, bench_main_rsp, &bench_partner_fpu, &bench_main_fpu);
 }
 
 /// Cost of one context switch, in nanoseconds.
@@ -116,6 +119,9 @@ pub fn benchContextSwitch() void {
 
     const stack_top = pmm.physToVirt(phys) + pages * pmm.PAGE_SIZE;
     bench_partner_rsp = context.prepareStack(stack_top, @intFromPtr(&benchPartner));
+    // The first switch captures the caller's live state; the private partner
+    // starts clean. Include the same eager FPU work as a real scheduler switch.
+    bench_partner_fpu = .{};
 
     // Interrupts off for the duration. A timer tick landing mid-measurement
     // would be counted as switch cost, and preemption would hand the core to
@@ -126,11 +132,11 @@ pub fn benchContextSwitch() void {
 
     // Warm up: the first switches fault in cold cache lines.
     var w: usize = 0;
-    while (w < 1_000) : (w += 1) context.contextSwitch(&bench_main_rsp, bench_partner_rsp);
+    while (w < 1_000) : (w += 1) context.contextSwitch(&bench_main_rsp, bench_partner_rsp, &bench_main_fpu, &bench_partner_fpu);
 
     const t0 = tsc.readSerialized();
     var i: usize = 0;
-    while (i < rounds) : (i += 1) context.contextSwitch(&bench_main_rsp, bench_partner_rsp);
+    while (i < rounds) : (i += 1) context.contextSwitch(&bench_main_rsp, bench_partner_rsp, &bench_main_fpu, &bench_partner_fpu);
     const ticks = tsc.readSerialized() - t0;
 
     // Two switches per iteration: out to the partner and back again.

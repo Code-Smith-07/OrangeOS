@@ -8,14 +8,15 @@ Exit status is 1 if the configured RAM ceiling is exceeded or required data
 is missing. Kernel size, idle CPU, and timing remain advisory goals. Larger
 profiles are allowed with documented justification (ARCHITECTURE.md 16.2).
 """
-import os
 import re
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from vm_profile import resolve
 
 MB = 1024 * 1024
-RAM_BUDGET_MIB = int(os.environ.get("ORANGE_RAM_BUDGET_MIB", "3072"))
-if RAM_BUDGET_MIB <= 0:
-    raise ValueError("ORANGE_RAM_BUDGET_MIB must be positive")
+RAM_BUDGET_MIB = resolve().ram_budget_mib
 
 # key, label, limit, unit, hard
 CHECKS = [

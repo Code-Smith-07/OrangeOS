@@ -14,6 +14,7 @@
 #           Future gates require an explicit resource-policy revision.
 set -e
 cd "$(dirname "$0")/.."
+. ./scripts/vm-profile.sh
 
 LOG=build/budget-serial.log
 TIMEOUT=${BUDGET_TIMEOUT:-90}

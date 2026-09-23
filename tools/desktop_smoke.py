@@ -14,17 +14,19 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import asdict
+from vm_profile import resolve
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class Guest:
     def __init__(self, extra_args=(), disk_path=None):
+        self.profile = resolve()
         self.output = pathlib.Path(tempfile.mkdtemp(prefix="orange-daybreak-"))
         self.serial = self.output / "serial.log"
         self.process = subprocess.Popen([
-            "qemu-system-x86_64", "-M", "q35", "-m", os.environ.get("ORANGE_VM_RAM","3G"),
-            "-smp", os.environ.get("ORANGE_VM_CPUS","2"),
+            "qemu-system-x86_64", "-M", "q35", *self.profile.qemu_args(),
             "-cdrom", str(ROOT / "build/orange.iso"), "-boot", "d",
             "-drive", f"id=disk0,file={disk_path or ROOT / 'build/disk.img'},format=raw,if=none,snapshot=on",
             "-device", "ahci,id=ahci", "-device", "ide-hd,drive=disk0,bus=ahci.0",
@@ -49,6 +51,18 @@ class Guest:
         self.stream = self.sock.makefile("rwb", buffering=0)
         self.stream.readline()
         self.command("qmp_capabilities")
+        # Confirm actual machine resources; environment variables alone are
+        # not evidence that a 4 GiB guest was started.
+        memory = self.command("query-memory-size-summary")
+        cpus = self.command("query-cpus-fast")
+        if memory["base-memory"] != self.profile.ram_mib * 1024**2 or len(cpus) != self.profile.cpus:
+            self.close()
+            raise AssertionError(f"QEMU resources do not match {self.profile}: {memory}, {len(cpus)} CPUs")
+        (self.output / "vm-profile.json").write_text(json.dumps({
+            "requested": asdict(self.profile), "qmp_memory": memory,
+            "qmp_cpu_count": len(cpus),
+        }, indent=2) + "\n")
+        print(f"PASS QEMU profile {self.profile.name}: {self.profile.ram_mib} MiB / {len(cpus)} CPUs", flush=True)
         self.x, self.y = 640, 400
         self.scale = 1
 

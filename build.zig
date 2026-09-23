@@ -294,13 +294,10 @@ pub fn build(b: *std.Build) void {
     // A SATA disk is attached on every run target. scripts/mkdisk.sh creates
     // it; AHCI simply reports no disks if the file is missing.
     const qemu_base = [_][]const u8{
-        "qemu-system-x86_64",
+        "sh",
+        "scripts/run-qemu.sh",
         "-M",
         "q35",
-        "-m",
-        "3G",
-        "-smp",
-        "2",
         "-cdrom",
         "build/orange.iso",
         "-boot",
