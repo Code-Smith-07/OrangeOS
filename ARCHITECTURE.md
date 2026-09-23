@@ -1365,10 +1365,11 @@ targets where they do not appear in `kernel/syscall/syscall.zig`.
 | 31 | `rmdir` | `(path) → !void` | P5 |
 | 32 | `unlink` | `(path) → !void` | P5 |
 | 33 | `rename` | `(old, new) → !void` | P5 |
-| 34 | `readdir` | `(fd, *dirent, n) → count` | P5 |
+| 34 | `readdir` | `(path_ptr, path_len, out, max) → count` (current read-only ABI; max 32 per call) | P5 |
 | 35 | `chdir` | `(path) → !void` | P5 |
 | 36 | `getcwd` | `(buf, len) → !usize` | P5 |
 | 37 | `mount` | `(src, dst, fstype, flags) → !void` | P5 |
+| 38 | `readdir_page` | `(path_ptr, path_len, out, max, skip) → count` (implemented; ordinal continuation, max 32 per call) | P5 |
 | | **── Threads ──** | | |
 | 40 | `thread_create` | `(entry, arg, stack) → tid` | P4 |
 | 41 | `thread_exit` | `(status) noreturn` | P4 |

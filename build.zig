@@ -162,6 +162,7 @@ pub fn build(b: *std.Build) void {
     files_mod.addImport("ui", ui_mod);
     files_mod.addImport("pulp", pulp_mod);
     files_mod.addImport("libpeel", libpeel_mod);
+    files_mod.addImport("keymap", b.createModule(.{ .root_source_file = b.path("userland/apps/squeeze/keymap.zig"), .target = target, .optimize = user_optimize }));
 
     const host_protocol_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/host-services/protocol.zig"), .target = target, .optimize = user_optimize });
     const host_model_mod = b.createModule(.{ .root_source_file = b.path("userland/apps/hardware/model.zig"), .target = target, .optimize = user_optimize });

@@ -66,6 +66,7 @@ pub const Nr = enum(u64) {
     close = 21,
     read = 22,
     readdir = 34,
+    readdir_page = 38,
     port_create = 50,
     port_connect = 51,
     port_send = 52,
@@ -136,7 +137,8 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .sleep_ms => sysSleepMs(frame.rdi),
         // Fourth argument is in r10, not rcx: the syscall instruction
         // clobbers rcx with the return address.
-        .readdir => sysReaddir(frame.rdi, frame.rsi, frame.rdx, frame.r10),
+        .readdir => sysReaddir(frame.rdi, frame.rsi, frame.rdx, frame.r10, 0),
+        .readdir_page => sysReaddir(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
         .port_create => sysPortCreate(frame.rdi, frame.rsi),
         .port_connect => sysPortConnect(frame.rdi, frame.rsi),
         .port_send => sysPortSend(frame.rdi, frame.rsi, frame.rdx, frame.r10),
@@ -460,15 +462,21 @@ const UserDirEntry = extern struct {
 };
 
 const ReaddirCtx = struct {
-    entries: [32]UserDirEntry = undefined,
+    // All bytes cross the privilege boundary, including unused name tails.
+    entries: [32]UserDirEntry = std.mem.zeroes([32]UserDirEntry),
     count: usize = 0,
     max: usize = 0,
+    skip: u64 = 0,
 };
 
 fn collectEntry(ctx_ptr: *anyopaque, name: []const u8, ino: u32, dtype: u8) bool {
     const ctx: *ReaddirCtx = @ptrCast(@alignCast(ctx_ptr));
     if (ctx.count >= ctx.max or ctx.count >= ctx.entries.len) return false;
     if (name.len > 128) return true;
+    if (ctx.skip > 0) {
+        ctx.skip -= 1;
+        return true;
+    }
 
     var e = &ctx.entries[ctx.count];
     e.inode = ino;
@@ -479,7 +487,7 @@ fn collectEntry(ctx_ptr: *anyopaque, name: []const u8, ino: u32, dtype: u8) bool
     return true;
 }
 
-fn sysReaddir(path_ptr: u64, path_len: u64, out: u64, max: u64) i64 {
+fn sysReaddir(path_ptr: u64, path_len: u64, out: u64, max: u64, skip: u64) i64 {
     if (path_len == 0 or path_len > vfs.MAX_PATH) return ENAMETOOLONG;
     if (max == 0) return 0;
 
@@ -487,7 +495,7 @@ fn sysReaddir(path_ptr: u64, path_len: u64, out: u64, max: u64) i64 {
     var path: [vfs.MAX_PATH]u8 = undefined;
     validate.copyFromUser(pml4, &path, path_ptr, @intCast(path_len)) catch return EFAULT;
 
-    var ctx = ReaddirCtx{ .max = @min(max, 32) };
+    var ctx = ReaddirCtx{ .max = @min(max, 32), .skip = skip };
     vfs.iterateDir(path[0..@intCast(path_len)], &ctx, collectEntry) catch |e| {
         return vfsErrno(e);
     };

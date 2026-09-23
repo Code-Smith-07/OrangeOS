@@ -795,12 +795,13 @@ eviction/tab suspension or a visible resource limit, never an unexplained hang.
 | Host display adapter | DisplayServices compatibility get/set qualified on this built-in panel; native slider and independent grant implemented | Real same-level setter/readback verified; fixture validates guest control/denial/minimum. Private API may change; manual physical-slider acceptance and external displays remain (12a). |
 | Host audio / power | CoreAudio volume/mute and IOPowerSources battery/AC readback verified; native sound RPC and revocable menu grant implemented | `tools/host_bridge_smoke.py` for real readback; `tools/sound_bridge_smoke.py` for guest mutations against fixture. Menu interaction/physical slider acceptance, guest PCM and media remain open. |
 | Welcome blank-click fix | Verified locally | `9835784`, `tools/welcome_smoke.py` |
-| Whole-desktop flicker audit | Initial six-app CLI pass complete; expanded stress open | About/Files/Trash 8 redraws per 4 blank clicks; Files 1 transient sample |
+| Whole-desktop flicker audit | Later six-app baseline corrected; expanded stress open | `tools/app_redraw_audit.py`: no client redraws on blank clicks for instrumented apps; 144 sampled frames stable in the refined desktop baseline. Sampling does not certify scanout or every app state. |
 | Calendar redraw correction | Eight-window warm performance gate passed | `tools/calendar_perf.py --stress`: 146 frames, 41 ms p95 / 45 ms max, navigation max 43 ms, live Clock behind glass verified; cold open 109 ms separate; shared atomic publication still open |
 | Concept theme artwork | Three native image-backed wallpapers verified locally | `c55a78d`; `docs/screenshots/theme-{coastal,citrus,aurora}.png`; session-only selection, full-scene TCG theme repaint remains slow |
 | Concept Files grid | Real-directory 4×2 grid and five original folder sprites; verified locally | `docs/screenshots/theme-files-grid.png`; `tools/desktop_smoke.py`, `tools/app_redraw_audit.py`; read-only, not fictional Home counts |
 | Browser runtime: anonymous VM | Implemented bounded owned mappings, protections and release | `tools/runtime_smoke.py`; see [browser runtime milestone](008-browser.md). Remaining runtime/engine gates are open. |
 | Browser runtime: app CPU faults | Ring-3 faults terminate the app; private image/stack pages reclaimed | Four faulting programs checked by `tools/runtime_smoke.py`; borrowed-frame conservation check. IPC/socket/file/task lifecycle and sandbox gates remain open. |
+| Files search and navigation | Implemented; bounded read-only functionality | Folder-local ASCII case-insensitive search; keyboard selection/open; paged directory syscall 38; 256-entry UI limit with notice; 64 KiB paged text preview. `tools/files_smoke.py` uses a disposable 41-entry fixture directory and actual guest reads, not mocked results. |
 | Aurora Phase 1 | Planned beyond the targeted Welcome fix | Shared publication, all-app audit and performance gates |
 | Aurora Phases 2–16 | Planned beyond the partial bridge milestones above | Update each only with tests and local commit evidence |
 
@@ -826,6 +827,57 @@ engine port complexity/maintenance, device documentation/firmware licensing,
 memory reclamation, sandbox correctness and host GPU limitations. Each spike
 ends with evidence, a bounded next milestone or a documented go/no-go decision.
 Do not silently substitute a text fetcher or a hosted browser if a port is blocked.
+
+### Feature reality audit — 2026-09-23
+
+This is a source-backed inventory, not a declaration that every visible control
+is fake or that every planned app exists. Do not label partial features complete
+because a window opens. Each phase ends with verification, a descriptive local
+commit, and a report of its hash. Push only when requested separately.
+
+| Surface | Actual implementation today | Remaining backend / acceptance gate |
+|---|---|---|
+| Desktop, dock, window controls | Native compositor; close/minimize/restore/zoom, app switching and three real wallpapers | Durable preferences, keyboard accessibility and broader performance stress; theme choice currently resets at reboot |
+| Files | Actual CitrusFS browsing, folder-local name filtering, keyboard selection and paged ASCII previews | Writable **user-data** storage; safe create/write/rename with per-process descriptors; crash/reboot durability; no changes to read-only `/bin` privilege assumptions |
+| Trash | Actual `/Trash` directory inspection, explicitly labelled read-only | Move-to-Trash metadata, collision-safe names, restore and explicit permanent deletion; test failures and reboot recovery before enabling buttons |
+| Browser | **No browser app or modern engine yet.** CLI HTTP fetch and anonymous-memory runtime groundwork exist | Finish process/IPC/fd/socket lifecycle, runtime/engine compatibility and HTTPS/certificate validation; native engine integration and real-site input/layout tests. Follow `008-browser.md`, not a decorative address bar |
+| Wi-Fi | Live Mac radio power and permission/status observations over the companion | Scoped grant, scan/SSID permission flow, association/authentication, cancellation, disconnect/reconnect; verify actual Mac state and protect the active host connection |
+| Bluetooth | Live Mac adapter status/permission observations | Scoped discovery, pairing/connection/profile APIs, cancellation and permission-denial tests; verify with real peripherals. Radio power alone is not device support |
+| Sound | Real CoreAudio readback and consent-gated output-volume RPC | Physical interactive acceptance; guest PCM playback, routing and media lifecycle remain separate work |
+| Brightness | Real built-in-display readback and consent-gated setter via compatibility API | Physical interactive acceptance, reconnect/device changes, unsupported/external-display behavior; private API is not a stable universal driver |
+| Battery/date/time | Host battery/AC snapshots and wall clock/timezone, with stale/unknown states | Durable timezone/user preferences; distinguish guest time from host state when companion is unavailable |
+| Calendar | Real wall-clock month grid, Today and month navigation | Event/reminder storage, editing, notifications and optional service sync; no invented events |
+| Welcome/About | Native navigation and static build/about text | Generated version/build provenance and actual runtime diagnostics; not an app store or a settings backend |
+| Editor, Mail, Photos, Music | Architectural ideas, **not implemented apps** | Storage, codecs/media, network/account/security and app lifecycle prerequisites; no launchers presented as working apps |
+
+Implementation order after this Files phase:
+
+1. **Safe writable user-data foundation.** First fix file-descriptor ownership,
+   task/IPC/socket cleanup and resource exhaustion. Keep privileged system paths
+   immutable. Introduce a separate writable data mount with bounded operations,
+   failure handling and crash recovery. Test real file contents after reboot.
+2. **Real file actions and preferences.** New folders, save/rename, recoverable
+   Trash/restore, then persistent themes and an editor/notes app. UI success
+   must follow successful backend completion; failures remain visible.
+3. **Browser runtime and engine.** Execute the existing native-browser plan in
+   independently testable milestones. A host-rendered alternative would need
+   an explicit architectural decision; do not silently substitute one.
+4. **Connection workflows.** Add Wi-Fi and Bluetooth grant/revoke, discovery
+   and connection operations to the existing bridge; expose host effects and
+   disruptive changes clearly. Hardware-dependent acceptance remains pending
+   until tested on this Mac and available peripherals.
+5. **Desktop applications and polish.** Persisted calendar events, search/index,
+   notifications and media after their services exist. Maintain blank-click and
+   hover stability, rounded clipping and bounded redraws throughout.
+
+Files-phase limits: search matches names in the loaded folder only (16 ASCII
+query bytes), not recursive file contents. The UI accepts at most 256 raw
+directory records and announces truncation. The paged syscall has no total
+32-entry limit, but returns at most 32 per call; ordinal continuation is valid
+for the current immutable mount, not a future concurrent-writer snapshot.
+Text preview is read-only, ASCII-only, 55-column monospace wrapped, 12 rows per page and
+capped at 64 KiB with an explicit notice. Search and preview are real reads, not
+sample documents; fixture files exist only on disposable test disks.
 
 ## 9. Primary engineering references
 

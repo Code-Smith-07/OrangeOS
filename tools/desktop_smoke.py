@@ -19,14 +19,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class Guest:
-    def __init__(self, extra_args=()):
+    def __init__(self, extra_args=(), disk_path=None):
         self.output = pathlib.Path(tempfile.mkdtemp(prefix="orange-daybreak-"))
         self.serial = self.output / "serial.log"
         self.process = subprocess.Popen([
             "qemu-system-x86_64", "-M", "q35", "-m", os.environ.get("ORANGE_VM_RAM","3G"),
             "-smp", os.environ.get("ORANGE_VM_CPUS","2"),
             "-cdrom", str(ROOT / "build/orange.iso"), "-boot", "d",
-            "-drive", f"id=disk0,file={ROOT / 'build/disk.img'},format=raw,if=none,snapshot=on",
+            "-drive", f"id=disk0,file={disk_path or ROOT / 'build/disk.img'},format=raw,if=none,snapshot=on",
             "-device", "ahci,id=ahci", "-device", "ide-hd,drive=disk0,bus=ahci.0",
             "-netdev", "user,id=n0", "-device", "e1000,netdev=n0",
             "-serial", f"file:{self.serial}", "-display", "none",

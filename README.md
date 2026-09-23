@@ -98,10 +98,16 @@ The dock now includes **Files and Trash**, with richer shared icons and a
 redesigned Welcome hub. Original SVG app/interface icons, full-colour gradients,
 and real CPU backdrop blur now replace flat artwork and tint-only shell panels.
 Welcome, Clock, and About use rounded glass cards. Files now opens in a
-[coloured folder grid](docs/screenshots/theme-files-grid.png) with a working
+[native folder grid](docs/screenshots/refined-files.png) with a working
 list/grid switcher; it browses real guest folders and previews text;
 Trash inspects `/Trash`. Both are currently read-only—move, restore, and
 permanent deletion are not yet supported.
+Files also has real **folder-local search** (click Search or press Ctrl+F),
+arrow/Home/End selection and Enter to open. Escape clears search; Backspace
+edits it while focused. Directory enumeration now continues beyond the former
+32-entry syscall limit (the UI explicitly caps each folder at 256 entries).
+ASCII text previews read up to 64 KiB and support Page Up/Down or footer arrows,
+with a visible truncation notice. This is not recursive content search or editing.
 The desktop now renders at **2560×1600 with a 2x backing scale**, including
 antialiased terminal text and pointer geometry. The top-right corner shows
 the **real weekday, date, and live time** from the hardware clock, using
@@ -120,6 +126,9 @@ The next programme is tracked in the
 [Aurora production desktop plan](docs/design/010-production-desktop-plan.md),
 with separate acceptance gates for UI, a native browser, services and real
 hardware controls. These phases are planned, not completed features.
+The [feature reality audit](docs/design/010-production-desktop-plan.md#feature-reality-audit--2026-09-23)
+separates working, partial and missing features, with the backend and acceptance
+checks required to make each remaining feature real.
 
 **MacBook host bridge.** The [Mac companion](host/macos/README.md) now
 exchanges authenticated capabilities, live Mac time/timezone and heartbeats with

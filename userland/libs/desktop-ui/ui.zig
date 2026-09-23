@@ -134,6 +134,11 @@ pub fn label(s: *const Surface, str: []const u8, x: i32, y: i32, scale: i32, col
     font.drawText(s, str, x, y, scale, color);
 }
 
+/// Eight-logical-pixel cells, matching Squeeze's bundled monospace atlas.
+pub fn monoLabel(s: *const Surface, str: []const u8, x: i32, y: i32, color: u32) void {
+    for (str, 0..) |ch, i| font.drawMono(s, ch, x + @as(i32, @intCast(i)) * 8, y, color);
+}
+
 test "monochrome SVG symbols preserve alpha and theme contrast" {
     const std = @import("std");
     var pixels: [128 * 128]u32 = undefined;

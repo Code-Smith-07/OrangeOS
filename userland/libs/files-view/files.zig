@@ -3,12 +3,23 @@ const std = @import("std");
 const pulp = @import("pulp");
 const libpeel = @import("libpeel");
 const ui = @import("ui");
+const model = @import("model.zig");
+const keymap = @import("keymap");
 var win: libpeel.Window = undefined;
 // Keep unfinished toolbar/sidebar/list painting off the shared client surface.
 var staging: [680 * 450 * 4]u32 = undefined;
 var path_buf: [256]u8 = undefined;
 var path_len: usize = 1;
-var entries: [32]pulp.DirEntry = undefined;
+var entries: [256]pulp.DirEntry = undefined;
+var all_entries: [256]pulp.DirEntry = undefined;
+var total: usize = 0;
+var query: [16]u8 = undefined;
+var query_len: usize = 0;
+var search_active = false;
+var selected: ?usize = null;
+var ctrl_down = false;
+var left_shift = false;
+var right_shift = false;
 var count: usize = 0;
 var listing_capped = false;
 var page: usize = 0;
@@ -16,8 +27,11 @@ var history: [16][256]u8 = undefined;
 var history_len: [16]usize = undefined;
 var history_count: usize = 0;
 var message: []const u8 = "";
-var preview: [4096]u8 = undefined;
+var preview: [65536]u8 = undefined;
 var preview_len: usize = 0;
+var preview_page: usize = 0;
+var preview_lines: usize = 0;
+var preview_capped = false;
 var preview_name: [128]u8 = undefined;
 var preview_name_len: usize = 0;
 var preview_open = false;
@@ -45,16 +59,37 @@ fn path() []const u8 {
 fn trash() bool {
     return std.mem.eql(u8, path(), "/Trash");
 }
+fn filter() void {
+    count = 0;
+    for (all_entries[0..total]) |e| {
+        if (!model.matches(e.nameSlice(), query[0..query_len])) continue;
+        entries[count] = e;
+        count += 1;
+    }
+    page = 0;
+    selected = null;
+    if (pulp.desktop_profile) pulp.print("files: filter '{s}': {d} matches\n", .{ query[0..query_len], count });
+}
 fn load() void {
     preview_open = false;
     page = 0;
+    query_len = 0;
+    search_active = false;
+    selected = null;
     message = "";
-    count = pulp.readdir(path(), &entries) catch {
-        message = "This folder could not be read.";
-        count = 0;
-        return;
-    };
-    listing_capped = count == entries.len;
+    count = 0;
+    while (count < entries.len) {
+        const n = pulp.readdirPage(path(), entries[count..], count) catch {
+            message = "This folder could not be read.";
+            count = 0;
+            total = 0;
+            return;
+        };
+        count += n;
+        if (n < 32) break;
+    }
+    var extra: [1]pulp.DirEntry = undefined;
+    listing_capped = count == entries.len and (pulp.readdirPage(path(), &extra, count) catch 1) != 0;
     var visible: usize = 0;
     for (0..count) |i| {
         const name = entries[i].nameSlice();
@@ -74,6 +109,8 @@ fn load() void {
             std.mem.swap(pulp.DirEntry, a, b);
         }
     }
+    total = count;
+    @memcpy(all_entries[0..total], entries[0..count]);
     pulp.print("files: listed {s}: {d} entries\n", .{ path(), count });
 }
 fn navigate(next: []const u8, remember: bool) void {
@@ -114,10 +151,20 @@ fn openEntry(index: usize) void {
         return;
     };
     defer pulp.close(fd);
-    preview_len = pulp.read(@intCast(fd), &preview) catch {
-        message = "This file could not be read.";
-        return;
-    };
+    preview_len = 0;
+    while (preview_len < preview.len) {
+        const n = pulp.read(@intCast(fd), preview[preview_len..@min(preview_len + 4096, preview.len)]) catch {
+            message = "This file could not be read.";
+            return;
+        };
+        if (n == 0) break;
+        preview_len += n;
+    }
+    var extra: [1]u8 = undefined;
+    preview_capped = preview_len == preview.len and (pulp.read(@intCast(fd), &extra) catch 1) != 0;
+    preview_page = 0;
+    preview_lines = model.lineCount(preview[0..preview_len]);
+    search_active = false;
     preview_open = true;
     binary = false;
     message = "";
@@ -131,7 +178,7 @@ fn openEntry(index: usize) void {
     }
     pulp.print("files: preview {s}, {d} bytes\n", .{ full, preview_len });
 }
-fn targets(out: *[18]ui.Button) []const ui.Button {
+fn targets(out: *[19]ui.Button) []const ui.Button {
     out[0] = .{ .id = 1, .rect = .{ .x = 182, .y = 16, .w = 32, .h = 28 } };
     out[1] = .{ .id = 2, .rect = .{ .x = 222, .y = 16, .w = 32, .h = 28 } };
     for (0..4) |i| out[2 + i] = .{ .id = @intCast(10 + i), .rect = .{ .x = 10, .y = 42 + @as(i32, @intCast(i)) * 34, .w = 146, .h = 28 } };
@@ -139,7 +186,8 @@ fn targets(out: *[18]ui.Button) []const ui.Button {
     out[7] = .{ .id = 21, .rect = .{ .x = 624, .y = 405, .w = 42, .h = 27 } };
     out[8] = .{ .id = 30, .rect = .{ .x = 510, .y = 16, .w = 28, .h = 28 } };
     out[9] = .{ .id = 31, .rect = .{ .x = 542, .y = 16, .w = 28, .h = 28 } };
-    var n: usize = 10;
+    out[10] = .{ .id = 32, .rect = .{ .x = 373, .y = 16, .w = 127, .h = 28 } };
+    var n: usize = 11;
     if (!preview_open) {
         for (page * ROWS..@min(count, (page + 1) * ROWS)) |i| {
             out[n] = .{ .id = @intCast(100 + i), .rect = entryRect(i) };
@@ -176,11 +224,21 @@ fn act(id: u32) bool {
         if (!preview_open and std.mem.eql(u8, next, path())) return false;
         navigate(next, true);
         return true;
+    } else if ((id == 20 or id == 21) and preview_open and !binary) {
+        if (id == 20 and preview_page > 0) {
+            preview_page -= 1;
+        } else if (id == 21 and (preview_page + 1) * 12 < preview_lines) {
+            preview_page += 1;
+        } else return false;
+        pulp.print("files: preview page {d}\n", .{preview_page + 1});
+        return true;
     } else if (id == 20 and page > 0 and !preview_open) {
         page -= 1;
+        selected = null;
         return true;
     } else if (id == 21 and (page + 1) * ROWS < count and !preview_open) {
         page += 1;
+        selected = null;
         return true;
     } else if (id == 30 or id == 31) {
         const next = id == 30;
@@ -188,11 +246,83 @@ fn act(id: u32) bool {
         grid_view = next;
         pulp.print("files: view {s}\n", .{if (grid_view) "grid" else "list"});
         return true;
+    } else if (id == 32 and !preview_open) {
+        if (search_active) return false;
+        search_active = true;
+        return true;
     } else if (id >= 100 and id - 100 < count) {
         openEntry(id - 100);
         return true;
     }
     return false;
+}
+
+fn key(code: u16, down: bool) bool {
+    if (code == keymap.CTRL) {
+        ctrl_down = down;
+        return false;
+    }
+    if (code == keymap.LSHIFT) {
+        left_shift = down;
+        return false;
+    }
+    if (code == keymap.RSHIFT) {
+        right_shift = down;
+        return false;
+    }
+    if (!down) return false;
+    if (!preview_open and ((ctrl_down and code == 0x21) or code == 0x35)) {
+        if (search_active) return false;
+        search_active = true;
+        return true;
+    }
+    if (code == keymap.ESC and !preview_open and (query_len > 0 or search_active)) {
+        query_len = 0;
+        search_active = false;
+        filter();
+        return true;
+    }
+    if (search_active) {
+        if (code == keymap.ENTER or code == 0x50) {
+            search_active = false;
+            selected = if (count > 0) 0 else null;
+            return true;
+        }
+        if (code == keymap.BACKSPACE) {
+            if (query_len == 0) return false;
+            query_len -= 1;
+        } else {
+            if (ctrl_down or code > 255 or query_len == query.len) return false;
+            const ch = keymap.translate(@intCast(code), left_shift or right_shift);
+            if (ch < 32 or ch > 126) return false;
+            query[query_len] = ch;
+            query_len += 1;
+        }
+        filter();
+        return true;
+    }
+    if (code == keymap.BACKSPACE or code == keymap.ESC) return act(1);
+    if (code == 0x49) return act(20); // Page Up
+    if (code == 0x51) return act(21); // Page Down
+    if (preview_open) {
+        if (code == 0x48) return act(20);
+        if (code == 0x50) return act(21);
+        return false;
+    }
+    if (code == keymap.ENTER and selected != null) return act(@intCast(100 + selected.?));
+    if (count == 0) return false;
+    var next = selected orelse page * ROWS;
+    const step: usize = if (grid_view and (code == 0x48 or code == 0x50)) 4 else 1;
+    if (code == 0x47) next = 0 else if (code == 0x4F) next = count - 1 else if (code == 0x48 or code == 0x4B) {
+        if (selected != null) next -|= step;
+    } else if (code == 0x50 or code == 0x4D) {
+        if (selected != null) next = @min(count - 1, next + step);
+    } else return false;
+    if (selected == next) return false;
+    selected = next;
+    page = next / ROWS;
+    if (pulp.desktop_profile) pulp.print("files: selected {s}\n", .{entries[next].nameSlice()});
+    return true;
 }
 fn paint(area: ui.Rect) void {
     var s = ui.surface(&win);
@@ -209,17 +339,22 @@ fn paint(area: ui.Rect) void {
         ui.iconTint(&s, if (i == 0) .chevron_left else .chevron_up, x + 6, 20, 20, if (enabled) 0x5C6067 else 0xBABDC2);
     }
     const basename = if (path_len == 1) "Orange OS" else path()[(std.mem.lastIndexOfScalar(u8, path(), '/') orelse 0) + 1 ..];
-    s.setClip(ui.Rect.intersect(area, .{ .x = 273, .y = 14, .w = 220, .h = 30 }));
+    s.setClip(ui.Rect.intersect(area, .{ .x = 273, .y = 14, .w = 94, .h = 30 }));
     ui.label(&s, basename, 273, 27, 1, 0x303238);
+    s.setClip(area);
+    s.rounded(.{ .x = 373, .y = 16, .w = 127, .h = 28 }, 7, if (search_active) 0xC9DDF7 else 0xE4E6EB, 255);
+    s.rounded(.{ .x = 374, .y = 17, .w = 125, .h = 26 }, 6, 0xFFFFFF, 255);
+    s.setClip(ui.Rect.intersect(area, .{ .x = 380, .y = 17, .w = 114, .h = 26 }));
+    ui.label(&s, if (query_len > 0) query[0..query_len] else if (search_active) "Type to filter..." else "Search  Ctrl+F", 380, 27, 1, if (query_len > 0) 0x303238 else 0x898B90);
     s.setClip(area);
     for ([_]u32{ 30, 31 }, 0..) |id, index| {
         const x: i32 = if (index == 0) 510 else 542;
-        const selected = (index == 0) == grid_view;
-        s.rounded(.{ .x = x, .y = 16, .w = 28, .h = 28 }, 7, if (pointer.pressed == id) 0xCEDFF5 else if (selected) 0xDEEAFB else if (pointer.hover == id) 0xEDF3FA else 0xF9FBFD, 255);
+        const active = (index == 0) == grid_view;
+        s.rounded(.{ .x = x, .y = 16, .w = 28, .h = 28 }, 7, if (pointer.pressed == id) 0xCEDFF5 else if (active) 0xDEEAFB else if (pointer.hover == id) 0xEDF3FA else 0xF9FBFD, 255);
         if (index == 0) {
-            for (0..4) |j| s.rounded(.{ .x = x + 7 + @as(i32, @intCast(j % 2)) * 8, .y = 23 + @as(i32, @intCast(j / 2)) * 8, .w = 5, .h = 5 }, 1, if (selected) 0x397BE8 else 0x778397, 255);
+            for (0..4) |j| s.rounded(.{ .x = x + 7 + @as(i32, @intCast(j % 2)) * 8, .y = 23 + @as(i32, @intCast(j / 2)) * 8, .w = 5, .h = 5 }, 1, if (active) 0x397BE8 else 0x778397, 255);
         } else {
-            for (0..3) |j| s.rounded(.{ .x = x + 7, .y = 23 + @as(i32, @intCast(j)) * 6, .w = 14, .h = 2 }, 1, if (selected) 0x397BE8 else 0x778397, 255);
+            for (0..3) |j| s.rounded(.{ .x = x + 7, .y = 23 + @as(i32, @intCast(j)) * 6, .w = 14, .h = 2 }, 1, if (active) 0x397BE8 else 0x778397, 255);
         }
     }
     ui.label(&s, "Favourites", 18, 24, 1, 0x898B90);
@@ -227,8 +362,8 @@ fn paint(area: ui.Rect) void {
     const paths = [_][]const u8{ "/", "/etc", "/bin", "/Trash" };
     for (names, 0..) |name, i| {
         const y = 42 + @as(i32, @intCast(i)) * 34;
-        const selected = std.mem.eql(u8, path(), paths[i]);
-        if (selected or pointer.hover == 10 + i) s.rounded(.{ .x = 10, .y = y, .w = 146, .h = 28 }, 5, if (pointer.pressed == 10 + i) 0xCAD8E8 else if (selected) 0xDBE3ED else 0xE6E7E9, 255);
+        const active = std.mem.eql(u8, path(), paths[i]);
+        if (active or pointer.hover == 10 + i) s.rounded(.{ .x = 10, .y = y, .w = 146, .h = 28 }, 5, if (pointer.pressed == 10 + i) 0xCAD8E8 else if (active) 0xDBE3ED else 0xE6E7E9, 255);
         ui.icon(&s, ([_]ui.Icon{ .sidebar_home, .sidebar_system, .sidebar_apps, .sidebar_trash })[i], 18, y + 5, 18);
         ui.label(&s, name, 43, y + 11, 1, 0x3D4046);
     }
@@ -247,30 +382,33 @@ fn paint(area: ui.Rect) void {
             ui.label(&s, "Binary and non-ASCII files are not decoded yet.", 208, 215, 1, 0x778397);
         } else {
             s.setClip(ui.Rect.intersect(area, .{ .x = 198, .y = 154, .w = 450, .h = 226 }));
-            var line: [64]u8 = undefined;
-            var used: usize = 0;
-            var row: i32 = 0;
-            for (preview[0..preview_len]) |ch| {
-                if (ch == '\r') continue;
-                if (ch == '\n' or used == 60) {
-                    ui.label(&s, line[0..used], 198, 162 + row * 18, 1, 0x556378);
-                    used = 0;
-                    row += 1;
-                    if (row == 12) break;
-                    if (ch == '\n') continue;
+            var pos: usize = 0;
+            var row: usize = 0;
+            while (pos < preview_len and row < (preview_page + 1) * 12) : (row += 1) {
+                const span = model.lineAt(preview[0..preview_len], pos);
+                pos = span.next;
+                if (row < preview_page * 12) continue;
+                var line: [model.COLUMNS]u8 = undefined;
+                var used: usize = 0;
+                for (preview[span.start..span.end]) |ch| {
+                    if (ch == '\r') continue;
+                    line[used] = if (ch == '\t') ' ' else ch;
+                    used += 1;
                 }
-                line[used] = if (ch == '\t') ' ' else ch;
-                used += 1;
+                ui.monoLabel(&s, line[0..used], 198, 162 + @as(i32, @intCast(row - preview_page * 12)) * 18, 0x556378);
             }
-            if (row < 12 and used > 0) ui.label(&s, line[0..used], 198, 162 + row * 18, 1, 0x556378);
             s.setClip(area);
         }
-        ui.label(&s, "Preview only: first 4 KiB / 12 lines", 190, 414, 1, 0x778397);
+        var status_buf: [96]u8 = undefined;
+        const status = std.fmt.bufPrint(&status_buf, "{d} bytes{s} / Page {d} of {d}", .{ preview_len, if (preview_capped) " (64 KiB limit)" else "", preview_page + 1, @max(1, (preview_lines + 11) / 12) }) catch "";
+        ui.label(&s, if (binary) "Binary preview unavailable" else status, 190, 414, 1, 0x778397);
+        if (!binary and preview_page > 0) ui.icon(&s, .chevron_left, 585, 408, 20);
+        if (!binary and (preview_page + 1) * 12 < preview_lines) ui.icon(&s, .chevron_right, 635, 408, 20);
     } else if (count == 0) {
         ui.icon(&s, if (trash()) .trash else .files, 377, 135, 86);
-        ui.label(&s, if (trash()) "Trash is empty" else "An empty folder", 318, 242, 2, 0x253247);
-        ui.label(&s, if (trash()) "Nothing is stored in /Trash." else "There are no items to show here.", 302, 288, 1, 0x778397);
-        if (trash()) {
+        ui.label(&s, if (query_len > 0) "No matches" else if (trash()) "Trash is empty" else "An empty folder", 318, 242, 2, 0x253247);
+        ui.label(&s, if (query_len > 0) "Try another name. Esc clears the search." else if (trash()) "Nothing is stored in /Trash." else "There are no items to show here.", 280, 288, 1, 0x778397);
+        if (trash() and query_len == 0) {
             ui.label(&s, "Move, restore and permanent deletion", 273, 337, 1, 0x778397);
             ui.label(&s, "are not supported by the filesystem API yet.", 252, 359, 1, 0x778397);
         }
@@ -279,14 +417,14 @@ fn paint(area: ui.Rect) void {
             const r = entryRect(i);
             const name = entries[i].nameSlice();
             if (grid_view) {
-                s.rounded(r, 11, if (pointer.pressed == 100 + i) 0xDFEBFC else if (pointer.hover == 100 + i) 0xEDF4FD else 0xFFFFFF, if (pointer.hover == 100 + i or pointer.pressed == 100 + i) 255 else 100);
+                s.rounded(r, 11, if (selected == i or pointer.pressed == 100 + i) 0xDFEBFC else if (pointer.hover == 100 + i) 0xEDF4FD else 0xFFFFFF, if (selected == i or pointer.hover == 100 + i or pointer.pressed == 100 + i) 255 else 100);
                 ui.icon(&s, entryIcon(i), r.x + 24, r.y + 8, 64);
                 const width = @min(@as(i32, 102), ui.textWidth(name[0..@min(name.len, 12)], 1));
                 s.setClip(ui.Rect.intersect(area, .{ .x = r.x + 5, .y = r.y + 78, .w = 102, .h = 19 }));
                 ui.label(&s, name[0..@min(name.len, 12)], r.x + @divTrunc(r.w - width, 2), r.y + 89, 1, 0x253247);
                 s.setClip(area);
             } else {
-                s.rounded(r, 7, if (pointer.pressed == 100 + i) 0xDFEBFC else if (pointer.hover == 100 + i) 0xEDF4FD else if (i % 2 == 0) 0xF7F9FC else 0xFFFFFF, 255);
+                s.rounded(r, 7, if (selected == i or pointer.pressed == 100 + i) 0xDFEBFC else if (pointer.hover == 100 + i) 0xEDF4FD else if (i % 2 == 0) 0xF7F9FC else 0xFFFFFF, 255);
                 ui.icon(&s, entryIcon(i), 192, r.y + 4, 25);
                 s.setClip(ui.Rect.intersect(area, .{ .x = 229, .y = r.y, .w = 355, .h = 32 }));
                 ui.label(&s, name[0..@min(name.len, 42)], 229, r.y + 13, 1, 0x253247);
@@ -298,7 +436,7 @@ fn paint(area: ui.Rect) void {
         s.setClip(ui.Rect.intersect(area, .{ .x = 190, .y = 370, .w = 460, .h = 24 }));
         ui.label(&s, path(), 190, 383, 1, 0x8A8D93);
         s.setClip(area);
-        const status = std.fmt.bufPrint(&b, "{d} items{s}  /  Page {d}", .{ count, if (listing_capped) " (listing capped)" else "", page + 1 }) catch "";
+        const status = std.fmt.bufPrint(&b, "{d}/{d} items{s} / Page {d}", .{ count, total, if (listing_capped) " (256 limit)" else "", page + 1 }) catch "";
         s.fill(.{ .x = 182, .y = 399, .w = 476, .h = 1 }, 0xEDF1F6);
         ui.label(&s, status, 190, 414, 1, 0x778397);
         for ([_]i32{ 574, 624 }, 0..) |x, i| {
@@ -329,13 +467,10 @@ pub fn run(start_in_trash: bool) noreturn {
             }
             if (m.opcode != libpeel.proto.Op.input or m.len < @sizeOf(libpeel.proto.Input)) continue;
             const ev: *align(1) const libpeel.proto.Input = @ptrCast(&buf);
-            if (ev.kind == pulp.EV_KEY and ev.value != 0 and (ev.code == 0x0E or ev.code == 0x01)) {
-                if (ev.code == 0x0E or preview_open) {
-                    content_changed = act(1) or content_changed;
-                }
-            }
+            // Bit 1 marks an extended scancode even on key release.
+            if (ev.kind == pulp.EV_KEY) content_changed = key(ev.code, ev.value & 1 != 0) or content_changed;
             if (ev.kind == pulp.EV_MOUSE) {
-                var buttons: [18]ui.Button = undefined;
+                var buttons: [19]ui.Button = undefined;
                 const action = pointer.update(ev.x, ev.y, ev.code, targets(&buttons));
                 if (action != 0) content_changed = act(action) or content_changed;
             }
@@ -343,7 +478,7 @@ pub fn run(start_in_trash: bool) noreturn {
         if (content_changed) {
             paint(full);
         } else if (pointer.visualChanged(previous)) {
-            var buttons: [18]ui.Button = undefined;
+            var buttons: [19]ui.Button = undefined;
             for (targets(&buttons)) |t| {
                 if ((previous.hover == t.id) == (pointer.hover == t.id) and (previous.pressed == t.id) == (pointer.pressed == t.id)) continue;
                 paint(t.rect);

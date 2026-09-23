@@ -27,6 +27,7 @@ pub const NR = struct {
     pub const close: u64 = 21;
     pub const read: u64 = 22;
     pub const readdir: u64 = 34;
+    pub const readdir_page: u64 = 38;
     pub const port_create: u64 = 50;
     pub const port_connect: u64 = 51;
     pub const port_send: u64 = 52;
@@ -272,6 +273,15 @@ pub fn readdir(path: []const u8, out: []DirEntry) Error!usize {
         @intFromPtr(out.ptr),
         out.len,
     );
+    if (r < 0) return errno(r);
+    return @intCast(r);
+}
+
+/// Read at most 32 entries after `skip` representable entries. Zero means EOF.
+/// Ordinals are stable on the current immutable CitrusFS mount, not a snapshot
+/// contract for a future writable filesystem. Legacy readdir remains unchanged.
+pub fn readdirPage(path: []const u8, out: []DirEntry, skip: usize) Error!usize {
+    const r = syscall6(NR.readdir_page, @intFromPtr(path.ptr), path.len, @intFromPtr(out.ptr), out.len, skip, 0);
     if (r < 0) return errno(r);
     return @intCast(r);
 }
