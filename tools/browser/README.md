@@ -46,8 +46,10 @@ upstream SDK checks or disable security features to hide a build failure.
 ## Storage, recovery and evidence
 
 Sources live in `checkout/src`; the output is `checkout/src/out/OrangeReference`.
-depot_tools, CIPD caches, vpython environments, XDG caches and temporary downloads
-are redirected beneath the workspace. The system Xcode/SDK installation remains
+depot_tools, CIPD caches, vpython environments, XDG caches, gsutil transfer state
+and temporary downloads are redirected beneath the workspace. gsutil gets a
+credential-free local configuration; personal Boto settings are not imported.
+The system Xcode/SDK installation remains
 on the Mac; OS-managed swap/system caches are not controlled by this runner.
 Large Chromium downloads are opt-in through the explicit `source`/`sync` steps.
 The shallow checkout avoids full source history and a second shared Git cache.

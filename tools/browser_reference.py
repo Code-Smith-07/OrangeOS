@@ -64,10 +64,12 @@ def environment(work, original=None):
         "DEPOT_TOOLS_UPDATE": "0",
         "DEPOT_TOOLS_DIR": str(work / "depot_tools"),
         "DEPOT_TOOLS_METRICS": "0",
+        "PYTHONUNBUFFERED": "1",
         "GIT_TERMINAL_PROMPT": "0",
         "CIPD_CACHE_DIR": str(work / "cache/cipd"),
         "VPYTHON_VIRTUALENV_ROOT": str(work / "cache/vpython"),
         "XDG_CACHE_HOME": str(work / "cache/xdg"),
+        "BOTO_CONFIG": str(work / "cache/public-downloads.boto"),
         "TMPDIR": str(work / "tmp"),
     })
     return env
@@ -211,6 +213,7 @@ class ReferenceBuild:
             if stamp.read_text().strip().partition(",")[0] != self.manifest["toolchain"]["clang_package"]:
                 raise ValueError("Downloaded Clang stamp differs from pinned package")
             self.run([self.src / "third_party/llvm-build/Release+Asserts/bin/clang", "--version"])
+            self.run([self.src / "third_party/rust-toolchain/bin/rustc", "--version"])
         elif stage == "generate":
             output = self.src / "out/OrangeReference"
             output.mkdir(parents=True, exist_ok=True)
@@ -250,8 +253,12 @@ def main():
         if any(state.get(s, {}).get("result") != "passed" or
                state.get(s, {}).get("manifest_sha256") != fingerprint(manifest) for s in previous):
             raise ValueError(f"Complete prior steps first: {', '.join(previous)}")
-        for directory in ("cache/cipd", "cache/vpython", "cache/xdg", "tmp", "logs"):
+        for directory in ("cache/cipd", "cache/vpython", "cache/xdg", "cache/gsutil", "tmp", "logs"):
             (work / directory).mkdir(parents=True, exist_ok=True)
+        # gsutil doesn't honor XDG_CACHE_HOME. Its explicit, credential-free
+        # configuration keeps transfer tracking off the internal disk too.
+        ensure_text(work / "cache/public-downloads.boto",
+                    f"[GSUtil]\nstate_dir = {work / 'cache/gsutil'}\n")
         # Invalidate dependent records before a retry, so failure cannot retain
         # a stale green build. Only this tool's state file is rewritten.
         state = {k: v for k, v in state.items() if k in previous}

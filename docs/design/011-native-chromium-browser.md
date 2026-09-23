@@ -505,6 +505,35 @@ dependency sync, successful reference compile/launch, embedding decision,
 dependency/patch inventory and native-port feasibility gate remain outstanding.
 No native guest browser, web compatibility or media performance is claimed.
 
+### 11.3 Initial source-inspected port inventory
+
+The checked-out revision makes these concrete integration points visible.
+This is an initial blocker inventory, **not a complete transitive dependency or
+patch audit**, and it does not imply those APIs have been implemented.
+
+| Upstream component / inspected source | OrangeOS work required before native execution |
+|---|---|
+| `base/threading/platform_thread_posix.cc`, `base/synchronization/condition_variable_posix.cc` | Real in-process threads, thread-local state and pthread-compatible synchronization; monotonic timed waits, wakeup/lifetime/race tests. Processes plus `sleep_ms` are not a pthread implementation. |
+| `base/process/launch_posix.cc` | An OrangeOS process adapter with argument/environment transfer, inherited handles, exit status and deterministic cleanup. Existing `spawn`/`wait` do not make POSIX `fork`/`exec` available. A native adapter can use spawn without pretending the guest is Linux. |
+| `base/memory/platform_shared_memory_region_posix.cc`, `mojo/core/channel_posix.cc` | Map Mojo's shared-memory/handle-transfer requirements onto explicit guest capabilities. Existing named shared objects and ports are useful foundations, not equivalent to Unix descriptor passing, sealed memory or a renderer sandbox. |
+| `net/socket/tcp_socket_posix.cc` | Nonblocking sockets, cancellation/readiness and error translation; integrate guest TLS, secure entropy and trusted certificates. Existing TCP and DNS calls alone are not Chromium's network service. |
+| `ui/ozone/public/ozone_platform.h` | Native platform windows, input, screen/scaling and software surface presentation through Peel, then a separately qualified GPU backend. A macOS Cocoa reference build supplies none of this guest adapter. |
+| `build/build_config.h`, GN toolchain/platform configuration | An explicit OrangeOS target and reusable C/C++ runtime/toolchain. The verified freestanding C ABI probe is not libc, libc++, exception/unwind support or a dynamic loader. |
+| `build/config/rust.gni`, `build/rust/std/BUILD.gn`, `tools/rust/update_rust.py` | Chromium also uses Rust. Qualify an OrangeOS Rust target and the required standard-library OS interfaces, in addition to C/C++. The downloaded Mac Rust toolchain is not guest Rust support. |
+
+The pinned root `DEPS` identifies V8 `671f7c27ac0403ceb8074a8dfbcc02cdd7369c3f`,
+Skia `2466dcf3937437e217e7f284afe0e1aae15891ce`, BoringSSL
+`ac39ea6853833c1f18fd23614091d11855e71752` and FFmpeg
+`a06d51a20a28f980b2ddc6b7d73d69b2d29bf323`. The manifest's root commit is the
+authority; do not independently upgrade these libraries outside a reviewed
+Chromium roll. Codec licensing, runtime capabilities and video acceleration
+remain independent acceptance gates.
+
+The source-audit DEPS SHA-256 is
+`cd59c0f5c31e1dbbc65b2db96bb11a18f7bdc91496fafb5b6a4e7f94d8ad797c`.
+After a successful dependency sync, `gclient revinfo --actual` records resolved
+checkouts in the local sync log; it is not yet a complete release SBOM.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,

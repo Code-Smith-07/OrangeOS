@@ -42,7 +42,7 @@ class ReferenceTests(unittest.TestCase):
         self.assertEqual(env["DEPOT_TOOLS_UPDATE"], "0")
         self.assertNotIn("VPYTHON_BYPASS", env)
         self.assertEqual(original["PATH"], "/usr/bin")
-        for key in ("CIPD_CACHE_DIR", "VPYTHON_VIRTUALENV_ROOT", "XDG_CACHE_HOME", "TMPDIR"):
+        for key in ("CIPD_CACHE_DIR", "VPYTHON_VIRTUALENV_ROOT", "XDG_CACHE_HOME", "BOTO_CONFIG", "TMPDIR"):
             self.assertTrue(Path(env[key]).is_relative_to(work))
 
     def test_config_is_idempotent_but_does_not_overwrite(self):
@@ -146,6 +146,33 @@ class ReferenceTests(unittest.TestCase):
                  patch("sys.argv", ["reference", "status"]), patch("builtins.print"):
                 self.assertEqual(main(), 0)
                 self.assertFalse(root.exists())
+
+    def test_real_git_checkout_is_pinned_idempotent_and_preserves_edits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            origin = root / "origin"
+            origin.mkdir()
+            def git(*args):
+                return subprocess.check_output(["git", "-C", str(origin), *args],
+                                               text=True, stderr=subprocess.DEVNULL).strip()
+            git("init")
+            (origin / "fixture").write_text("original\n")
+            git("add", "fixture")
+            git("-c", "user.name=Reference test", "-c", "user.email=test@example.invalid",
+                "-c", "commit.gpgsign=false", "commit", "-m", "fixture")
+            spec = {"url": str(origin), "revision": git("rev-parse", "HEAD")}
+            checkout = root / "copy"
+            with (root / "log").open("w") as log:
+                build = ReferenceBuild(root, load_manifest(), log)
+                build.checkout_pin(checkout, spec)
+                verify_repo(checkout, spec)
+                with patch.object(build, "run") as run:
+                    build.checkout_pin(checkout, spec)
+                    run.assert_not_called()
+                (checkout / "fixture").write_text("user edit\n")
+                with self.assertRaisesRegex(ValueError, "Tracked changes"):
+                    build.checkout_pin(checkout, spec)
+                self.assertEqual((checkout / "fixture").read_text(), "user edit\n")
 
 
 if __name__ == "__main__":
