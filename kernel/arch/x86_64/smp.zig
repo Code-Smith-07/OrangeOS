@@ -74,6 +74,7 @@ export fn apEntry(index: u64) callconv(.c) noreturn {
     gdt.initCpu(i);
     idt.load();
     percpu.initAp(i, apic.id());
+    @import("fpu.zig").initCpu();
 
     // SYSCALL is configured through per-CPU MSRs: EFER.SCE, STAR, LSTAR and
     // FMASK are all core-local. Skipping this on an application processor

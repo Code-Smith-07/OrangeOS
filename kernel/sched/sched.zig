@@ -241,7 +241,9 @@ fn switchTo(c: *percpu.PerCpu, next: *Task) void {
         vmm.loadCr3(next.address_space);
     }
 
-    context.contextSwitch(&prev.rsp, next.rsp);
+    // Run-queue lock and masked interrupts cover both state publication and
+    // restore, including migration to a different CPU. Never use lazy #NM.
+    context.contextSwitch(&prev.rsp, next.rsp, &prev.fpu, &next.fpu);
 }
 
 /// Voluntarily give up the CPU.
@@ -418,8 +420,7 @@ pub fn exit(code: i32) noreturn {
 
     // The dying thread's stack is still in use until we leave it, so it is
     // freed by whoever reaps it, not here.
-    var discard: u64 = 0;
-    context.contextSwitch(&discard, next.rsp);
+    context.contextStart(next.rsp, &next.fpu);
     unreachable;
 }
 
@@ -436,7 +437,7 @@ pub fn start() noreturn {
     last_boost_tick = time.tickCount();
 
     // contextStart lands in threadTrampoline, which releases the lock.
-    context.contextStart(first.rsp);
+    context.contextStart(first.rsp, &first.fpu);
     unreachable;
 }
 
@@ -450,7 +451,7 @@ pub fn startAp() noreturn {
     first.state = .running;
     c.current = first;
 
-    context.contextStart(first.rsp);
+    context.contextStart(first.rsp, &first.fpu);
     unreachable;
 }
 

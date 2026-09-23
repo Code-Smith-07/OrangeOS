@@ -31,7 +31,7 @@ network security, process isolation, font shaping or media stack.
 |---|---|---|
 | Executables | Static freestanding Zig ELF, no libc underneath Pulp | C/C++ runtime and target/toolchain support |
 | Heap | Owned anonymous mapping/release/protection API plus legacy 256 KiB scratch arena | General C/C++ allocator, partial mappings, thread-safe VM, larger workloads |
-| CPU state | SIMD disabled; context switch saves general registers | Per-task FPU/SIMD initialization and isolation on every CPU |
+| CPU state | Eager per-task x87/SSE2 save/restore on every CPU; clean initial registers; AVX disabled | Enable native userland compiler target after regression testing; XSAVE/AVX remain unsupported |
 | Threads | Kernel scheduler, no pthread-compatible user API | User threads, thread-local storage, synchronization |
 | Network | DNS and blocking TCP; receive conflates timeout and EOF | Nonblocking/polling sockets with precise errors and cancellation |
 | HTTPS | No TLS library, trust store or secure randomness API | Audited TLS port, entropy, certificate and hostname validation |
@@ -115,3 +115,28 @@ and preservation of borrowed data. Successful exec now releases the copied ELF
 file buffer, and failed exec unwinds its new address space. IPC handle references
 are dropped, but global IPC object retention, global descriptors/sockets, task
 stacks and zombie records still require lifecycle work.
+
+## Runtime milestone: isolated floating-point state (23 September 2026)
+
+The scheduler now eagerly saves/restores a kernel-owned, 16-byte-aligned,
+512-byte FXSAVE64 context per task, including startup, migration and exit.
+Every CPU enables x87/SSE2 and clears OSXSAVE; AVX is deliberately unavailable.
+New tasks receive zeroed data registers, an empty x87 stack and the default
+masked-exception/round-to-nearest environment, never the spawner's CPU state.
+Kernel code remains soft-float because interrupt/syscall entry does not save
+extended state separately. Lazy #NM switching is not used.
+
+This uncovered and fixed the AP trampoline's C-entry stack alignment: a proper
+call now supplies the ABI's return slot before entering `apEntry`.
+
+`tools/runtime_smoke.py` runs two waves of six concurrent ring-3 SIMD probes.
+They snapshot initial registers before compiler code, load distinct per-PID
+x87/XMM/rounding patterns, and validate them after yields, blocking syscalls,
+busy intervals and cross-CPU migration; SSE2 double arithmetic is also checked.
+The first two-vCPU qualification covered both CPUs in every one of 12 probes.
+Existing VM cleanup and four fault-containment probes still pass.
+
+CPU-state contract: [Intel SDM volume 3A, chapter 13](https://cdrdv2-public.intel.com/835754/253668-sdm-vol-3a.pdf).
+This is one browser-runtime prerequisite, **not an installed browser or an
+engine port**. C/C++ runtime, threads/TLS, lifecycle reclamation, HTTPS and the
+engine/platform integration still gate the native browser.

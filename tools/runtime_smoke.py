@@ -3,6 +3,7 @@
 
 Build: zig build -Dmm-test -Druntime-test -Ddesktop-profile; scripts/mkdisk.sh
 """
+import re
 from desktop_smoke import Guest
 
 
@@ -25,6 +26,19 @@ def main():
         guest.until(lambda: "runtime: PASS null, read-only, NX and invalid-opcode containment" in guest.log(),
                     "faulting apps terminate without halting the OS", 30)
         assert guest.log().count("[app fault]") == 4
+        guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
+                    "twelve native SIMD probes in two concurrent waves", 90)
+        masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]
+        assert len(masks) == 12, masks
+        assert all(mask != 0 for mask in masks)
+        combined = 0
+        for mask in masks:
+            combined |= mask
+        if combined.bit_count() < 2:
+            raise AssertionError(f"SIMD probes did not cover both virtual CPUs: {masks}")
+        assert any(mask.bit_count() > 1 for mask in masks), f"No SIMD process migrated between CPUs: {masks}"
+        assert "simd-probe: FAIL" not in guest.log()
+        print(f"PASS eager x87, all sixteen XMM registers, MXCSR and migration; CPU masks={masks}", flush=True)
         guest.until(lambda: '"Welcome"' in guest.log() and "squeeze: window" in guest.log(),
                     "desktop starts after runtime stress", 60)
         guest.screenshot("runtime-desktop")

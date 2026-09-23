@@ -172,6 +172,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "host-agent", .path = "userland/servers/host-agent/main.zig" },
         .{ .name = "host-probe", .path = "userland/bin/host-probe/main.zig" },
         .{ .name = "vm-probe", .path = "userland/bin/vm-probe/main.zig" },
+        .{ .name = "simd-probe", .path = "userland/bin/simd-probe/main.zig" },
         .{ .name = "fault-null", .path = "userland/bin/fault-null/main.zig" },
         .{ .name = "fault-ro", .path = "userland/bin/fault-ro/main.zig" },
         .{ .name = "fault-nx", .path = "userland/bin/fault-nx/main.zig" },

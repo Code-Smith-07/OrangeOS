@@ -99,6 +99,8 @@ export fn kmain() callconv(.c) noreturn {
     // clock, and a GS_BASE of zero makes that a null dereference at the first
     // tick - which is exactly what happened.
     percpu.init();
+    @import("arch/x86_64/fpu.zig").initCpu();
+    console.ok("FPU: eager x87/SSE2 context isolation, AVX disabled", .{});
     console.ok("per-CPU block established (GS_BASE)", .{});
 
     // ── 6. Memory. pmm -> vmm -> heap, in that order. ───────────────────────

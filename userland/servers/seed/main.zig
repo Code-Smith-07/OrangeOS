@@ -134,6 +134,20 @@ export fn _start() callconv(.c) noreturn {
             }
         }
         pulp.puts("runtime: PASS null, read-only, NX and invalid-opcode containment\n");
+        // Distinct live processes compete for two CPUs; a second wave checks
+        // that later processes never inherit the previous users' register data.
+        for (0..2) |_| {
+            var pids: [6]i64 = undefined;
+            for (&pids) |*pid| pid.* = pulp.spawn("/bin/simd-probe") catch pulp.exit(96);
+            for (pids) |pid| {
+                const code = pulp.wait(pid) catch pulp.exit(97);
+                if (code != 0) {
+                    pulp.print("runtime: FAIL SIMD process {d} exit {d}\n", .{ pid, code });
+                    pulp.exit(98);
+                }
+            }
+        }
+        pulp.puts("runtime: PASS concurrent SIMD process isolation\n");
     }
     loadConfig();
 

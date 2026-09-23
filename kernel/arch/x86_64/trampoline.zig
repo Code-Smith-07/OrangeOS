@@ -96,7 +96,11 @@ comptime {
         \\    movq 8(%rbx), %rsp
         \\    movq 24(%rbx), %rdi
         \\    movq 16(%rbx), %rax
-        \\    jmpq *%rax
+        \\    # SysV C entry requires RSP+8 to be 16-byte aligned. A bare
+        \\    # jump left every AP's aligned stack locals eight bytes off.
+        \\    andq $-16, %rsp
+        \\    callq *%rax
+        \\    ud2
         \\
         \\.balign 16
         \\gdt:

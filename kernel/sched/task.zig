@@ -77,6 +77,8 @@ pub const Task = struct {
 
     /// Saved stack pointer. Valid whenever the thread is not running.
     rsp: u64,
+    /// Kernel-owned, initialized without inheriting the spawning CPU's state.
+    fpu: @import("../arch/x86_64/fpu.zig").State = .{},
     kstack_base: u64,
     kstack_size: usize,
 

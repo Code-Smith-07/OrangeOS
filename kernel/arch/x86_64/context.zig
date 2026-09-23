@@ -1,6 +1,7 @@
 //! Kernel-thread context switching.
 //!
-//! Only callee-saved registers are switched. Everything else is already on the
+//! General callee-saved registers plus eager x87/MMX/SSE state are switched.
+//! Other general registers are already on the
 //! stack: a preempted thread got there through the interrupt path, which saved
 //! its full register set into a TrapFrame on its own kernel stack, and a
 //! voluntarily yielding thread has whatever the C ABI says is scratch.
@@ -20,6 +21,8 @@ comptime {
         \\.global contextSwitch
         \\.type contextSwitch, @function
         \\contextSwitch:
+        \\    fxsave64 (%rdx)
+        \\    fxrstor64 (%rcx)
         \\    pushq %rbp
         \\    pushq %rbx
         \\    pushq %r12
@@ -42,6 +45,7 @@ comptime {
         \\.global contextStart
         \\.type contextStart, @function
         \\contextStart:
+        \\    fxrstor64 (%rsi)
         \\    movq %rdi, %rsp
         \\    popq %r15
         \\    popq %r14
@@ -69,11 +73,10 @@ pub const Context = extern struct {
 
 /// Save the current stack pointer into `old_rsp`, switch to `new_rsp`, and
 /// resume whatever is there. Arguments arrive in rdi/rsi per the SysV ABI.
-pub extern fn contextSwitch(old_rsp: *u64, new_rsp: u64) callconv(.c) void;
+pub extern fn contextSwitch(old_rsp: *u64, new_rsp: u64, old_fpu: *@import("fpu.zig").State, new_fpu: *const @import("fpu.zig").State) callconv(.c) void;
 
-/// Switch to `new_rsp` without saving anything. Used once, to start the first
-/// thread from the boot context, which is never resumed.
-pub extern fn contextStart(new_rsp: u64) callconv(.c) noreturn;
+/// Restore the next task without saving the discarded boot/exiting context.
+pub extern fn contextStart(new_rsp: u64, new_fpu: *const @import("fpu.zig").State) callconv(.c) noreturn;
 
 /// Build a stack for a thread that has never run, so the first
 /// `contextSwitch` into it lands at `entry`.
