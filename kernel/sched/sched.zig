@@ -382,7 +382,21 @@ pub fn preemptIfNeeded() void {
 /// Terminate the current thread. Never returns.
 pub fn exit(code: i32) noreturn {
     io.cli();
-    if (currentTask()) |t| @import("../mm/user_vm.zig").releaseAll(&t.anonymous_vm, t.address_space);
+    if (currentTask()) |t| {
+        @import("../mm/user_vm.zig").releaseAll(&t.anonymous_vm, t.address_space);
+        if (t.address_space != 0 and t.address_space != vmm.kernelPml4()) {
+            const old_space = t.address_space;
+            vmm.loadCr3(vmm.kernelPml4());
+            t.address_space = vmm.kernelPml4();
+            vmm.destroyAddressSpace(old_space);
+        }
+        // Registry ownership currently keeps IPC objects alive; mapped shared
+        // frames are borrowed and were deliberately skipped by VM teardown.
+        for (&t.handles.entries) |*entry| {
+            if (entry.*) |obj| @import("../ipc/object.zig").release(obj);
+            entry.* = null;
+        }
+    }
     lock.acquire();
 
     const c = cpu();

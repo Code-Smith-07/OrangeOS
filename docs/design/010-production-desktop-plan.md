@@ -800,6 +800,7 @@ eviction/tab suspension or a visible resource limit, never an unexplained hang.
 | Concept theme artwork | Three native image-backed wallpapers verified locally | `c55a78d`; `docs/screenshots/theme-{coastal,citrus,aurora}.png`; session-only selection, full-scene TCG theme repaint remains slow |
 | Concept Files grid | Real-directory 4×2 grid and five original folder sprites; verified locally | `docs/screenshots/theme-files-grid.png`; `tools/desktop_smoke.py`, `tools/app_redraw_audit.py`; read-only, not fictional Home counts |
 | Browser runtime: anonymous VM | Implemented bounded owned mappings, protections and release | `tools/runtime_smoke.py`; see [browser runtime milestone](008-browser.md). Remaining runtime/engine gates are open. |
+| Browser runtime: app CPU faults | Ring-3 faults terminate the app; private image/stack pages reclaimed | Four faulting programs checked by `tools/runtime_smoke.py`; borrowed-frame conservation check. IPC/socket/file/task lifecycle and sandbox gates remain open. |
 | Aurora Phase 1 | Planned beyond the targeted Welcome fix | Shared publication, all-app audit and performance gates |
 | Aurora Phases 2–16 | Planned beyond the partial bridge milestones above | Update each only with tests and local commit evidence |
 

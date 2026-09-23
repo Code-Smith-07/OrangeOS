@@ -112,7 +112,7 @@ pub fn load(pml4_phys: u64, image: []const u8) Error!Loaded {
             // A page may already be mapped when two segments share one.
             const existing = vmm.translate(pml4_phys, page);
             const phys = if (existing) |p| p else try vmm.allocAndMap(pml4_phys, page, flags);
-            if (existing != null) try vmm.mapPage(pml4_phys, page, phys, flags);
+            if (existing != null) try vmm.mapPage(pml4_phys, page, phys, flags | vmm.OWNED);
 
             // Copy this page's slice of the segment through the HHDM.
             const dest: [*]u8 = @ptrFromInt(pmm.physToVirt(phys));

@@ -267,6 +267,16 @@ fn testUserVm() void {
     check("user VM: exit cleanup frees protected and writable memory", pmm.stats().free_pages == after_root);
     vmm.destroyAddressSpace(space);
     check("user VM: address-space teardown conserves every page", pmm.stats().free_pages == baseline);
+
+    const mixed = vmm.createAddressSpace() catch return;
+    const borrowed = pmm.allocPageZeroed() catch return;
+    const borrowed_bytes: [*]u8 = @ptrFromInt(pmm.physToVirt(borrowed));
+    borrowed_bytes[0] = 0x6d;
+    vmm.mapPage(mixed, vm.BASE, borrowed, vmm.PRESENT | vmm.USER | vmm.NO_EXECUTE) catch return;
+    _ = vmm.allocAndMap(mixed, vm.BASE + 4096, vmm.PRESENT | vmm.USER | vmm.NO_EXECUTE) catch return;
+    vmm.destroyAddressSpace(mixed);
+    check("user VM: teardown frees private frames but preserves borrowed SHM", pmm.stats().free_pages == baseline - 1 and borrowed_bytes[0] == 0x6d);
+    pmm.freePage(borrowed);
 }
 
 pub fn runAll() void {

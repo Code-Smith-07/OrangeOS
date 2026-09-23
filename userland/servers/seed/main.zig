@@ -119,6 +119,21 @@ export fn _start() callconv(.c) noreturn {
             }
         }
         pulp.puts("runtime: PASS repeated VM processes\n");
+        const faults = [_]struct { path: []const u8, code: i64 }{
+            .{ .path = "/bin/fault-null", .code = 142 },
+            .{ .path = "/bin/fault-ro", .code = 142 },
+            .{ .path = "/bin/fault-nx", .code = 142 },
+            .{ .path = "/bin/fault-opcode", .code = 134 },
+        };
+        for (faults) |fault| {
+            const child = pulp.spawn(fault.path) catch pulp.exit(93);
+            const code = pulp.wait(child) catch pulp.exit(94);
+            if (code != fault.code) {
+                pulp.print("runtime: FAIL {s} exit {d}\n", .{ fault.path, code });
+                pulp.exit(95);
+            }
+        }
+        pulp.puts("runtime: PASS null, read-only, NX and invalid-opcode containment\n");
     }
     loadConfig();
 

@@ -95,7 +95,7 @@ pub fn protect(state: *State, pml4: u64, address: u64, length: u64, prot: u64) E
     while (off < region.size) : (off += vmm.PAGE_SIZE) {
         // Pages remain owned while PROT_NONE clears their user-access bit.
         const phys = vmm.translate(pml4, address + off) orelse unreachable;
-        vmm.mapPage(pml4, address + off, phys, flags) catch unreachable;
+        vmm.mapPage(pml4, address + off, phys, flags | vmm.OWNED) catch unreachable;
         vmm.invalidatePage(address + off);
     }
 }

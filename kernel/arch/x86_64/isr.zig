@@ -205,6 +205,20 @@ export fn isrDispatch(frame: *TrapFrame) callconv(.c) void {
     }
 
     if (vec < EXCEPTION_COUNT) {
+        // Synchronous application faults terminate that process. Hardware
+        // failures (NMI, double fault, machine check) and kernel faults retain
+        // the panic path; a ring-3 CS alone does not make them recoverable.
+        const app_fault = switch (vec) {
+            0, 4, 5, 6, 7, 10, 11, 12, 13, 14, 16, 17, 19 => true,
+            else => false,
+        };
+        if (frame.cs & 3 == 3 and app_fault) {
+            const sched = @import("../../sched/sched.zig");
+            if (sched.currentTask()) |t| {
+                console.print("[app fault] pid {d} {s}: {s} at 0x{x}\n", .{ t.tid, t.nameSlice(), exception_names[vec], frame.rip });
+                sched.exit(128 + @as(i32, vec));
+            }
+        }
         panic_mod.exception(frame);
     }
 

@@ -22,6 +22,9 @@ def main():
         ):
             assert f"[pass] {marker}" in log, marker
         print("PASS frame/page-table conservation and cleanup", flush=True)
+        guest.until(lambda: "runtime: PASS null, read-only, NX and invalid-opcode containment" in guest.log(),
+                    "faulting apps terminate without halting the OS", 30)
+        assert guest.log().count("[app fault]") == 4
         guest.until(lambda: '"Welcome"' in guest.log() and "squeeze: window" in guest.log(),
                     "desktop starts after runtime stress", 60)
         guest.screenshot("runtime-desktop")

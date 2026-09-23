@@ -27,6 +27,9 @@ pub const ACCESSED: u64 = 1 << 5;
 pub const DIRTY: u64 = 1 << 6;
 pub const HUGE: u64 = 1 << 7;
 pub const GLOBAL: u64 = 1 << 8;
+/// Software bit: a private 4 KiB frame owned by this address space. SHM and
+/// framebuffer mappings borrow frames and must never be freed by teardown.
+pub const OWNED: u64 = 1 << 9;
 pub const NO_EXECUTE: u64 = 1 << 63;
 
 const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
@@ -364,7 +367,7 @@ pub fn destroyAddressSpace(pml4_phys: u64) void {
                 while (l1 < 512) : (l1 += 1) {
                     const e0 = pt[l1];
                     if (e0 & PRESENT == 0) continue;
-                    pmm.freePage(e0 & ADDR_MASK);
+                    if (e0 & OWNED != 0) pmm.freePage(e0 & ADDR_MASK);
                 }
                 pmm.freePage(e1 & ADDR_MASK);
             }
@@ -380,7 +383,7 @@ pub fn destroyAddressSpace(pml4_phys: u64) void {
 pub fn allocAndMap(pml4_phys: u64, virt: u64, flags: u64) Error!u64 {
     const phys = pmm.allocPageZeroed() catch return Error.OutOfMemory;
     errdefer pmm.freePage(phys);
-    try mapPage(pml4_phys, virt, phys, flags);
+    try mapPage(pml4_phys, virt, phys, flags | OWNED);
     return phys;
 }
 

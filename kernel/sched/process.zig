@@ -26,8 +26,10 @@ const USER_STACK_PAGES: usize = 16;
 
 /// Build an address space from an ELF image and drop into ring 3.
 /// Runs as the body of a kernel thread; never returns.
-pub fn execImage(image: []const u8) Error!noreturn {
+pub fn execImage(image: []u8) Error!noreturn {
+    errdefer heap.free(image.ptr);
     const pml4 = try vmm.createAddressSpace();
+    errdefer vmm.destroyAddressSpace(pml4);
 
     const loaded = try elf.load(pml4, image);
 
@@ -72,6 +74,9 @@ pub fn execImage(image: []const u8) Error!noreturn {
     // unmapped upper guard page. Zero is a deliberate terminal-frame sentinel.
     const entry_stack = USER_STACK_TOP - @sizeOf(u64);
     @as(*u64, @ptrFromInt(entry_stack)).* = 0;
+    // The executable was copied into owned pages; do not retain its file image
+    // for the lifetime of the process (successful exec never unwinds defers).
+    heap.free(image.ptr);
     user.enter(loaded.entry, entry_stack);
 }
 
@@ -105,6 +110,7 @@ pub fn spawnPath(path: []const u8) !u32 {
     if (n != size) return error.IoError;
 
     const req = heap.create(SpawnRequest) catch return error.OutOfMemory;
+    errdefer heap.destroy(req);
     const parent = sched.currentTask();
     req.* = .{ .image = buf[0..size], .host_bridge = if (parent) |p|
         p.service_manager and std.mem.eql(u8, path, "/bin/host-agent")
@@ -168,13 +174,14 @@ pub fn initThread(arg: ?*anyopaque) void {
         console.err("out of memory loading {s} ({d} bytes)", .{ path, size });
         sched.exit(1);
     };
-    defer heap.free(buf);
 
     const n = vfs.readAt(&node, 0, buf[0..size]) catch |e| {
+        heap.free(buf);
         console.err("read {s} failed: {s}", .{ path, @errorName(e) });
         sched.exit(1);
     };
     if (n != size) {
+        heap.free(buf);
         console.err("short read on {s}: {d} of {d} bytes", .{ path, n, size });
         sched.exit(1);
     }

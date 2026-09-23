@@ -37,7 +37,7 @@ network security, process isolation, font shaping or media stack.
 | HTTPS | No TLS library, trust store or secure randomness API | Audited TLS port, entropy, certificate and hostname validation |
 | Files | Read-only user API; limited reclamation | Safe writes, profile storage, cache quotas, object cleanup |
 | Graphics | Peel CPU framebuffer and ASCII coverage atlas | Native engine backend, Unicode shaping, images, scalable surfaces |
-| Security | User faults can halt the OS; limited process cleanup | Fault containment, sandbox boundaries, permissions, lifecycle tests |
+| Security | Synchronous ring-3 faults terminate the app; owned pages reclaimed | IPC/socket/file cleanup, task reaping, sandbox boundaries, permissions, lifecycle stress |
 
 Evidence locations: build.zig; userland/libs/pulp/pulp.zig;
 kernel/sched/process.zig; kernel/arch/x86_64/context.zig;
@@ -85,8 +85,8 @@ subset, exposed by Pulp's `mapMemory`, `unmapMemory`, `protectMemory`:
 - Read/write, read-only and inaccessible protection. Anonymous execution,
   fixed addresses, file mappings and partial unmap/protect remain unsupported.
 - Released virtual addresses, physical frames and empty page tables are reused.
-  Exit releases owned anonymous mappings. Existing image/stack/shared-object
-  teardown and scheduler zombie reaping still need separate work.
+  Exit releases owned anonymous mappings. The following cleanup milestone also
+  reclaims image/stack pages; shared-object teardown and zombie reaping remain.
 - One thread per address space; do not expose shared-address-space threads until
   VM locking and cross-CPU TLB invalidation are implemented.
 
@@ -98,3 +98,20 @@ zeroing, address reuse and slot exhaustion before the desktop starts.
 
 This removes the first allocation blocker; it is not a completed engine port,
 C library, thread API, SIMD implementation or browser.
+
+## Runtime milestone: process fault containment (23 September 2026)
+
+Synchronous ring-3 faults (including null access, writing read-only memory,
+executing NX memory and invalid opcodes) terminate the offending task with
+status `128 + exception vector`; the kernel, supervisor and other apps continue.
+Kernel faults and machine failures keep the panic path. `tools/runtime_smoke.py`
+launches four actual faulting programs and checks their exit status before the
+desktop starts. This is CPU-fault containment, not browser sandbox certification.
+
+Private image/stack/anonymous pages carry a software ownership flag. Process
+exit switches away from its page tables before freeing them; borrowed framebuffer
+and shared-memory frames remain alive. Boot tests verify private-frame recovery
+and preservation of borrowed data. Successful exec now releases the copied ELF
+file buffer, and failed exec unwinds its new address space. IPC handle references
+are dropped, but global IPC object retention, global descriptors/sockets, task
+stacks and zombie records still require lifecycle work.
