@@ -44,6 +44,10 @@ fn paintGlyph(target: anytype, g: Glyph, x: i32, y: i32, scale: i32, color: u32)
     const backing = target.scale;
     const origin_x = x * backing + g.x;
     const origin_y = y * backing + g.y - scale * backing * 2;
+    paintGlyphPhysical(target, g, origin_x, origin_y, color);
+}
+fn paintGlyphPhysical(target: anytype, g: Glyph, origin_x: i32, origin_y: i32, color: u32) void {
+    const backing = target.scale;
     var left: i32 = 0;
     var top: i32 = 0;
     var right = target.width * backing;
@@ -85,6 +89,48 @@ pub fn textWidth(str: []const u8, scale: i32) i32 {
     return width;
 }
 
+const menu_atlas = @embedFile("menu-atlas.bin");
+const menu_kerning = @embedFile("menu-kerning.bin");
+fn menuKern(left: u8, right: u8, backing: i32) i32 {
+    const a: usize = if (left >= 32 and left <= 126) left - 32 else '?' - 32;
+    const b: usize = if (right >= 32 and right <= 126) right - 32 else '?' - 32;
+    const size: usize = @intCast(@min(2, @max(1, backing)) - 1);
+    return @as(i8, @bitCast(menu_kerning[(size * 95 + a) * 95 + b]));
+}
+/// Menu text uses exact 1x/2x atlas metrics. At 2x the pen can advance by an
+/// odd physical pixel rather than snapping every character to a logical point.
+pub fn drawMenu(target: anytype, str: []const u8, x: i32, y: i32, color: u32) void {
+    var pen = x * target.scale;
+    for (str, 0..) |ch, i| {
+        if (i > 0) pen += menuKern(str[i - 1], ch, target.scale);
+        const g = atlasGlyph(menu_atlas, ch, target.scale, 2);
+        paintGlyphPhysical(target, g, pen + g.x, y * target.scale + g.y - 2 * target.scale, color);
+        pen += g.advance;
+    }
+}
+pub fn menuWidth(str: []const u8, backing: i32) i32 {
+    var pixels: i32 = 0;
+    for (str, 0..) |ch, i| {
+        if (i > 0) pixels += menuKern(str[i - 1], ch, backing);
+        pixels += atlasGlyph(menu_atlas, ch, backing, 2).advance;
+    }
+    return @divTrunc(pixels + backing - 1, backing);
+}
+
+test "menu metrics retain Retina advances and kerning" {
+    const std = @import("std");
+    try std.testing.expect(menuKern('A', 'V', 2) < 0);
+    var odd_advance = false;
+    for ("Orange OS Windows Desktop 12:59 PM") |ch| {
+        const g = atlasGlyph(menu_atlas, ch, 2, 2);
+        odd_advance = odd_advance or @mod(g.advance, 2) != 0;
+    }
+    try std.testing.expect(odd_advance);
+    try std.testing.expectEqual(@as(i32, 0), menuWidth("", 2));
+    try std.testing.expect(menuWidth("Wed 23 Sep 12:59:59 PM", 2) < 230);
+    try std.testing.expectEqual(menuWidth("?", 2), menuWidth("\x01", 2));
+}
+
 test "glyph clipping preserves pixels and skips off-damage reads" {
     const std = @import("std");
     const Target = struct {
@@ -118,5 +164,16 @@ test "glyph clipping preserves pixels and skips off-damage reads" {
         target.reads = 0;
         drawText(&target, "Outside damage", 100, 100, 2, 0xFFFFFF);
         try std.testing.expectEqual(@as(usize, 0), target.reads);
+        target = .{ .scale = backing };
+        drawMenu(&target, "AV Orange", 1, 10, 0xFFFFFF);
+        const menu_expected = target.pixels;
+        target = .{ .scale = backing };
+        target.clip = .{ .x = 7, .y = 9, .w = 11, .h = 8 };
+        drawMenu(&target, "AV Orange", 1, 10, 0xFFFFFF);
+        for (0..@intCast(30 * backing)) |y| for (0..@intCast(80 * backing)) |x| {
+            const inside = x >= 7 * backing and x < 18 * backing and y >= 9 * backing and y < 17 * backing;
+            const index = y * @as(usize, @intCast(80 * backing)) + x;
+            try std.testing.expectEqual(if (inside) menu_expected[index] else @as(u32, 0x223344), target.pixels[index]);
+        };
     }
 }

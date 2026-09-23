@@ -11,6 +11,8 @@ build/
 *.bin
 !userland/libs/typography/inter-atlas.bin
 !userland/libs/typography/mono-atlas.bin
+!userland/libs/typography/menu-atlas.bin
+!userland/libs/typography/menu-kerning.bin
 !userland/libs/desktop-ui/icons.bin
 __pycache__/
 *.map

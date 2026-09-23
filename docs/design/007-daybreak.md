@@ -363,6 +363,13 @@ material, checks active/inactive windows and hover restoration, and verifies
 that light-theme highlights still render. This does not change client content
 colours: apps such as Welcome still have a light body in the dark shell.
 
+The menu bar uses a dedicated Inter Medium 13/26-pixel atlas with native backing
+pixel advances and pair kerning. At 2x, character positions can use half logical
+points rather than doubled 1x spacing. Status symbols have original optically
+sized SVG masters baked at their exact 40/46-pixel output dimensions. This is a
+guest-rendering improvement, not a claim to match macOS's text engine: the host
+can still resample the framebuffer to fit a differently sized full-screen view.
+
 - The high-DPI desktop is tested at 2560×1600 (1280×800 logical points).
   QEMU may still resample to fit a different host display size. Arbitrary
   monitor modes, runtime scale changes, and exact panel-native output are

@@ -14,6 +14,11 @@ source of redistributed system icons.
   samples the premultiplied atlas at its backing scale. Source SVG remains the
   editable master. The generator's contact sheet is a visual inspection aid.
 
-Validation: all 33 sprites render within clipping at 1x/2x; monochrome tint,
+The menu bar has a separate optical family: original 20-point SVG symbols and
+23-point batteries, baked to exactly 40/46 pixels for 2x output. Consistent
+1.3–1.5-point strokes, clear silhouettes and two toggle capsules replace generic
+miniature toolbar art. Status tint and unknown/off indications remain real.
+
+Validation: all 40 sprites render within clipping at 1x/2x; monochrome tint,
 pointer capture and private publication tests pass. This is a refinement pass,
 not a claim of macOS visual or functional parity.

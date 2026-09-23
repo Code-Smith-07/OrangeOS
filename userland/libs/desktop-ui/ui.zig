@@ -15,7 +15,7 @@ pub const Color = struct {
 };
 const font = @import("typography");
 pub const textWidth = font.textWidth;
-pub const Icon = enum { welcome, terminal, clock, about, windows, appearance, files, trash, chevron_left, chevron_right, chevron_up, document, brand, controls, close, minimize, maximize, pointer, folder_orange, folder_green, folder_purple, folder_pink, folder_gold, wifi, bluetooth, speaker, sun, battery, battery_plain, sidebar_home, sidebar_apps, sidebar_system, sidebar_trash };
+pub const Icon = enum { welcome, terminal, clock, about, windows, appearance, files, trash, chevron_left, chevron_right, chevron_up, document, brand, controls, close, minimize, maximize, pointer, folder_orange, folder_green, folder_purple, folder_pink, folder_gold, wifi, bluetooth, speaker, sun, battery, battery_plain, sidebar_home, sidebar_apps, sidebar_system, sidebar_trash, menu_wifi, menu_bluetooth, menu_speaker, menu_controls, menu_battery, menu_battery_plain, menu_brand };
 pub const Button = struct { id: u32, rect: Rect };
 /// Capture starts on press; moving onto a button while held cannot activate it.
 pub const Pointer = struct {
@@ -137,6 +137,16 @@ pub fn label(s: *const Surface, str: []const u8, x: i32, y: i32, scale: i32, col
 /// Eight-logical-pixel cells, matching Squeeze's bundled monospace atlas.
 pub fn monoLabel(s: *const Surface, str: []const u8, x: i32, y: i32, color: u32) void {
     for (str, 0..) |ch, i| font.drawMono(s, ch, x + @as(i32, @intCast(i)) * 8, y, color);
+}
+
+test "menu symbols match exact Retina output dimensions" {
+    const std = @import("std");
+    for ([_]Icon{ .menu_wifi, .menu_bluetooth, .menu_speaker, .menu_controls, .menu_brand, .menu_battery, .menu_battery_plain }) |kind| {
+        const expected: usize = if (kind == .menu_battery or kind == .menu_battery_plain) 46 else 40;
+        const h = @as(usize, @intFromEnum(kind)) * 8;
+        try std.testing.expectEqual(expected, u16at(h));
+        try std.testing.expectEqual(expected, u16at(h + 2));
+    }
 }
 
 test "monochrome SVG symbols preserve alpha and theme contrast" {

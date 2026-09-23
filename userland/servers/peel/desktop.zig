@@ -451,11 +451,11 @@ pub fn paint(s: *const Surface, state: *const State) void {
     activateTheme(state.palette);
     // Translucent top strip with only real, actionable menus/status.
     bar_material.paint(s, .{ .x = 0, .y = 0, .w = s.width, .h = BAR_H }, 0, active_theme.bar, 222);
-    ui.icon(s, .brand, 14, 4, 20);
-    text(s, "Orange OS", 42, 10, INK);
-    text(s, state.active[0..@min(state.active.len, 25)], 162, 10, INK);
-    text(s, "Windows", 398, 10, INK);
-    text(s, "Desktop", 510, 10, INK);
+    ui.icon(s, .menu_brand, 14, 4, 20);
+    font.drawMenu(s, "Orange OS", 42, 10, INK);
+    font.drawMenu(s, state.active[0..@min(state.active.len, 25)], 162, 10, INK);
+    font.drawMenu(s, "Windows", 398, 10, INK);
+    font.drawMenu(s, "Desktop", 510, 10, INK);
     if (state.popup == .calendar) s.rounded(.{ .x = s.width - 242, .y = 3, .w = 232, .h = 22 }, 7, WHITE, 100);
     if (state.seconds) |seconds| {
         const date = pulp.calendar.fromEpoch(seconds, pulp.timezone_minutes);
@@ -463,9 +463,9 @@ pub fn paint(s: *const Surface, state: *const State) void {
         var time_buf: [32]u8 = undefined;
         var bar_buf: [64]u8 = undefined;
         const label = @import("std").fmt.bufPrint(&bar_buf, "{s}  {s}", .{ pulp.calendar.dateText(&date_buf, date), pulp.calendar.clockText(&time_buf, date) }) catch "";
-        text(s, label, s.width - font.textWidth(label, 1) - 18, 10, INK);
-    } else text(s, "Clock unavailable", s.width - 180, 10, INK);
-    ui.iconTint(s, .controls, s.width - 278, 4, 20, INK);
+        font.drawMenu(s, label, s.width - font.menuWidth(label, s.scale) - 18, 10, INK);
+    } else font.drawMenu(s, "Clock unavailable", s.width - 180, 10, INK);
+    ui.iconTint(s, .menu_controls, s.width - 278, 4, 20, INK);
     paintHostStatus(s, state);
 
     const dock = dockRect(s);
@@ -591,22 +591,22 @@ pub fn paint(s: *const Surface, state: *const State) void {
 fn paintHostStatus(s: *const Surface, state: *const State) void {
     if (s.width < 1160) return; // Preserve usable menus on narrower modes.
     const x = s.width - 472;
-    for ([_]usize{ 0, 1, 3 }, [_]ui.Icon{ .wifi, .bluetooth, .speaker }, 0..) |row_index, icon, i| {
+    for ([_]usize{ 0, 1, 3 }, [_]ui.Icon{ .menu_wifi, .menu_bluetooth, .menu_speaker }, 0..) |row_index, icon, i| {
         const row = state.host.rows[row_index];
         const px = x + @as(i32, @intCast(i)) * 32;
         const unknown = state.host.connection != .fresh or row.reading == .status;
         const off = row.reading == .off or (row_index == 3 and (row.muted == true or (row.reading == .percent and row.reading.percent == 0)));
         ui.iconTint(s, icon, px, 4, 20, if (unknown or off) MUTED else INK);
-        if (unknown) text(s, "?", px + 17, 10, MUTED) else if (off) text(s, "-", px + 17, 10, MUTED);
+        if (unknown) font.drawMenu(s, "?", px + 17, 10, MUTED) else if (off) font.drawMenu(s, "-", px + 17, 10, MUTED);
     }
     const battery = state.host.rows[4];
-    ui.iconTint(s, if (battery.power == true and state.host.connection == .fresh) .battery else .battery_plain, x + 99, 3, 23, INK);
+    ui.iconTint(s, if (battery.power == true and state.host.connection == .fresh) .menu_battery else .menu_battery_plain, x + 99, 3, 23, INK);
     var buf: [12]u8 = undefined;
     const value = if (state.host.connection == .fresh and battery.reading == .percent)
         @import("std").fmt.bufPrint(&buf, "{d}%", .{battery.reading.percent}) catch "?"
     else
         "?";
-    text(s, value, x + 127, 10, INK);
+    font.drawMenu(s, value, x + 127, 10, INK);
 }
 
 fn hardwareButton(s: *const Surface) Rect {

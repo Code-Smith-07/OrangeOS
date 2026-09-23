@@ -17,7 +17,9 @@ NAMES = ("welcome", "terminal", "clock", "about", "windows", "appearance",
          "document", "brand", "controls", "close", "minimize", "maximize", "pointer",
          "folder_orange", "folder_green", "folder_purple", "folder_pink", "folder_gold",
          "wifi", "bluetooth", "speaker", "sun", "battery", "battery_plain",
-         "sidebar_home", "sidebar_apps", "sidebar_system", "sidebar_trash")
+         "sidebar_home", "sidebar_apps", "sidebar_system", "sidebar_trash",
+         "menu_wifi", "menu_bluetooth", "menu_speaker", "menu_controls",
+         "menu_battery", "menu_battery_plain", "menu_brand")
 
 def main():
     header = bytearray()
@@ -25,6 +27,9 @@ def main():
     sheet = Image.new("RGBA", (8 * 192, 192), "#e5e4f1")
     for i, name in enumerate(NAMES):
         size = 192 if i < 8 else 96 if name.startswith("folder_") else 48
+        if name.startswith("menu_"):
+            # Exact backing size: no 48 -> 40/46 resampling in the Retina bar.
+            size = 46 if name.startswith("menu_battery") else 40
         svg = ROOT / "assets/icons" / (name + ".svg")
         png = cairosvg.svg2png(url=str(svg), output_width=size * 2, output_height=size * 2)
         rgba = Image.open(io.BytesIO(png)).convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)

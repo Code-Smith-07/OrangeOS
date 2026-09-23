@@ -6,6 +6,9 @@ in assets/fonts. The generated atlas remains under SIL OFL 1.1.
 """
 import pathlib
 import struct
+import sys
+import json
+import subprocess
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -42,8 +45,38 @@ def bake(source, sizes, axes, dest, metric_axes=None):
 
 
 def main():
+    if "--menu-only" in sys.argv:
+        bake_menu()
+        return
     bake("Inter.ttf", SIZES, [14, 450], DEST, metric_axes=[14, 500])
     bake("JetBrainsMono.ttf", (13,26), [450], DEST.with_name("mono-atlas.bin"))
+    bake_menu()
+
+
+def bake_menu():
+    # Dedicated optical size/weight; native backing-pixel advances and kerning
+    # prevent the menu's spacing being quantized to doubled 1x metrics.
+    bake("Inter.ttf", (13, 26), [14, 500], DEST.with_name("menu-atlas.bin"))
+    kerning = bytearray()
+    pairs = "\n".join(chr(a) + chr(b) for a in range(32, 127) for b in range(32, 127)) + "\n"
+    for size in (13, 26):
+        # Pillow builds without libraqm silently omit GPOS pair kerning. Use
+        # the installed HarfBuzz CLI at bake time; guest builds stay offline.
+        widths = []
+        for enabled in (False, True):
+            result = subprocess.run([
+                "hb-shape", str(ROOT / "assets/fonts/Inter.ttf"),
+                f"--font-size={size * 64}", "--variations=opsz=14,wght=500",
+                "--direction=ltr", "--script=Latn", "--language=en",
+                f"--features=kern={int(enabled)},liga=0,clig=0,calt=0",
+                "--output-format=json"], input=pairs, text=True, capture_output=True, check=True)
+            rows = result.stdout.splitlines()
+            assert len(rows) == 95 * 95
+            widths.append([sum(g["ax"] for g in json.loads(row)) for row in rows])
+        for plain, kerned in zip(*widths):
+            kerning.extend(struct.pack("b", round((kerned - plain) / 64)))
+    assert any(kerning), "Menu kerning must not silently degrade to all zeros"
+    DEST.with_name("menu-kerning.bin").write_bytes(kerning)
 
 
 if __name__ == "__main__":
