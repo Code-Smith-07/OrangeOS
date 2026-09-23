@@ -19,7 +19,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class Guest:
-    def __init__(self):
+    def __init__(self, extra_args=()):
         self.output = pathlib.Path(tempfile.mkdtemp(prefix="orange-daybreak-"))
         self.serial = self.output / "serial.log"
         self.process = subprocess.Popen([
@@ -31,6 +31,7 @@ class Guest:
             "-netdev", "user,id=n0", "-device", "e1000,netdev=n0",
             "-serial", f"file:{self.serial}", "-display", "none",
             "-qmp", f"unix:{self.output / 'qmp.sock'},server=on,wait=off",
+            *extra_args,
             "-no-reboot", "-no-shutdown",
         ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         self.sock = socket.socket(socket.AF_UNIX)

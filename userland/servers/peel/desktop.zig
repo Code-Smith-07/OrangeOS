@@ -170,7 +170,7 @@ pub fn hit(s: *const Surface, state: *const State, x: i32, y: i32) u16 {
     if (y < BAR_H) {
         if (x < 145) return Action.menu;
         if (x >= s.width - 240) return Action.calendar;
-        if (x >= s.width - 300) return Action.settings;
+        if (x >= s.width - 300) return Action.hardware;
         if (x >= 390 and x < 486) return Action.overview;
         if (x >= 500 and x < 600) return Action.desktop;
         return Action.dismiss;
@@ -556,7 +556,7 @@ pub fn paint(s: *const Surface, state: *const State) void {
             const hardware = hardwareButton(s);
             s.rounded(hardware, 10, if (state.hover == Action.hardware) active_theme.hover else WHITE, 220);
             ui.icon(s, .controls, hardware.x + 10, hardware.y + 8, 24);
-            text(s, "Mac hardware status", hardware.x + 46, hardware.y + 14, INK);
+            text(s, "Control Center", hardware.x + 46, hardware.y + 14, INK);
         },
         .calendar => {
             // Own a finished material layer before content. Hover/date updates

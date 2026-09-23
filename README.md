@@ -121,14 +121,23 @@ The next programme is tracked in the
 with separate acceptance gates for UI, a native browser, services and real
 hardware controls. These phases are planned, not completed features.
 
-**MacBook host bridge.** The [read-only companion](host/macos/README.md) now
+**MacBook host bridge.** The [Mac companion](host/macos/README.md) now
 exchanges authenticated capabilities, live Mac time/timezone and heartbeats with
-the actual QEMU guest, including reconnect testing. **Appearance → Mac hardware
-status** now shows real read-only Mac Wi-Fi/Bluetooth state and display-adapter
-availability. Unchanged snapshots do not trigger redraws; companion loss clears
-the readings. The current public IOKit adapter found no brightness endpoint on
-this Mac, so brightness is labelled unsupported, not zero. Radio changes,
-pairing and brightness controls still need consent and qualified backends.
+the actual QEMU guest, including reconnect testing. Click the menu-bar controls
+icon for **Control Center**: real Mac Wi-Fi/Bluetooth state, output volume,
+battery/AC state and display-adapter availability. A native volume slider sends
+requests to CoreAudio after you enable sound control in the companion's Mac
+menu; revoke that grant there at any time. The guest reports pending, denied,
+unsupported, changed-route and disconnected outcomes. Unchanged snapshots do
+not repaint. Brightness remains unsupported by the current adapter on this Mac;
+radio changes, pairing and a working brightness backend remain unfinished.
+See the [native Control Center screenshot](docs/screenshots/control-center.png).
+
+**Browser runtime progress.** Apps can now allocate, protect and release private
+memory. Synchronous app faults terminate the affected process while the OS
+continues. Memory conservation and four actual faulting apps are tested in QEMU.
+The modern browser engine, HTTPS and remaining runtime work are still tracked
+in the [browser plan](docs/design/008-browser.md).
 
 **Input responsiveness.** Relative pointer travel is independent of Retina
 scaling, sleeping input consumers wake promptly, and unchanged menu/dock glass

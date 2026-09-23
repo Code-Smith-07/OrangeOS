@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import HostProtocol
 import HostHardware
+import AppKit
 
 enum RunError: Error { case arguments, unsafePath, connection, io }
 
@@ -51,9 +52,11 @@ func connectSocket(_ path: String) throws -> Int32 {
     return fd
 }
 
-func serve(_ fd: Int32, token: Data, monitor: HardwareMonitor) throws {
+func serve(_ fd: Int32, token: Data, monitor: HardwareMonitor, consent: AudioConsent?) throws {
     var decoder = Decoder()
-    var session = try Session(token:token, hardware: { monitor.current() })
+    var session = try Session(token:token, hardware: { monitor.current() }, audioControl: consent.map { grant in
+        { device, percent in grant.apply(device: device, percent: percent) }
+    })
     var input = [UInt8](repeating:0,count:4096)
     var period = ProcessInfo.processInfo.systemUptime
     var count = 0
@@ -86,8 +89,53 @@ func serve(_ fd: Int32, token: Data, monitor: HardwareMonitor) throws {
     }
 }
 
+final class CompanionMenu: NSObject {
+    let consent: AudioConsent
+    let item: NSStatusItem
+    let grantItem = NSMenuItem(title: "Allow OrangeOS to change Mac volume", action: #selector(toggleAudio), keyEquivalent: "")
+    init(consent: AudioConsent) {
+        self.consent = consent
+        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        super.init()
+        item.button?.image = NSImage(systemSymbolName: "speaker.wave.2", accessibilityDescription: "OrangeOS Companion")
+        let menu = NSMenu()
+        let title = NSMenuItem(title: "OrangeOS Companion", action: nil, keyEquivalent: "")
+        title.isEnabled = false; menu.addItem(title)
+        let scope = NSMenuItem(title: "Sound control affects this Mac", action: nil, keyEquivalent: "")
+        scope.isEnabled = false; menu.addItem(scope)
+        menu.addItem(.separator())
+        grantItem.target = self; menu.addItem(grantItem)
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "Disconnect and quit", action: #selector(disconnect), keyEquivalent: "")
+        quit.target = self; menu.addItem(quit)
+        item.menu = menu
+    }
+    @objc func toggleAudio() {
+        consent.setAllowed(!consent.allowed)
+        grantItem.state = consent.allowed ? .on : .off
+    }
+    @objc func disconnect() { consent.setAllowed(false); NSApplication.shared.terminate(nil) }
+}
+
+func runConnections(path: String, token: Data, monitor: HardwareMonitor, consent: AudioConsent?) throws {
+    while true {
+        let fd: Int32
+        do { fd = try connectSocket(path) }
+        catch RunError.connection { Thread.sleep(forTimeInterval:0.25); continue }
+        do { try serve(fd,token:token,monitor:monitor,consent:consent) }
+        catch { fputs("orange-host: rejected session or transport failure\n",stderr) }
+        close(fd)
+        Thread.sleep(forTimeInterval:0.25)
+    }
+}
+
 do {
     let args = CommandLine.arguments
+    if args.count == 2 && args[1] == "--verify-audio-write" {
+        let result = AudioPower.verifyUnchangedVolumeWrite()
+        print("CoreAudio unchanged-level write/readback: \(result)")
+        exit(result == "applied" ? 0 : 1)
+    }
     if args.count == 2 && args[1] == "--probe-hardware" {
         let monitor = HardwareMonitor()
         let deadline = Date().addingTimeInterval(5)
@@ -96,20 +144,25 @@ do {
         print(String(decoding: try encoder.encode(monitor.current()), as: UTF8.self))
         exit(0)
     }
-    guard args.count == 5, args[1] == "--socket", args[3] == "--token-file" else { throw RunError.arguments }
+    let controls = args.count == 6 && args[5] == "--controls"
+    guard (args.count == 5 || controls), args[1] == "--socket", args[3] == "--token-file" else { throw RunError.arguments }
     let token = try readToken(args[4])
     _ = try Session(token: token)
-    let monitor = HardwareMonitor()
-    print("orange-host: read-only companion; host mutations disabled")
+    let consent = AudioConsent()
+    let monitor = HardwareMonitor(audioConsent: consent)
+    print(controls ? "orange-host: sound control requires a live grant in the Mac menu bar" : "orange-host: read-only companion; host mutations disabled")
     fflush(stdout)
-    while true {
-        let fd: Int32
-        do { fd = try connectSocket(args[2]) }
-        catch RunError.connection { Thread.sleep(forTimeInterval:0.25); continue }
-        do { try serve(fd,token:token,monitor:monitor) }
-        catch { fputs("orange-host: rejected session or transport failure\n",stderr) }
-        close(fd)
-        Thread.sleep(forTimeInterval:0.25)
+    if controls {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        let menu = CompanionMenu(consent: consent)
+        Thread.detachNewThread {
+            do { try runConnections(path: args[2], token: token, monitor: monitor, consent: consent) }
+            catch { fputs("orange-host: unsafe session path\n", stderr); exit(1) }
+        }
+        withExtendedLifetime(menu) { app.run() }
+    } else {
+        try runConnections(path: args[2], token: token, monitor: monitor, consent: nil)
     }
 } catch {
     fputs("orange-host: invalid arguments or unsafe session files\n",stderr)

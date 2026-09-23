@@ -83,8 +83,10 @@ def run():
         host = launch_host()
         until(lambda: "host-probe: PASS all operations denied" in log(), "ordinary app denied all bridge operations")
         until(lambda: "host-agent: PASS invalid buffers rejected" in log(), "invalid guest buffers rejected")
+        until(lambda: "host-agent: PASS sound mailbox bounds and authority" in log(), "sound mailbox validates buffers and separates sender/agent roles")
         until(lambda: "host-agent: pong" in log(), "authenticated round trip and heartbeat")
         until(lambda: "host-probe: PASS snapshot publication denied" in log(), "ordinary apps cannot forge hardware state")
+        until(lambda: "host-probe: PASS sound command access denied" in log(), "ordinary apps cannot submit or acknowledge sound commands")
         until(lambda: "host-probe: PASS C entry frame sentinel" in log(), "C entry stack has a readable return sentinel")
         until(lambda: "host-agent: PASS snapshot bounds and pointers rejected" in log(), "snapshot user pointers and bounds validated")
         snapshot_line = next(line for line in log().splitlines() if line.startswith("host-agent: snapshot "))
@@ -97,12 +99,15 @@ def run():
         until(lambda: any(x["freshness"] == "fresh" for x in hardware()), "fresh host hardware snapshot reaches guest")
         observed = hardware()[-1]
         assert abs(observed["observed_unix_seconds"] - time.time()) < 8
-        for name in ("wifi", "bluetooth", "brightness"):
+        for name in ("wifi", "bluetooth", "brightness", "audio", "battery"):
             assert observed[name]["source"] and observed[name]["status"] and observed[name]["permission"]
         direct = json.loads(subprocess.check_output([str(ROOT / "host/macos/.build/debug/orange-host"), "--probe-hardware"]))
-        for name in ("wifi", "bluetooth", "brightness"):
+        for name in ("wifi", "bluetooth", "brightness", "audio", "battery"):
             assert observed[name]["status"] == direct[name]["status"], f"{name} status mismatch"
             assert observed[name].get("power") == direct[name].get("power"), f"{name} power mismatch"
+            if "level" in observed[name]:
+                assert abs(observed[name]["level"] - direct[name]["level"]) < .03, f"{name} level mismatch"
+        assert observed["audio"]["control"] is False
         print("PASS guest hardware matches direct host probe (no fabricated off/zero values)", flush=True)
         # Reuse the desktop corpus's QMP interactions on this network-disabled,
         # bridge-enabled guest, without creating a second VM.
@@ -122,25 +127,25 @@ def run():
         until(lambda: "hardware: view snapshot" in log(), "native hardware window displays live snapshot")
         ui.move(750, 80)
         time.sleep(.5)
-        baseline = ui.region(390, 221, 480, 330)
+        baseline = ui.region(390, 181, 480, 330)
         offset = len(log())
         for _ in range(3):
             ui.click(825, 292)
         ui.move(750, 80)
         time.sleep(2.5)
         assert "hardware: view" not in log()[offset:], "no-op clicks or snapshot timestamps caused repaint"
-        assert ui.region(390, 221, 480, 330) == baseline, "hardware view changed on no-op interactions"
+        assert ui.region(390, 181, 480, 330) == baseline, "hardware view changed on no-op interactions"
         print("PASS hardware no-op clicks, hover and timestamp-only refresh do not repaint", flush=True)
         ui.screenshot("hardware-connected")
         ui.key("f4")
         ui.click(1050, 458)
-        assert log().count('"Mac hardware"') == 1, "hardware launcher opened duplicate window"
+        assert log().count('"Control Center"') == 1, "hardware launcher opened duplicate window"
         print("PASS hardware launcher focuses existing window", flush=True)
         offset = len(log())
         stop(host)
         until(lambda: "hardware: view unavailable" in log()[offset:], "disconnect clears guest UI state", 12)
         ui.screenshot("hardware-disconnected")
-        assert ui.region(390, 221, 480, 330) != baseline
+        assert ui.region(390, 181, 480, 330) != baseline
         offset = len(log())
         host = launch_host()
         until(lambda: "host-agent: pong" in log()[offset:], "companion restart re-authenticates and resumes heartbeat", 20)
@@ -148,7 +153,7 @@ def run():
         assert "host-agent: hardware " in log()[offset:]
         until(lambda: "hardware: view snapshot" in log()[offset:], "reconnect restores guest hardware view", 12)
         ui.move(750, 80)
-        until(lambda: ui.region(390, 221, 480, 330) == baseline, "restored hardware pixels match original")
+        until(lambda: ui.region(390, 181, 480, 330) == baseline, "restored hardware pixels match original")
         offset = len(log())
         host.send_signal(signal.SIGSTOP)
         try:
@@ -163,7 +168,7 @@ def run():
         host = launch_host()
         until(lambda: "hardware: view snapshot" in log()[offset:], "timed-out session recovers after fresh authentication", 20)
         assert "host-agent: authenticated" in log()[offset:]
-        ui.click(410, 201)
+        ui.click(410, 161)
         until(lambda: "hardware: closed" in log(), "hardware close button exits application")
         assert "PANIC" not in log()
         assert secret not in log() and secret not in (output / "host.log").read_text()

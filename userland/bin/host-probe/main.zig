@@ -15,5 +15,7 @@ export fn _start() callconv(.c) noreturn {
     pulp.puts("host-probe: PASS all operations denied\n");
     if (pulp.syscall3(111, 1, 0, 0) != -13 or pulp.syscall3(111, 1, @intFromPtr(&key), 64) != -13) pulp.exit(2);
     pulp.puts("host-probe: PASS snapshot publication denied\n");
+    for (0..5) |op| if (pulp.syscall3(112, op, 0, 0) != -13) pulp.exit(4);
+    pulp.puts("host-probe: PASS sound command access denied\n");
     pulp.exit(0);
 }

@@ -6,6 +6,9 @@ public struct HardwareState: Codable, Equatable {
     public var permission: String
     public var power: Bool?
     public var level: Double?
+    public var control: Bool = false
+    public var device: UInt32?
+    public var muted: Bool?
     public var note: String
     public init(source: String, status: String, permission: String = "not_requested",
                 power: Bool? = nil, level: Double? = nil, note: String) {
@@ -22,12 +25,17 @@ public struct HardwareSnapshot: Codable, Equatable {
     public var wifi: HardwareState
     public var bluetooth: HardwareState
     public var brightness: HardwareState
+    public var audio: HardwareState
+    public var battery: HardwareState
     public init(observed: Int64 = 0, freshness: String = "unavailable",
-                wifi: HardwareState? = nil, bluetooth: HardwareState? = nil, brightness: HardwareState? = nil) {
+                wifi: HardwareState? = nil, bluetooth: HardwareState? = nil, brightness: HardwareState? = nil,
+                audio: HardwareState? = nil, battery: HardwareState? = nil) {
         observed_unix_seconds = observed; self.freshness = freshness
         self.wifi = wifi ?? .init(source: "CoreWLAN", status: "unavailable", note: "Awaiting host probe")
         self.bluetooth = bluetooth ?? .init(source: "CoreBluetooth/IOBluetooth", status: "unavailable", note: "Awaiting host probe")
         self.brightness = brightness ?? .init(source: "IOKit", status: "unavailable", note: "Awaiting host probe")
+        self.audio = audio ?? .init(source: "CoreAudio", status: "unavailable", note: "Awaiting host probe")
+        self.battery = battery ?? .init(source: "IOPowerSources", status: "unavailable", note: "Awaiting host probe")
     }
     public func aged(now: Date) -> HardwareSnapshot {
         var result = self

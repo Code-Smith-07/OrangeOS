@@ -15,7 +15,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 NAMES = ("welcome", "terminal", "clock", "about", "windows", "appearance",
          "files", "trash", "chevron_left", "chevron_right", "chevron_up",
          "document", "brand", "controls", "close", "minimize", "maximize", "pointer",
-         "folder_orange", "folder_green", "folder_purple", "folder_pink", "folder_gold")
+         "folder_orange", "folder_green", "folder_purple", "folder_pink", "folder_gold",
+         "wifi", "bluetooth", "speaker", "sun", "battery")
 
 def main():
     header = bytearray()

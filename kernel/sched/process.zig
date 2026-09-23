@@ -85,6 +85,7 @@ pub fn execImage(image: []u8) Error!noreturn {
 pub const SpawnRequest = struct {
     image: []u8,
     host_bridge: bool,
+    host_controls: bool,
 };
 
 /// Start a program with its stdio bound to a PTY.
@@ -112,7 +113,7 @@ pub fn spawnPath(path: []const u8) !u32 {
     const req = heap.create(SpawnRequest) catch return error.OutOfMemory;
     errdefer heap.destroy(req);
     const parent = sched.currentTask();
-    req.* = .{ .image = buf[0..size], .host_bridge = if (parent) |p|
+    req.* = .{ .image = buf[0..size], .host_controls = std.mem.eql(u8, path, "/bin/hardware"), .host_bridge = if (parent) |p|
         p.service_manager and std.mem.eql(u8, path, "/bin/host-agent")
     else
         false };
@@ -135,6 +136,7 @@ fn spawnThread(arg: ?*anyopaque) void {
     const req: *SpawnRequest = @ptrCast(@alignCast(arg.?));
     const image = req.image;
     sched.currentTask().?.host_bridge = req.host_bridge;
+    sched.currentTask().?.host_controls = req.host_controls;
     heap.destroy(req);
 
     execImage(image) catch |e| {

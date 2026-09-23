@@ -108,6 +108,7 @@ pub const Task = struct {
     // Boot-issued authority, never inherited by ordinary spawned programs.
     service_manager: bool = false,
     host_bridge: bool = false,
+    host_controls: bool = false,
 
     /// Next free virtual address for shared-memory mappings. Grows upward
     /// through a region reserved for the purpose.

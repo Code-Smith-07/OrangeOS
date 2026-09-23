@@ -182,7 +182,7 @@ fn chromeDamage() void {
 }
 
 fn appIndex(title: []const u8) usize {
-    if (@import("std").mem.eql(u8, title, "Mac hardware")) return 6;
+    if (@import("std").mem.eql(u8, title, "Control Center")) return 6;
     if (@import("std").mem.eql(u8, title, "Files")) return 4;
     if (@import("std").mem.eql(u8, title, "Trash")) return 5;
     if (title.len >= 7 and @import("std").mem.eql(u8, title[0..7], "Squeeze")) return 1;

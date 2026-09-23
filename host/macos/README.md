@@ -1,13 +1,14 @@
-# OrangeOS Mac Companion — read-only bridge milestone
+# OrangeOS Mac Companion
 
 `swift test --package-path host/macos` builds the CLI and runs protocol tests.
-This is not yet a settings application or a Wi-Fi/Bluetooth controller.
+The default CLI connection is read-only. An optional menu-bar app provides a
+revocable sound-control grant; Wi-Fi/Bluetooth control is still unfinished.
 
 The companion connects to a QEMU-owned Unix socket in a same-user 0700 directory.
 It reads a 64-character lowercase hex credential from an owned, non-symlink,
 0600 (or stricter) file; the launcher supplies the same per-run credential to
 the guest. No TCP listener, host commands, files, radio changes or media capture
-are exposed. Same-user hostile host processes and a compromised host are outside
+are exposed by the default mode. Same-user hostile host processes and a compromised host are outside
 this initial channel's isolation boundary; a guest credential is not app trust.
 
 Protocol ORHB v1: 16-byte little-endian header (`ORHB`, version u8, flags u8,
@@ -23,6 +24,7 @@ within a connection; malformed headers, bad authentication or replay close it.
 | 3 snapshot | Empty | Host UTC seconds, timezone/offset, OS version |
 | 4 ping | Empty | Pong |
 | 5 hardware | Empty | Versioned, non-identifying Wi-Fi/Bluetooth/display readback, source, permission and freshness |
+| 6 audio.set_volume | 12 bytes: operation=1, percent 0–100, observed device ID (u32 little-endian) | Applied only with a live host sound grant and matching current route; status/error, never an implicit grant |
 | Other | Any | Denied (or invalid argument); no host mutation |
 
 Responses contain bounded JSON; framing itself is binary. Fragmentation and
@@ -152,3 +154,56 @@ wire tests and four Zig hardware-model tests passed. Connected/disconnected
 screenshots from `orange-host-l25kw9u3` were visually inspected for clipping,
 rounded corners and truthful labels. The six-second guest cache expired before
 the frozen companion's separate RPC timeout; both fail-closed paths passed.
+
+## Control Center, sound and battery (23 September 2026)
+
+The menu-bar controls button now launches the native **Control Center**. Its
+original SVG Wi-Fi/Bluetooth/sun/speaker/battery symbols accompany real cached
+observations. CoreAudio supplies default-output volume, mute state and a route
+identifier; IOPowerSources supplies internal battery capacity and AC state.
+Unavailable hardware has no fabricated percentage. Battery changes legitimately
+repaint the panel; timestamps and empty clicks do not.
+
+Build the optional menu-bar companion and launch the preview:
+
+```sh
+sh host/macos/bundle.sh
+python3 tools/host_bridge_preview.py
+```
+
+The local bundle is ad-hoc signed and stays in `build/OrangeOS Companion.app`.
+Its speaker menu contains **Allow OrangeOS to change Mac volume** (off by
+default) and **Disconnect and quit**. The grant lasts only for this companion
+process; clearing it synchronizes with any current setter before returning.
+It affects the Mac's selected output, not a guest-only mixer. Disconnecting the
+companion leaves QEMU running. CLI mode without `--controls` denies mutations.
+
+Dragging/releasing the guest slider submits a bounded sound request through
+syscall 112. Only `/bin/hardware` gets that request capability on the current
+read-only system image; ordinary apps cannot submit or acknowledge it. Only the
+boot-authorized host agent can claim/complete the single pending request. IDs,
+owner checks, strict lengths, six-second expiry and no automatic retry prevent
+accidental replay. This path-based grant must be replaced before writable system
+binaries are supported. It is not a completed general application sandbox.
+
+The host checks live consent, command range and the observed device ID, calls
+CoreAudio, then reads back the level. A route change fails the command rather
+than redirecting it silently. Denial and command failure do not tear down
+read-only services. A timeout can mean the final physical outcome is unknown;
+the UI refreshes observations and does not retry a mutation automatically.
+
+Qualification: seven Swift protocol tests, five Zig model tests, real Mac
+readback/reconnect/expiry/no-op-redraw checks in `tools/host_bridge_smoke.py`, and
+the real guest command pipeline against an explicitly simulated host in
+`tools/sound_bridge_smoke.py`. The latter verifies slider dispatch, readback,
+denial, route-change rejection and disabled controls without changing Mac audio.
+`orange-host --verify-audio-write` also passed on this Mac: the production
+CoreAudio setter wrote the exact existing level back and verified its readback,
+without rounding or changing loudness.
+The Mac menu's interactive grant/revoke check remains manual: the computer-use
+inspector timed out on the status app in this session. End-to-end physical
+volume adjustment through that menu has not yet been certified.
+
+Wi-Fi association, Bluetooth discovery/pairing, guest PCM audio and Mac display
+brightness control remain separate unfinished work. The current IOKit display
+adapter still reports unsupported on this Mac.

@@ -67,4 +67,36 @@ final class ProtocolTests: XCTestCase {
         _ = try session.respond(Frame(method: 1, request: 1, payload: token))
         XCTAssertEqual(try session.respond(Frame(method: 5, request: 2)).flags, 2)
     }
+    func testAudioRequiresLiveGrantAndValidRouteCommand() throws {
+        var allowed = false, calls = 0
+        var session = try Session(token: token, audioControl: { device, percent in
+            guard allowed else { return "permission_denied" }
+            calls += 1
+            guard device == 103 else { return "route_changed" }
+            return percent <= 100 ? "applied" : "invalid_argument"
+        })
+        func payload(_ operation: UInt32 = 1, _ percent: UInt32 = 30, _ device: UInt32 = 103) -> Data {
+            Data([operation, percent, device].flatMap { n in (0..<4).map { UInt8(truncatingIfNeeded: n >> ($0*8)) } })
+        }
+        XCTAssertThrowsError(try session.respond(Frame(method: 6, request: 1, payload: payload())))
+        XCTAssertEqual(calls, 0)
+        _ = try session.respond(Frame(method: 1, request: 2, payload: token))
+        XCTAssertEqual(try session.respond(Frame(method: 6, request: 3, payload: payload())).flags, 2)
+        XCTAssertEqual(calls, 0)
+        allowed = true
+        let applied = try session.respond(Frame(method: 6, request: 4, payload: payload()))
+        XCTAssertEqual(String(decoding: applied.payload, as: UTF8.self), "{\"status\":\"applied\"}")
+        XCTAssertEqual(calls, 1)
+        XCTAssertThrowsError(try session.respond(Frame(method: 6, request: 4, payload: payload())))
+        for (i, bytes) in [payload(2), payload(1, 101), payload(1, 30, 0), Data(repeating: 0, count: 11), Data(repeating: 0, count: 13)].enumerated() {
+            XCTAssertEqual(try session.respond(Frame(method: 6, request: UInt32(5+i), payload: bytes)).flags, 2)
+        }
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(try session.respond(Frame(method: 6, request: 10, payload: payload(1, 30, 999))).flags, 2)
+        allowed = false
+        XCTAssertEqual(try session.respond(Frame(method: 6, request: 11, payload: payload())).flags, 2)
+        XCTAssertEqual(calls, 2)
+        // A rejected mutation must not break unrelated read-only services.
+        XCTAssertEqual(try session.respond(Frame(method: 4, request: 12)).flags, 1)
+    }
 }

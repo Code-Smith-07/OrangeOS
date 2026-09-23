@@ -14,7 +14,9 @@ public final class HardwareMonitor {
     private var snapshot = HardwareSnapshot()
     private var observedUptime: TimeInterval = 0
     private var timer: DispatchSourceTimer?
-    public init() {
+    private let audioConsent: AudioConsent
+    public init(audioConsent: AudioConsent = AudioConsent()) {
+        self.audioConsent = audioConsent
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now(), repeating: 2)
         timer.setEventHandler { [weak self] in self?.refresh() }
@@ -25,6 +27,7 @@ public final class HardwareMonitor {
     public func current() -> HardwareSnapshot {
         lock.lock(); defer { lock.unlock() }
         var result = snapshot.aged(now: Date())
+        if !audioConsent.allowed { result.audio.control = false; result.audio.permission = "not_granted" }
         if result.freshness == "fresh" && ProcessInfo.processInfo.systemUptime - observedUptime > 6 { result.freshness = "stale" }
         return result
     }
@@ -52,7 +55,8 @@ public final class HardwareMonitor {
         default: bluetooth = .init(source: "CoreBluetooth.authorization", status: "permission_required", permission: "not_determined", note: "Companion onboarding required; no automatic permission prompt")
         }
         let brightness = Self.brightness()
-        let value = HardwareSnapshot(observed: Int64(started.timeIntervalSince1970), freshness: "fresh", wifi: wifi, bluetooth: bluetooth, brightness: brightness)
+        let value = HardwareSnapshot(observed: Int64(started.timeIntervalSince1970), freshness: "fresh", wifi: wifi, bluetooth: bluetooth, brightness: brightness,
+                                     audio: AudioPower.audio(allowControl: audioConsent.allowed), battery: AudioPower.battery())
         lock.lock(); snapshot = value; observedUptime = startedUptime; lock.unlock()
     }
     private static func brightness() -> HardwareState {

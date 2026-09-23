@@ -48,14 +48,16 @@ def main():
         children.append(guest)
         with (output / "host.log").open("wb") as log:
             host = subprocess.Popen([
-                str(ROOT / "host/macos/.build/debug/orange-host"),
-                "--socket", str(channel), "--token-file", str(token)],
+                str(ROOT / "build/OrangeOS Companion.app/Contents/MacOS/orange-host"),
+                "--socket", str(channel), "--token-file", str(token), "--controls"],
                 stdout=log, stderr=subprocess.STDOUT)
         children.append(host)
         print(f"Preview evidence: {output}; QEMU PID {guest.pid}", flush=True)
+        disconnect_reported = False
         while guest.poll() is None:
-            if host.poll() is not None:
-                raise RuntimeError(f"Mac companion exited; see {output / 'host.log'}")
+            if host.poll() is not None and not disconnect_reported:
+                print("Mac companion disconnected; the VM remains available.", flush=True)
+                disconnect_reported = True
             time.sleep(.5)
         if guest.returncode:
             raise RuntimeError(f"QEMU exited with {guest.returncode}; see {output / 'qemu.log'}")

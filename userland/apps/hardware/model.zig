@@ -11,10 +11,10 @@ pub const Source = struct {
         return self.bytes[0..self.len];
     }
 };
-pub const Row = struct { reading: Reading = .{ .status = .unavailable }, source: Source = .{} };
+pub const Row = struct { reading: Reading = .{ .status = .unavailable }, source: Source = .{}, control: bool = false, device: u32 = 0, power: ?bool = null, muted: ?bool = null };
 pub const Model = struct {
     connection: Connection = .disconnected,
-    rows: [3]Row = @splat(.{}),
+    rows: [5]Row = @splat(.{}),
     pub fn eql(self: Model, other: Model) bool {
         return std.meta.eql(self, other);
     }
@@ -66,8 +66,11 @@ pub fn parse(bytes: []const u8, scratch: []u8) Model {
     if (observed != .integer or observed.integer < 0) return invalid;
     const freshness = string(root, "freshness") orelse return invalid;
     var result: Model = .{ .connection = if (std.mem.eql(u8, freshness, "fresh")) .fresh else if (std.mem.eql(u8, freshness, "stale")) .stale else if (std.mem.eql(u8, freshness, "unavailable")) .unavailable else return invalid };
-    for ([_][]const u8{ "wifi", "bluetooth", "brightness" }, 0..) |key, i| {
-        const item = field(root, key) orelse return invalid;
+    for ([_][]const u8{ "wifi", "bluetooth", "brightness", "audio", "battery" }, 0..) |key, i| {
+        const item = field(root, key) orelse {
+            if (i >= 3) continue; // Old read-only v1 companions remain usable.
+            return invalid;
+        };
         const source = string(item, "source") orelse return invalid;
         const permission = string(item, "permission") orelse return invalid;
         const state = status(string(item, "status") orelse return invalid, permission);
@@ -78,12 +81,26 @@ pub fn parse(bytes: []const u8, scratch: []u8) Model {
         // Never allow an old/non-available payload's optional value to override
         // its authoritative status (e.g. denied plus a remembered power=true).
         if (result.connection == .fresh and state == .available) {
-            if (i == 2) {
+            if (i >= 2) {
                 if (field(item, "level")) |value| {
                     row.reading = if (percentage(value)) |p| .{ .percent = p } else .{ .status = .unknown };
                 }
             } else if (field(item, "power")) |value| {
                 row.reading = if (value == .bool) (if (value.bool) .on else .off) else .{ .status = .unknown };
+            }
+            if (field(item, "power")) |value| {
+                if (value == .bool) row.power = value.bool;
+            }
+            if (field(item, "muted")) |value| {
+                if (value == .bool) row.muted = value.bool;
+            }
+            if (i == 3 and row.reading == .percent) {
+                if (field(item, "device")) |device| {
+                    if (device == .integer and device.integer > 0 and device.integer <= std.math.maxInt(u32)) row.device = @intCast(device.integer);
+                }
+                if (field(item, "control")) |control| {
+                    row.control = control == .bool and control.bool and row.device != 0 and std.mem.eql(u8, permission, "allowed");
+                }
             }
         }
         result.rows[i] = row;
@@ -123,7 +140,7 @@ test "timestamps do not invalidate visible state but readings and expiry do" {
     const stale = "{\"schema\":1,\"provider\":\"macos\",\"observed_unix_seconds\":100,\"freshness\":\"stale\"";
     const expired = decode(stale ++ wifi ++ bluetooth ++ brightness ++ "0.5}}");
     try std.testing.expect(!original.eql(expired));
-    for (expired.rows) |row| try std.testing.expectEqual(Status.stale, row.reading.status);
+    for (expired.rows[0..3]) |row| try std.testing.expectEqual(Status.stale, row.reading.status);
     try std.testing.expect(!expired.eql(decode("")));
 }
 test "bounded parsing rejects malformed and incompatible snapshots" {
@@ -135,4 +152,17 @@ test "bounded parsing rejects malformed and incompatible snapshots" {
     var tiny: [8]u8 = undefined;
     try std.testing.expectEqual(Connection.invalid, parse(prefix ++ wifi ++ bluetooth ++ brightness ++ "0.5}}", &tiny).connection);
     try std.testing.expectEqual(Connection.disconnected, decode("").connection);
+}
+
+test "audio controls require a fresh available reading, route and explicit host grant" {
+    const audio = ",\"audio\":{\"source\":\"CoreAudio\",\"status\":\"available\",\"permission\":\"allowed\",\"device\":103,\"control\":true,\"muted\":false,\"level\":0.31}";
+    const tail = ",\"brightness\":{\"source\":\"IOKit\",\"status\":\"unsupported\",\"permission\":\"not_requested\"}}";
+    const m = decode(prefix ++ wifi ++ bluetooth ++ audio ++ tail);
+    try std.testing.expect(m.rows[3].control and m.rows[3].device == 103 and m.rows[3].reading.percent == 31);
+    const no_grant = ",\"audio\":{\"source\":\"CoreAudio\",\"status\":\"available\",\"permission\":\"not_granted\",\"device\":103,\"control\":true,\"level\":0.31}";
+    try std.testing.expect(!decode(prefix ++ wifi ++ bluetooth ++ no_grant ++ tail).rows[3].control);
+    const stale = "{\"schema\":1,\"provider\":\"macos\",\"observed_unix_seconds\":100,\"freshness\":\"stale\"";
+    try std.testing.expect(!decode(stale ++ wifi ++ bluetooth ++ audio ++ tail).rows[3].control);
+    const invalid_route = ",\"audio\":{\"source\":\"CoreAudio\",\"status\":\"available\",\"permission\":\"allowed\",\"device\":-1,\"control\":true,\"level\":0.31}";
+    try std.testing.expect(!decode(prefix ++ wifi ++ bluetooth ++ invalid_route ++ tail).rows[3].control);
 }
