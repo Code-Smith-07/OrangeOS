@@ -75,7 +75,7 @@ pub const ThemeColors = struct {
 };
 pub const THEME_NAMES = [_][]const u8{ "Coastal Glass", "Citrus Atelier", "Midnight Aurora" };
 const THEMES = [_]ThemeColors{
-    .{ .ink = 0x17334D, .muted = 0x5D748A, .accent = 0x1689DB, .surface = 0xFFFFFF, .bar = 0xF2FAFF, .dock = 0xEAF7FF, .panel = 0xF4FAFF, .hover = 0xD9EFFD, .rim = 0xFFFFFF, .frame = 0xF4FAFF, .frame_inactive = 0xDFECF5, .frame_text = 0x17334D },
+    .{ .ink = 0x26313E, .muted = 0x78818D, .accent = 0x1689DB, .surface = 0xFFFFFF, .bar = 0xF2FAFF, .dock = 0xF1F5F8, .panel = 0xF4FAFF, .hover = 0xD9EFFD, .rim = 0xFFFFFF, .frame = 0xF5F5F7, .frame_inactive = 0xECEDEF, .frame_text = 0x36383D },
     .{ .ink = 0x4A2B36, .muted = 0x816A74, .accent = 0xDF5D32, .surface = 0xFFF9F4, .bar = 0xFFF3E9, .dock = 0xFFEDE5, .panel = 0xFFF4EE, .hover = 0xFFE4D8, .rim = 0xFFFFFF, .frame = 0xFFF7F1, .frame_inactive = 0xF6E4DF, .frame_text = 0x4A2B36 },
     .{ .ink = 0xF4F7FF, .muted = 0xBDC9E0, .accent = 0x69E5E0, .surface = 0x263556, .bar = 0x14243F, .dock = 0x1E3154, .panel = 0x1C2D4B, .hover = 0x345272, .rim = 0xBAD8FB, .frame = 0x233653, .frame_inactive = 0x1A2942, .frame_text = 0xF4F7FF },
 };
@@ -475,7 +475,6 @@ pub fn paint(s: *const Surface, state: *const State) void {
     for (DOCK_ACTIONS, 0..) |action, i| {
         const r = dockItem(s, i);
         const hovered = state.hover == action;
-        if (hovered) s.rounded(.{ .x = r.x + 2, .y = r.y, .w = r.w - 4, .h = 65 }, 16, active_theme.hover, 120);
         // Fixed optical size avoids abrupt magnification jumps on pointer entry.
         ui.icon(&drawing, DOCK_ICONS[i], r.x + 8, r.y + 3, 56);
         if (DOCK_APPS[i]) |app| if (state.running[app]) {

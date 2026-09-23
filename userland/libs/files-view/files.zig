@@ -28,19 +28,15 @@ var grid_view = true;
 
 fn entryRect(index: usize) ui.Rect {
     const slot = index % ROWS;
-    if (!grid_view) return .{ .x = 182, .y = 109 + @as(i32, @intCast(slot)) * 35, .w = 476, .h = 32 };
-    return .{ .x = 184 + @as(i32, @intCast(slot % 4)) * 118, .y = 112 + @as(i32, @intCast(slot / 4)) * 137, .w = 112, .h = 124 };
+    if (!grid_view) return .{ .x = 182, .y = 73 + @as(i32, @intCast(slot)) * 35, .w = 476, .h = 32 };
+    return .{ .x = 184 + @as(i32, @intCast(slot % 4)) * 118, .y = 72 + @as(i32, @intCast(slot / 4)) * 137, .w = 112, .h = 116 };
 }
 fn entryIcon(index: usize) ui.Icon {
     const e = &entries[index];
     if (!e.isDir()) return .document;
     const name = e.nameSlice();
     if (std.mem.eql(u8, name, "Trash")) return .trash;
-    if (std.mem.eql(u8, name, "etc")) return .folder_orange;
-    if (std.mem.eql(u8, name, "bin")) return .folder_purple;
-    if (std.mem.eql(u8, name, "sbin")) return .folder_green;
-    if (std.mem.eql(u8, name, "share")) return .folder_gold;
-    return ([_]ui.Icon{ .files, .folder_pink, .folder_green, .folder_orange })[index % 4];
+    return .files;
 }
 
 fn path() []const u8 {
@@ -136,9 +132,9 @@ fn openEntry(index: usize) void {
     pulp.print("files: preview {s}, {d} bytes\n", .{ full, preview_len });
 }
 fn targets(out: *[18]ui.Button) []const ui.Button {
-    out[0] = .{ .id = 1, .rect = .{ .x = 18, .y = 16, .w = 32, .h = 28 } };
-    out[1] = .{ .id = 2, .rect = .{ .x = 58, .y = 16, .w = 32, .h = 28 } };
-    for (0..4) |i| out[2 + i] = .{ .id = @intCast(10 + i), .rect = .{ .x = 12, .y = 103 + @as(i32, @intCast(i)) * 42, .w = 140, .h = 34 } };
+    out[0] = .{ .id = 1, .rect = .{ .x = 182, .y = 16, .w = 32, .h = 28 } };
+    out[1] = .{ .id = 2, .rect = .{ .x = 222, .y = 16, .w = 32, .h = 28 } };
+    for (0..4) |i| out[2 + i] = .{ .id = @intCast(10 + i), .rect = .{ .x = 10, .y = 42 + @as(i32, @intCast(i)) * 34, .w = 146, .h = 28 } };
     out[6] = .{ .id = 20, .rect = .{ .x = 574, .y = 405, .w = 42, .h = 27 } };
     out[7] = .{ .id = 21, .rect = .{ .x = 624, .y = 405, .w = 42, .h = 27 } };
     out[8] = .{ .id = 30, .rect = .{ .x = 510, .y = 16, .w = 28, .h = 28 } };
@@ -203,19 +199,19 @@ fn paint(area: ui.Rect) void {
     s.pixels = &staging;
     s.setClip(area);
     s.fill(.{ .x = 0, .y = 0, .w = 680, .h = 450 }, 0xFFFFFF);
-    ui.gradient(&s, .{ .x = 0, .y = 0, .w = 166, .h = 450 }, 0, 0xF3F6FB, 0xEDF2F8);
-    s.fill(.{ .x = 165, .y = 60, .w = 1, .h = 390 }, 0xE1E7EF);
-    s.fill(.{ .x = 0, .y = 0, .w = 680, .h = 60 }, 0xF9FBFD);
-    s.fill(.{ .x = 0, .y = 59, .w = 680, .h = 1 }, 0xE1E7EF);
-    for ([_]i32{ 18, 58 }, 0..) |x, i| {
+    s.fill(.{ .x = 0, .y = 0, .w = 166, .h = 450 }, 0xF0F0F2);
+    s.fill(.{ .x = 165, .y = 0, .w = 1, .h = 450 }, 0xDDDEE1);
+    s.fill(.{ .x = 166, .y = 0, .w = 514, .h = 56 }, 0xF8F8F9);
+    s.fill(.{ .x = 166, .y = 55, .w = 514, .h = 1 }, 0xE1E2E5);
+    for ([_]i32{ 182, 222 }, 0..) |x, i| {
         s.rounded(.{ .x = x, .y = 16, .w = 32, .h = 28 }, 7, if (pointer.pressed == i + 1) 0xDFEAF9 else if (pointer.hover == i + 1) 0xEBF1F8 else 0xF9FBFD, 255);
-        ui.icon(&s, if (i == 0) .chevron_left else .chevron_up, x + 6, 20, 20);
+        const enabled = preview_open or (if (i == 0) history_count > 0 else path_len > 1);
+        ui.iconTint(&s, if (i == 0) .chevron_left else .chevron_up, x + 6, 20, 20, if (enabled) 0x5C6067 else 0xBABDC2);
     }
-    s.fill(.{ .x = 103, .y = 19, .w = 1, .h = 23 }, 0xE1E7EF);
-    ui.icon(&s, if (trash()) .trash else .files, 120, 17, 25);
-    ui.label(&s, if (trash()) "Trash" else "Files", 157, 27, 1, 0x253247);
-    s.rounded(.{ .x = 576, .y = 20, .w = 82, .h = 23 }, 8, 0xEDF2F8, 255);
-    ui.label(&s, "CitrusFS", 591, 28, 1, 0x778397);
+    const basename = if (path_len == 1) "Orange OS" else path()[(std.mem.lastIndexOfScalar(u8, path(), '/') orelse 0) + 1 ..];
+    s.setClip(ui.Rect.intersect(area, .{ .x = 273, .y = 14, .w = 220, .h = 30 }));
+    ui.label(&s, basename, 273, 27, 1, 0x303238);
+    s.setClip(area);
     for ([_]u32{ 30, 31 }, 0..) |id, index| {
         const x: i32 = if (index == 0) 510 else 542;
         const selected = (index == 0) == grid_view;
@@ -226,25 +222,23 @@ fn paint(area: ui.Rect) void {
             for (0..3) |j| s.rounded(.{ .x = x + 7, .y = 23 + @as(i32, @intCast(j)) * 6, .w = 14, .h = 2 }, 1, if (selected) 0x397BE8 else 0x778397, 255);
         }
     }
-    ui.label(&s, "Favourites", 20, 79, 1, 0x778397);
+    ui.label(&s, "Favourites", 18, 24, 1, 0x898B90);
     const names = [_][]const u8{ "Orange OS", "System", "Applications", "Trash" };
     const paths = [_][]const u8{ "/", "/etc", "/bin", "/Trash" };
     for (names, 0..) |name, i| {
-        const y = 103 + @as(i32, @intCast(i)) * 42;
+        const y = 42 + @as(i32, @intCast(i)) * 34;
         const selected = std.mem.eql(u8, path(), paths[i]);
-        if (selected or pointer.hover == 10 + i) s.rounded(.{ .x = 12, .y = y, .w = 140, .h = 34 }, 8, if (pointer.pressed == 10 + i) 0xD2E2F8 else if (selected) 0xDEEAFB else 0xE7EDF6, 255);
-        if (selected) s.rounded(.{ .x = 12, .y = y + 10, .w = 3, .h = 14 }, 1, 0x397BE8, 255);
-        ui.icon(&s, if (i == 3) .trash else .files, 20, y + 7, 23);
-        ui.label(&s, name, 52, y + 13, 1, if (selected) 0x275FAD else 0x556378);
+        if (selected or pointer.hover == 10 + i) s.rounded(.{ .x = 10, .y = y, .w = 146, .h = 28 }, 5, if (pointer.pressed == 10 + i) 0xCAD8E8 else if (selected) 0xDBE3ED else 0xE6E7E9, 255);
+        ui.icon(&s, ([_]ui.Icon{ .sidebar_home, .sidebar_system, .sidebar_apps, .sidebar_trash })[i], 18, y + 5, 18);
+        ui.label(&s, name, 43, y + 11, 1, 0x3D4046);
     }
     s.fill(.{ .x = 20, .y = 379, .w = 126, .h = 1 }, 0xDFE6EF);
-    ui.label(&s, "SYSTEM VOLUME", 20, 393, 1, 0x778397);
+    ui.label(&s, "CitrusFS", 20, 393, 1, 0x778397);
     ui.label(&s, "Read-only browsing", 20, 416, 1, 0x778397);
-    ui.icon(&s, .files, 185, 72, 19);
-    s.setClip(ui.Rect.intersect(area, .{ .x = 213, .y = 68, .w = 440, .h = 28 }));
-    ui.label(&s, path()[0..@min(path_len, 62)], 213, 81, 1, 0x556378);
-    s.setClip(area);
-    s.fill(.{ .x = 182, .y = 100, .w = 476, .h = 1 }, 0xEDF1F6);
+    if (!preview_open and !grid_view and count > 0) {
+        ui.label(&s, "Name", 229, 64, 1, 0x7A7D84);
+        ui.label(&s, "Kind", 600, 64, 1, 0x7A7D84);
+    }
     if (message.len > 0) ui.label(&s, message, 198, 147, 1, 0xB05251) else if (preview_open) {
         ui.label(&s, preview_name[0..@min(preview_name_len, 48)], 190, 116, 1, 0x253247);
         s.rounded(.{ .x = 184, .y = 146, .w = 478, .h = 238 }, 10, 0xF4F7FB, 255);
@@ -287,11 +281,10 @@ fn paint(area: ui.Rect) void {
             if (grid_view) {
                 s.rounded(r, 11, if (pointer.pressed == 100 + i) 0xDFEBFC else if (pointer.hover == 100 + i) 0xEDF4FD else 0xFFFFFF, if (pointer.hover == 100 + i or pointer.pressed == 100 + i) 255 else 100);
                 ui.icon(&s, entryIcon(i), r.x + 24, r.y + 8, 64);
-                const width = @min(@as(i32, 102), @as(i32, @intCast(name.len)) * 8);
+                const width = @min(@as(i32, 102), ui.textWidth(name[0..@min(name.len, 12)], 1));
                 s.setClip(ui.Rect.intersect(area, .{ .x = r.x + 5, .y = r.y + 78, .w = 102, .h = 19 }));
                 ui.label(&s, name[0..@min(name.len, 12)], r.x + @divTrunc(r.w - width, 2), r.y + 89, 1, 0x253247);
                 s.setClip(area);
-                ui.label(&s, if (entries[i].isDir()) "Folder" else "File", r.x + 36, r.y + 108, 1, 0x8994A5);
             } else {
                 s.rounded(r, 7, if (pointer.pressed == 100 + i) 0xDFEBFC else if (pointer.hover == 100 + i) 0xEDF4FD else if (i % 2 == 0) 0xF7F9FC else 0xFFFFFF, 255);
                 ui.icon(&s, entryIcon(i), 192, r.y + 4, 25);
@@ -302,6 +295,9 @@ fn paint(area: ui.Rect) void {
             }
         }
         var b: [64]u8 = undefined;
+        s.setClip(ui.Rect.intersect(area, .{ .x = 190, .y = 370, .w = 460, .h = 24 }));
+        ui.label(&s, path(), 190, 383, 1, 0x8A8D93);
+        s.setClip(area);
         const status = std.fmt.bufPrint(&b, "{d} items{s}  /  Page {d}", .{ count, if (listing_capped) " (listing capped)" else "", page + 1 }) catch "";
         s.fill(.{ .x = 182, .y = 399, .w = 476, .h = 1 }, 0xEDF1F6);
         ui.label(&s, status, 190, 414, 1, 0x778397);

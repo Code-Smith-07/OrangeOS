@@ -328,6 +328,33 @@ zig test --dep gfx --dep typography \
 
 ## Current limits and next layers
 
+### Native UI refinement — 23 September 2026
+
+Compared the actual Mac Finder window and desktop icons with the native guest.
+The refinement uses quieter materials and tighter grouping, not transplanted
+Apple assets: neutral application tiles, a blue folder silhouette, graphite
+terminal/clock/window icons, a metal settings gear and mesh wastebasket. Sidebar
+symbols are a separate original outline family; arbitrary rainbow directory
+colors are no longer applied to system folders. The icon sources and constraints
+are documented in `assets/icons/DESIGN.md`.
+
+Welcome no longer presents every launcher as a raised marketing card. Files has
+compact sidebar rows, navigation beside the current folder name, disabled-arrow
+states, measured filename alignment, list column labels and a bottom path area.
+Title text is actually centered; inactive window controls are muted. These edits
+preserve real actions, private-frame publication, and bounded hover damage.
+
+Validation: shared UI tests (four), full desktop interactions, and the six-app
+redraw audit pass. The audit observed zero changed samples across 144 blank-click
+samples and zero client repaints for Welcome/About/Files/Trash. Evidence:
+`orange-daybreak-mym4m3rd` (interactions), `orange-daybreak-6t2mgg2_` (audit).
+QMP sampling is not a guarantee against every scanout artifact. Screenshots:
+`docs/screenshots/refined-files.png` and `docs/screenshots/refined-welcome.png`.
+
+This is a focused visual refinement, not complete macOS parity. A truly unified
+client toolbar/titlebar protocol, theme-aware content in every app, keyboard
+focus/accessibility and richer app functionality remain separate work.
+
 - The high-DPI desktop is tested at 2560×1600 (1280×800 logical points).
   QEMU may still resample to fit a different host display size. Arbitrary
   monitor modes, runtime scale changes, and exact panel-native output are

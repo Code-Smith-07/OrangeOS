@@ -473,12 +473,12 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
     screen.rounded(.{ .x = w.rect.x + 14, .y = w.rect.y, .w = w.rect.w - 28, .h = 1 }, 0, theme.rim, 120);
     screen.rounded(.{ .x = w.rect.x + 1, .y = w.rect.y + TITLE_H - 1, .w = w.rect.w - 2, .h = 1 }, 0, theme.muted, 38);
     const title = w.title()[0..@min(w.title_len, @as(usize, @intCast(@max(1, @divTrunc(w.rect.w - 200, 8)))))];
-    font.drawText(&screen, title, w.rect.x + @divTrunc(w.rect.w - font.textWidth(title, 1), 2) + 20, w.rect.y + 16, 1, if (active) theme.frame_text else theme.muted);
+    font.drawText(&screen, title, w.rect.x + @divTrunc(w.rect.w - font.textWidth(title, 1), 2), w.rect.y + 16, 1, if (active) theme.frame_text else theme.muted);
     const colors = [_]u32{ 0xFF615B, 0xF6BC42, 0x30C85A };
     for (0..3) |i| {
         if (i == 0 and !w.closable) continue;
         const c = w.control(@intCast(i));
-        screen.circle(c.x + 11, c.y + 12, 6, colors[i]);
+        screen.circle(c.x + 11, c.y + 12, 6, if (active) colors[i] else gfx.lerp(theme.frame_inactive, theme.muted, 65));
         if (dragging == null and c.contains(cursor_x, cursor_y)) {
             ui.icon(&screen, ([_]ui.Icon{ .close, .minimize, .maximize })[i], c.x + 3, c.y + 4, 16);
         }

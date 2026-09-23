@@ -166,7 +166,7 @@ overlap, focus, hover, window drag and reduced-transparency modes.
 | Visible element in concept | Current native state | Acceptance gate |
 |---|---|---|
 | Coastal wallpaper and alternate approved themes | Three generated image-backed themes load in Peel; selection is session-only | Persist selection, test scale/crop across display modes, expose wallpaper picker |
-| Finder-style folders, sidebar and toolbar | Files now has a 4×2 real-directory grid, original colored folder sprites and a list toggle; browsing remains read-only | Real Home/Documents/Downloads only after durable user storage exists; selection, previews, keyboard navigation and file operations |
+| Finder-style folders, sidebar and toolbar | Files has a 4×2 real-directory grid, restrained blue folders, outline sidebar symbols, compact navigation and a list toggle; browsing remains read-only | Real Home/Documents/Downloads only after durable user storage exists; selection, previews, keyboard navigation and file operations |
 | Browser window and web start page | No browser executable or rendering engine; `fetch` is HTTP-only | Phases 5–7: TLS/trust, engine port, real navigation, tabs, downloads and security states; never paint a fake address bar as proof |
 | Wi-Fi/Bluetooth tiles | Bridge reports limited read-only Mac radio status | Capability and consent flow, supported operations with readback/revoke, truthful unavailable states (Phases 10–11) |
 | Speaker and brightness sliders | Native volume and built-in display sliders, independent host grants and readback implemented; both actual same-value setters verified on this Mac | Interactive physical slider acceptance remains manual. Display uses a private compatibility API; guest PCM mixer/external displays remain (Phases 9c/12) |

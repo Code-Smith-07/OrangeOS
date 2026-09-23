@@ -20,17 +20,12 @@ fn prepare(win: *const libpeel.Window) void {
     s.pixels = &background;
     // Build the editorial header once. Hover never recomputes a backdrop,
     // blur or full-window frame; each launch control has isolated damage.
-    ui.gradient(&s, .{ .x = 0, .y = 0, .w = 430, .h = 382 }, 0, 0xFBFCFE, 0xF0F4FA);
-    ui.gradient(&s, .{ .x = 0, .y = 0, .w = 430, .h = 141 }, 0, 0xFFFFFF, 0xF3F7FC);
-    s.rounded(.{ .x = 24, .y = 24, .w = 4, .h = 12 }, 2, 0xF38B42, 255);
-    ui.label(&s, "ORANGE OS", 37, 27, 1, 0x778397);
-    ui.label(&s, "A fresh start.", 24, 52, 2, 0x253247);
-    ui.label(&s, "Your files, favourite tools", 25, 92, 1, 0x778397);
-    ui.label(&s, "and a little room to create.", 25, 112, 1, 0x778397);
-    s.rounded(.{ .x = 321, .y = 37, .w = 74, .h = 76 }, 23, 0xDEE8F5, 130);
-    ui.icon(&s, .welcome, 319, 32, 78);
-    s.fill(.{ .x = 24, .y = 140, .w = 382, .h = 1 }, 0xE1E7EF);
-    ui.label(&s, "QUICK LAUNCH", 24, 192, 1, 0x778397);
+    s.fill(.{ .x = 0, .y = 0, .w = 430, .h = 382 }, 0xFAFAFB);
+    ui.icon(&s, .welcome, 24, 29, 66);
+    ui.label(&s, "Orange OS", 106, 44, 2, 0x24262A);
+    ui.label(&s, "Your desktop, ready to work.", 107, 83, 1, 0x76787D);
+    s.fill(.{ .x = 24, .y = 130, .w = 382, .h = 1 }, 0xE2E3E5);
+    ui.label(&s, "Open an application", 24, 192, 1, 0x76787D);
 }
 fn control(s: *ui.Surface, t: ui.Button, pointer: ui.Pointer) void {
     const hover = pointer.hover == t.id;
@@ -40,23 +35,21 @@ fn control(s: *ui.Surface, t: ui.Button, pointer: ui.Pointer) void {
     if (t.id <= 3) {
         const kinds = [_]ui.Icon{ .files, .terminal, .clock };
         const titles = [_][]const u8{ "Files", "Terminal", "Clock" };
-        s.rounded(.{ .x = t.rect.x, .y = t.rect.y + 2, .w = t.rect.w, .h = t.rect.h }, 15, 0x253247, 9);
-        s.rounded(t.rect, 15, border, 255);
-        s.rounded(.{ .x = t.rect.x + 1, .y = t.rect.y + 1, .w = t.rect.w - 2, .h = t.rect.h - 2 }, 14, fill, 255);
-        ui.icon(s, kinds[t.id - 1], t.rect.x + 37, t.rect.y + 10, 44);
-        ui.label(s, titles[t.id - 1], t.rect.x + 14, t.rect.y + 68, 1, 0x253247);
-        ui.icon(s, .chevron_right, t.rect.right() - 26, t.rect.y + 62, 17);
+        if (hover or pressed) s.rounded(t.rect, 8, if (pressed) 0xDDE7F2 else 0xEBEFF4, 255);
+        ui.icon(s, kinds[t.id - 1], t.rect.x + 32, t.rect.y + 6, 54);
+        const title = titles[t.id - 1];
+        ui.label(s, title, t.rect.x + @divTrunc(t.rect.w - ui.textWidth(title, 1), 2), t.rect.y + 74, 1, 0x303238);
     } else if (t.id == 4) {
-        s.rounded(t.rect, 12, border, 255);
-        s.rounded(.{ .x = t.rect.x + 1, .y = t.rect.y + 1, .w = t.rect.w - 2, .h = t.rect.h - 2 }, 11, fill, 255);
+        s.rounded(t.rect, 7, border, 255);
+        s.rounded(.{ .x = t.rect.x + 1, .y = t.rect.y + 1, .w = t.rect.w - 2, .h = t.rect.h - 2 }, 6, fill, 255);
         ui.icon(s, .appearance, t.rect.x + 12, t.rect.y + 8, 30);
-        ui.label(s, "Make it yours", t.rect.x + 54, t.rect.y + 11, 1, 0x253247);
+        ui.label(s, "Appearance", t.rect.x + 54, t.rect.y + 11, 1, 0x253247);
         ui.label(s, "Wallpaper and appearance", t.rect.x + 54, t.rect.y + 29, 1, 0x778397);
         ui.icon(s, .chevron_right, t.rect.right() - 27, t.rect.y + 15, 18);
     } else {
         const kinds = [_]ui.Icon{ .windows, .trash, .about };
         const names = [_][]const u8{ "Windows", "Trash", "About" };
-        s.rounded(t.rect, 8, if (pressed) 0xE0EAF8 else if (hover) 0xEAF1FB else 0xFFFFFF, if (hover or pressed) 255 else 105);
+        if (hover or pressed) s.rounded(t.rect, 5, if (pressed) 0xE0EAF8 else 0xEBEFF4, 255);
         ui.icon(s, kinds[t.id - 5], t.rect.x + 8, t.rect.y + 4, 20);
         ui.label(s, names[t.id - 5], t.rect.x + 36, t.rect.y + 10, 1, 0x556378);
     }
