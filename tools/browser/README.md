@@ -31,6 +31,20 @@ log to show live action progress. A stale running record is warned about, never
 converted to success. A held lock means a runner exists, not that it is making
 progress; inspect the log. Build-action totals can change as Siso expands the
 graph, so they are not a reliable time-remaining estimate.
+
+For a continuously updating ASCII progress bar in a separate terminal, run:
+
+```sh
+python3 tools/browser_progress.py --watch
+```
+
+Press Ctrl-C to close only the viewer; compilation continues. Without `--watch`,
+the command prints one snapshot. It reads the existing build state and log tails
+without changing the build. The overall percentage sums completed actions from
+incremental passes, so it is **approximate**: dependency-graph changes and
+repeated actions can shift it. The current-pass action count and remaining
+actions are shown alongside the estimate. This is not an ETA or evidence that
+the Mac test shell, let alone a native OrangeOS browser, has passed its gates.
 The other numbered stages enforce ordering. `sync` fetches dependencies without
 hooks; `hooks` downloads/prepares the pinned toolchain; `generate` writes GN
 configuration; `build` compiles `content_shell` with two local jobs. A successful
