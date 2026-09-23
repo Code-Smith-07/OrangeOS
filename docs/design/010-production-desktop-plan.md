@@ -155,6 +155,29 @@ centre, dialogs and failure states as one contact sheet. User approval of this
 coherent direction precedes an OS-wide restyle. A web prototype may communicate
 the design but does not count as the native implementation.
 
+### Concept image 1: native fidelity contract (2026-09-23)
+
+The numbered coastal mockup is a visual target, **not a screenshot of the OS**.
+Match its layout, hierarchy and artwork through working native features; do not
+copy its fictional file counts, URL/security badge, network name or battery
+state. Check each row at the QEMU guest's native resolution and at 2x, including
+overlap, focus, hover, window drag and reduced-transparency modes.
+
+| Visible element in concept | Current native state | Acceptance gate |
+|---|---|---|
+| Coastal wallpaper and alternate approved themes | Three generated image-backed themes load in Peel; selection is session-only | Persist selection, test scale/crop across display modes, expose wallpaper picker |
+| Finder-style folders, sidebar and toolbar | Files now has a 4×2 real-directory grid, original colored folder sprites and a list toggle; browsing remains read-only | Real Home/Documents/Downloads only after durable user storage exists; selection, previews, keyboard navigation and file operations |
+| Browser window and web start page | No browser executable or rendering engine; `fetch` is HTTP-only | Phases 5–7: TLS/trust, engine port, real navigation, tabs, downloads and security states; never paint a fake address bar as proof |
+| Wi-Fi/Bluetooth tiles | Bridge reports limited read-only Mac radio status | Capability and consent flow, supported operations with readback/revoke, truthful unavailable states (Phases 10–11) |
+| Speaker and brightness sliders | HDA can play a tone; no PCM mixer or usable volume UI; Mac display probe is unsupported on this machine | Physical effect and readback through qualified audio/display backends, permission and failure states (Phases 9c/12) |
+| Dock app icons and running indicators | Original app icons and dock exist; some concept apps do not | Add icons only with real launchable apps; verify focus, close, running state and tooltip/keyboard access |
+| Menu-bar status, clock and battery | Real wall clock exists; other host status is incomplete | Status derived from live services, never invented percentages or names; date/control panels connect to actual APIs |
+| Rounded glass window chrome | Shared themed chrome and glass are implemented, but app contents are not all theme-aware | Match concept spacing, radii, typography and contrast; fix clipping/corner seams and measure repaint cost on all themes |
+
+Screenshot parity is a visual gate, not a substitute for behavior. A matched
+browser rectangle or toggle that cannot navigate or control hardware remains
+unfinished.
+
 ## 4. Architecture and service ownership
 
 ```text
@@ -774,6 +797,8 @@ eviction/tab suspension or a visible resource limit, never an unexplained hang.
 | Welcome blank-click fix | Verified locally | `9835784`, `tools/welcome_smoke.py` |
 | Whole-desktop flicker audit | Initial six-app CLI pass complete; expanded stress open | About/Files/Trash 8 redraws per 4 blank clicks; Files 1 transient sample |
 | Calendar redraw correction | Eight-window warm performance gate passed | `tools/calendar_perf.py --stress`: 146 frames, 41 ms p95 / 45 ms max, navigation max 43 ms, live Clock behind glass verified; cold open 109 ms separate; shared atomic publication still open |
+| Concept theme artwork | Three native image-backed wallpapers verified locally | `c55a78d`; `docs/screenshots/theme-{coastal,citrus,aurora}.png`; session-only selection, full-scene TCG theme repaint remains slow |
+| Concept Files grid | Real-directory 4×2 grid and five original folder sprites; verified locally | `docs/screenshots/theme-files-grid.png`; `tools/desktop_smoke.py`, `tools/app_redraw_audit.py`; read-only, not fictional Home counts |
 | Aurora Phase 1 | Planned beyond the targeted Welcome fix | Shared publication, all-app audit and performance gates |
 | Aurora Phases 2–16 | Planned beyond the partial bridge milestones above | Update each only with tests and local commit evidence |
 

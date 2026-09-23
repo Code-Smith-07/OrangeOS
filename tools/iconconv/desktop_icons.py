@@ -14,14 +14,15 @@ from PIL import Image
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 NAMES = ("welcome", "terminal", "clock", "about", "windows", "appearance",
          "files", "trash", "chevron_left", "chevron_right", "chevron_up",
-         "document", "brand", "controls", "close", "minimize", "maximize", "pointer")
+         "document", "brand", "controls", "close", "minimize", "maximize", "pointer",
+         "folder_orange", "folder_green", "folder_purple", "folder_pink", "folder_gold")
 
 def main():
     header = bytearray()
     data = bytearray()
     sheet = Image.new("RGBA", (8 * 192, 192), "#e5e4f1")
     for i, name in enumerate(NAMES):
-        size = 192 if i < 8 else 48
+        size = 192 if i < 8 else 96 if name.startswith("folder_") else 48
         svg = ROOT / "assets/icons" / (name + ".svg")
         png = cairosvg.svg2png(url=str(svg), output_width=size * 2, output_height=size * 2)
         rgba = Image.open(io.BytesIO(png)).convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)

@@ -24,6 +24,24 @@ var preview_open = false;
 var binary = false;
 var pointer: ui.Pointer = .{};
 const ROWS = 8;
+var grid_view = true;
+
+fn entryRect(index: usize) ui.Rect {
+    const slot = index % ROWS;
+    if (!grid_view) return .{ .x = 182, .y = 109 + @as(i32, @intCast(slot)) * 35, .w = 476, .h = 32 };
+    return .{ .x = 184 + @as(i32, @intCast(slot % 4)) * 118, .y = 112 + @as(i32, @intCast(slot / 4)) * 137, .w = 112, .h = 124 };
+}
+fn entryIcon(index: usize) ui.Icon {
+    const e = &entries[index];
+    if (!e.isDir()) return .document;
+    const name = e.nameSlice();
+    if (std.mem.eql(u8, name, "Trash")) return .trash;
+    if (std.mem.eql(u8, name, "etc")) return .folder_orange;
+    if (std.mem.eql(u8, name, "bin")) return .folder_purple;
+    if (std.mem.eql(u8, name, "sbin")) return .folder_green;
+    if (std.mem.eql(u8, name, "share")) return .folder_gold;
+    return ([_]ui.Icon{ .files, .folder_pink, .folder_green, .folder_orange })[index % 4];
+}
 
 fn path() []const u8 {
     return path_buf[0..path_len];
@@ -117,16 +135,18 @@ fn openEntry(index: usize) void {
     }
     pulp.print("files: preview {s}, {d} bytes\n", .{ full, preview_len });
 }
-fn targets(out: *[16]ui.Button) []const ui.Button {
+fn targets(out: *[18]ui.Button) []const ui.Button {
     out[0] = .{ .id = 1, .rect = .{ .x = 18, .y = 16, .w = 32, .h = 28 } };
     out[1] = .{ .id = 2, .rect = .{ .x = 58, .y = 16, .w = 32, .h = 28 } };
     for (0..4) |i| out[2 + i] = .{ .id = @intCast(10 + i), .rect = .{ .x = 12, .y = 103 + @as(i32, @intCast(i)) * 42, .w = 140, .h = 34 } };
     out[6] = .{ .id = 20, .rect = .{ .x = 574, .y = 405, .w = 42, .h = 27 } };
     out[7] = .{ .id = 21, .rect = .{ .x = 624, .y = 405, .w = 42, .h = 27 } };
-    var n: usize = 8;
+    out[8] = .{ .id = 30, .rect = .{ .x = 510, .y = 16, .w = 28, .h = 28 } };
+    out[9] = .{ .id = 31, .rect = .{ .x = 542, .y = 16, .w = 28, .h = 28 } };
+    var n: usize = 10;
     if (!preview_open) {
         for (page * ROWS..@min(count, (page + 1) * ROWS)) |i| {
-            out[n] = .{ .id = @intCast(100 + i), .rect = .{ .x = 182, .y = 109 + @as(i32, @intCast(i % ROWS)) * 35, .w = 476, .h = 32 } };
+            out[n] = .{ .id = @intCast(100 + i), .rect = entryRect(i) };
             n += 1;
         }
     }
@@ -166,6 +186,12 @@ fn act(id: u32) bool {
     } else if (id == 21 and (page + 1) * ROWS < count and !preview_open) {
         page += 1;
         return true;
+    } else if (id == 30 or id == 31) {
+        const next = id == 30;
+        if (next == grid_view) return false;
+        grid_view = next;
+        pulp.print("files: view {s}\n", .{if (grid_view) "grid" else "list"});
+        return true;
     } else if (id >= 100 and id - 100 < count) {
         openEntry(id - 100);
         return true;
@@ -190,6 +216,16 @@ fn paint(area: ui.Rect) void {
     ui.label(&s, if (trash()) "Trash" else "Files", 157, 27, 1, 0x253247);
     s.rounded(.{ .x = 576, .y = 20, .w = 82, .h = 23 }, 8, 0xEDF2F8, 255);
     ui.label(&s, "CitrusFS", 591, 28, 1, 0x778397);
+    for ([_]u32{ 30, 31 }, 0..) |id, index| {
+        const x: i32 = if (index == 0) 510 else 542;
+        const selected = (index == 0) == grid_view;
+        s.rounded(.{ .x = x, .y = 16, .w = 28, .h = 28 }, 7, if (pointer.pressed == id) 0xCEDFF5 else if (selected) 0xDEEAFB else if (pointer.hover == id) 0xEDF3FA else 0xF9FBFD, 255);
+        if (index == 0) {
+            for (0..4) |j| s.rounded(.{ .x = x + 7 + @as(i32, @intCast(j % 2)) * 8, .y = 23 + @as(i32, @intCast(j / 2)) * 8, .w = 5, .h = 5 }, 1, if (selected) 0x397BE8 else 0x778397, 255);
+        } else {
+            for (0..3) |j| s.rounded(.{ .x = x + 7, .y = 23 + @as(i32, @intCast(j)) * 6, .w = 14, .h = 2 }, 1, if (selected) 0x397BE8 else 0x778397, 255);
+        }
+    }
     ui.label(&s, "Favourites", 20, 79, 1, 0x778397);
     const names = [_][]const u8{ "Orange OS", "System", "Applications", "Trash" };
     const paths = [_][]const u8{ "/", "/etc", "/bin", "/Trash" };
@@ -246,14 +282,24 @@ fn paint(area: ui.Rect) void {
         }
     } else {
         for (page * ROWS..@min(count, (page + 1) * ROWS)) |i| {
-            const y = 109 + @as(i32, @intCast(i % ROWS)) * 35;
-            s.rounded(.{ .x = 182, .y = y, .w = 476, .h = 32 }, 7, if (pointer.pressed == 100 + i) 0xDFEBFC else if (pointer.hover == 100 + i) 0xEDF4FD else if (i % 2 == 0) 0xF7F9FC else 0xFFFFFF, 255);
-            ui.icon(&s, if (entries[i].isDir()) .files else .document, 192, y + 4, 25);
+            const r = entryRect(i);
             const name = entries[i].nameSlice();
-            s.setClip(ui.Rect.intersect(area, .{ .x = 229, .y = y, .w = 355, .h = 32 }));
-            ui.label(&s, name[0..@min(name.len, 42)], 229, y + 13, 1, 0x253247);
-            s.setClip(area);
-            ui.label(&s, if (entries[i].isDir()) "Folder" else "File", 600, y + 13, 1, 0x8994A5);
+            if (grid_view) {
+                s.rounded(r, 11, if (pointer.pressed == 100 + i) 0xDFEBFC else if (pointer.hover == 100 + i) 0xEDF4FD else 0xFFFFFF, if (pointer.hover == 100 + i or pointer.pressed == 100 + i) 255 else 100);
+                ui.icon(&s, entryIcon(i), r.x + 24, r.y + 8, 64);
+                const width = @min(@as(i32, 102), @as(i32, @intCast(name.len)) * 8);
+                s.setClip(ui.Rect.intersect(area, .{ .x = r.x + 5, .y = r.y + 78, .w = 102, .h = 19 }));
+                ui.label(&s, name[0..@min(name.len, 12)], r.x + @divTrunc(r.w - width, 2), r.y + 89, 1, 0x253247);
+                s.setClip(area);
+                ui.label(&s, if (entries[i].isDir()) "Folder" else "File", r.x + 36, r.y + 108, 1, 0x8994A5);
+            } else {
+                s.rounded(r, 7, if (pointer.pressed == 100 + i) 0xDFEBFC else if (pointer.hover == 100 + i) 0xEDF4FD else if (i % 2 == 0) 0xF7F9FC else 0xFFFFFF, 255);
+                ui.icon(&s, entryIcon(i), 192, r.y + 4, 25);
+                s.setClip(ui.Rect.intersect(area, .{ .x = 229, .y = r.y, .w = 355, .h = 32 }));
+                ui.label(&s, name[0..@min(name.len, 42)], 229, r.y + 13, 1, 0x253247);
+                s.setClip(area);
+                ui.label(&s, if (entries[i].isDir()) "Folder" else "File", 600, r.y + 13, 1, 0x8994A5);
+            }
         }
         var b: [64]u8 = undefined;
         const status = std.fmt.bufPrint(&b, "{d} items{s}  /  Page {d}", .{ count, if (listing_capped) " (listing capped)" else "", page + 1 }) catch "";
@@ -293,7 +339,7 @@ pub fn run(start_in_trash: bool) noreturn {
                 }
             }
             if (ev.kind == pulp.EV_MOUSE) {
-                var buttons: [16]ui.Button = undefined;
+                var buttons: [18]ui.Button = undefined;
                 const action = pointer.update(ev.x, ev.y, ev.code, targets(&buttons));
                 if (action != 0) content_changed = act(action) or content_changed;
             }
@@ -301,7 +347,7 @@ pub fn run(start_in_trash: bool) noreturn {
         if (content_changed) {
             paint(full);
         } else if (pointer.visualChanged(previous)) {
-            var buttons: [16]ui.Button = undefined;
+            var buttons: [18]ui.Button = undefined;
             for (targets(&buttons)) |t| {
                 if ((previous.hover == t.id) == (pointer.hover == t.id) and (previous.pressed == t.id) == (pointer.pressed == t.id)) continue;
                 paint(t.rect);

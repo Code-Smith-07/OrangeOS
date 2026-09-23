@@ -97,7 +97,9 @@ Welcome, Terminal, Clock, and About share the new visual language.
 The dock now includes **Files and Trash**, with richer shared icons and a
 redesigned Welcome hub. Original SVG app/interface icons, full-colour gradients,
 and real CPU backdrop blur now replace flat artwork and tint-only shell panels.
-Welcome, Clock, and About use rounded glass cards. Files browses real guest folders and previews text;
+Welcome, Clock, and About use rounded glass cards. Files now opens in a
+[coloured folder grid](docs/screenshots/theme-files-grid.png) with a working
+list/grid switcher; it browses real guest folders and previews text;
 Trash inspects `/Trash`. Both are currently read-only—move, restore, and
 permanent deletion are not yet supported.
 The desktop now renders at **2560×1600 with a 2x backing scale**, including

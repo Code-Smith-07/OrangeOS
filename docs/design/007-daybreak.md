@@ -64,7 +64,8 @@ on OrangeOS's own compositor, processes, IPC, and framebuffer.
   event/reminder application. The panel clock updates each minute, while the
   menu-bar clock continues to show seconds.
 - A read-only Files browser with sidebar favourites, back/up navigation,
-  directory paging, and text previews. The Trash dock icon opens `/Trash`.
+  directory paging, real grid/list switching, original coloured SVG folder
+  icons and text previews. The Trash dock icon opens `/Trash`.
 
 ## Controls
 
@@ -97,6 +98,12 @@ wallpaper assets inspired by the approved concepts plus native compositor
 materials. The source PNGs are in `assets/wallpapers/`, the 24-bit guest BMPs
 in `userland/servers/peel/assets/`, and the compositor caches all three
 backgrounds at boot; pointer movement never decodes or scales them.
+
+The [Files grid capture](../screenshots/theme-files-grid.png) shows actual
+CitrusFS entries; it does not invent Desktop, Documents, Music or item counts
+merely to match the concept art. Grid/list controls share the same backing
+directory data, selection hits, paging and preview action. The folder art is
+reproducibly rasterised from five new project SVGs at high-DPI size.
 
 This is a shell/theme milestone, not complete application theming or macOS
 feature parity. Existing clients still own their light content pixels; a dark
