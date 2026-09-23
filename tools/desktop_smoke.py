@@ -162,12 +162,12 @@ def main():
         print(f"PASS wall time matches host; backing scale {g.scale}x", flush=True)
         time.sleep(1)
         g.screenshot("01-desktop")
-        # Dark Terminal on the warm Daybreak backdrop: the former pale frame
-        # wedges had blue channels near 250 at these lower corners. Neither
-        # the client, backdrop nor their shadow/AA blend should introduce white.
+        # Dark Terminal corners must not expose the old near-white frame
+        # undercoat. The Coastal backdrop itself has a high blue channel, so
+        # test neutral-white wedges rather than an individual RGB channel.
         for x in (70, 678):
             corner = g.region(x,514,14,13)
-            assert max(corner[2::3]) < 180, "pale frame wedge at Terminal lower corner"
+            assert not any(all(c > 235 for c in corner[i:i+3]) for i in range(0,len(corner),3)), "pale frame wedge at Terminal lower corner"
         print("PASS rounded Terminal corners have no pale undercoat", flush=True)
         if "--panic" not in sys.argv:
             bar = g.region(1050,10,210,18)
@@ -247,13 +247,30 @@ def main():
         g.key("esc")
         g.key("f4")
         before = g.pixel(30, 500)
+        coastal_bar = g.pixel(700, 10)
+        coastal_title = g.pixel(200, 122)
         g.click(1080, 183)
-        g.until(lambda: "wallpaper 1" in g.log(), "Lagoon wallpaper")
-        g.until(lambda: g.pixel(30, 500) != before, "wallpaper repaint")
-        g.screenshot("06-appearance")
+        g.until(lambda: "theme 1 Citrus Atelier" in g.log(), "Citrus Atelier theme")
+        g.until(lambda: g.pixel(30, 500) != before, "Citrus wallpaper repaint")
+        assert g.pixel(700, 10) != coastal_bar and g.pixel(200, 122) != coastal_title, "Citrus shell chrome did not change"
+        citrus = g.pixel(30, 500)
+        citrus_bar = g.pixel(700, 10)
+        g.screenshot("06-citrus-theme")
+        g.click(1188, 183)
+        g.until(lambda: "theme 2 Midnight Aurora" in g.log(), "Midnight Aurora theme")
+        g.until(lambda: g.pixel(30, 500) != citrus, "Aurora wallpaper repaint")
+        assert g.pixel(700, 10) != citrus_bar and max(g.pixel(700, 10)) < 70, "Aurora dark shell chrome did not change"
+        g.screenshot("06-aurora-theme")
+        g.click(1150, 10)
+        g.until(lambda: max(g.pixel(950, 80)) < 100, "Aurora calendar uses dark material")
+        g.screenshot("06-aurora-calendar")
+        g.key("esc")
+        g.key("f4")
         g.click(970, 183)
-        g.until(lambda: "wallpaper 0" in g.log(), "Daybreak wallpaper")
-        g.until(lambda: g.pixel(30, 500) == before, "Daybreak repaint")
+        g.until(lambda: "theme 0 Coastal Glass" in g.log(), "Coastal Glass theme")
+        g.until(lambda: g.pixel(30, 500) == before, "Coastal wallpaper repaint")
+        assert g.pixel(700, 10) == coastal_bar and g.pixel(200, 122) == coastal_title, "Coastal chrome did not restore"
+        g.screenshot("06-coastal-theme")
         g.key("esc")
         g.screenshot("07-final")
         # Minimized apps remain selectable from window overview.

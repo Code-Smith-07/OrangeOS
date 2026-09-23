@@ -26,11 +26,6 @@ const Color = gfx.Color;
 // ── Theme ───────────────────────────────────────────────────────────────────
 
 const ORANGE: Color = 0xFF8C1A;
-const WIN_BG: Color = ui.Color.canvas;
-const WIN_TITLE: Color = 0xE9EDF3;
-const WIN_TITLE_ACTIVE: Color = 0xF9FBFE;
-const TEXT: Color = ui.Color.ink;
-const TEXT_DIM: Color = 0x718095;
 
 const TITLE_H: i32 = 38;
 const BORDER_W: i32 = 1;
@@ -167,7 +162,12 @@ fn activeWindow() ?usize {
 }
 
 var shell: desktop.State = .{};
-var wallpaper: ?gfx.Surface = null;
+var wallpapers: [desktop.THEME_NAMES.len]?gfx.Surface = [_]?gfx.Surface{null} ** desktop.THEME_NAMES.len;
+const WALLPAPER_PATHS = [_][]const u8{
+    "/share/wallpapers/coastal-glass.bmp",
+    "/share/wallpapers/citrus-atelier.bmp",
+    "/share/wallpapers/midnight-aurora.bmp",
+};
 var pending_apps: [7]i64 = [_]i64{-1} ** 7;
 var shell_pressed: ?u16 = null;
 var control_pressed: ?struct { id: u32, control: i32 } = null;
@@ -290,9 +290,8 @@ fn shellAction(action: u16) void {
         desktop.Action.new_terminal => launchApp(1, true),
         desktop.Action.wallpaper...desktop.Action.wallpaper + 2 => {
             shell.palette = action - desktop.Action.wallpaper;
-            rebuildWallpaper();
             shell.popup = .settings;
-            pulp.print("desktop: wallpaper {d}\n", .{shell.palette});
+            pulp.print("desktop: theme {d} {s}\n", .{ shell.palette, desktop.THEME_NAMES[shell.palette] });
         },
         desktop.Action.window...desktop.Action.window + MAX_WINDOWS - 1 => {
             const idx = action - desktop.Action.window;
@@ -397,14 +396,41 @@ var drag_backdrop: ?gfx.Surface = null;
 var drag_backdrop_id: ?u32 = null;
 var drag_backdrop_valid = false;
 
-fn rebuildWallpaper() void {
-    if (wallpaper) |*s| {
+fn buildWallpaper(index: usize) void {
+    if (wallpapers[index]) |*s| {
         var y: i32 = 0;
         while (y < s.height * s.scale) : (y += 1) {
             var x: i32 = 0;
-            while (x < s.width * s.scale) : (x += 1) s.putPhysical(x, y, desktop.wallpaperPixel(x, y, s.width * s.scale, s.height * s.scale, shell.palette));
+            while (x < s.width * s.scale) : (x += 1) s.putPhysical(x, y, desktop.wallpaperPixel(x, y, s.width * s.scale, s.height * s.scale, index));
         }
     }
+}
+
+fn loadWallpaperSource(index: usize) void {
+    const handle = pulp.shmCreate("", desktop.WALLPAPER_BYTES) catch return;
+    const mapped = pulp.shmMap(handle, true) catch {
+        pulp.handleClose(handle);
+        return;
+    };
+    const fd = pulp.open(WALLPAPER_PATHS[index]) catch {
+        pulp.handleClose(handle);
+        return;
+    };
+    defer pulp.close(fd);
+    var done: usize = 0;
+    while (done < desktop.WALLPAPER_BYTES) {
+        // The current read syscall caps a single validated user buffer at 4 KiB.
+        const n = pulp.read(@intCast(fd), mapped[done..@min(done + 4096, desktop.WALLPAPER_BYTES)]) catch break;
+        if (n == 0) break;
+        done += n;
+    }
+    if (done != desktop.WALLPAPER_BYTES or !desktop.installWallpaperSource(index, mapped[0..done])) {
+        pulp.print("desktop: wallpaper resource {d} unavailable\n", .{index});
+        pulp.handleClose(handle);
+        return;
+    }
+    // Keep this private SHM mapped: thumbnail paints sample it after boot.
+    pulp.print("desktop: wallpaper resource {d} loaded\n", .{index});
 }
 
 fn paintWallpaper(clip: Rect) void {
@@ -414,7 +440,7 @@ fn paintWallpaper(clip: Rect) void {
 
     var y = area.y * screen.scale;
     while (y < area.bottom() * screen.scale) : (y += 1) {
-        if (wallpaper) |s| {
+        if (wallpapers[shell.palette]) |s| {
             const start: usize = @intCast(y * screen.stride + area.x * screen.scale);
             const len: usize = @intCast(area.w * screen.scale);
             @memcpy(screen.pixels[start..][0..len], s.pixels[start..][0..len]);
@@ -434,16 +460,17 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
     // Diffuse the actual underlying desktop before painting opaque content.
     // Limit title writes to the title while rounding the full frame's top edge.
     screen.setClip(Rect.intersect(clip, w.titleBar()));
-    screen.frostTop(w.titleBar(), 13, if (active) WIN_TITLE_ACTIVE else WIN_TITLE, if (active) 238 else 221);
+    const theme = desktop.themeColors(shell.palette);
+    screen.frostTop(w.titleBar(), 13, if (active) theme.frame else theme.frame_inactive, if (active) 238 else 221);
     if (w.pixels == null) {
         screen.setClip(Rect.intersect(clip, .{ .x = w.rect.x, .y = w.rect.y + TITLE_H, .w = w.rect.w, .h = w.rect.h - TITLE_H }));
-        screen.rounded(w.rect, 13, WIN_BG, 255);
+        screen.rounded(w.rect, 13, theme.surface, 255);
     }
     screen.setClip(clip);
-    screen.rounded(.{ .x = w.rect.x + 14, .y = w.rect.y, .w = w.rect.w - 28, .h = 1 }, 0, 0xFFFFFF, 160);
-    screen.rounded(.{ .x = w.rect.x + 1, .y = w.rect.y + TITLE_H - 1, .w = w.rect.w - 2, .h = 1 }, 0, 0x8797AA, 38);
+    screen.rounded(.{ .x = w.rect.x + 14, .y = w.rect.y, .w = w.rect.w - 28, .h = 1 }, 0, theme.rim, 120);
+    screen.rounded(.{ .x = w.rect.x + 1, .y = w.rect.y + TITLE_H - 1, .w = w.rect.w - 2, .h = 1 }, 0, theme.muted, 38);
     const title = w.title()[0..@min(w.title_len, @as(usize, @intCast(@max(1, @divTrunc(w.rect.w - 200, 8)))))];
-    font.drawText(&screen, title, w.rect.x + @divTrunc(w.rect.w - font.textWidth(title, 1), 2) + 20, w.rect.y + 16, 1, if (active) TEXT else TEXT_DIM);
+    font.drawText(&screen, title, w.rect.x + @divTrunc(w.rect.w - font.textWidth(title, 1), 2) + 20, w.rect.y + 16, 1, if (active) theme.frame_text else theme.muted);
     const colors = [_]u32{ 0xFF615B, 0xF6BC42, 0x30C85A };
     for (0..3) |i| {
         if (i == 0 and !w.closable) continue;
@@ -459,7 +486,7 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
     if (w.pixels) |src| {
         window_body.paint(&screen, w.rect, w.contentRect(), src, w.client_w, w.client_h);
     } else {
-        font.drawText(&screen, "waiting for a client...", w.rect.x + 12, w.rect.y + TITLE_H + 14, 1, TEXT_DIM);
+        font.drawText(&screen, "waiting for a client...", w.rect.x + 12, w.rect.y + TITLE_H + 14, 1, theme.muted);
     }
 }
 
@@ -1066,15 +1093,20 @@ export fn _start() callconv(.c) noreturn {
     // has exactly one thing to wait on.
     pulp.inputBind(server_port);
 
-    // Publish the port before building the wallpaper: Seed starts apps in
+    // Publish the port before building the wallpapers: Seed starts apps in
     // parallel and they must be able to queue their window requests now.
-    // Allocation failure simply uses the procedural fallback.
-    if (pulp.shmCreate("", back_bytes)) |h| {
-        if (pulp.shmMap(h, true)) |pixels| {
-            wallpaper = .{ .pixels = @ptrCast(@alignCast(pixels)), .width = screen.width, .height = screen.height, .stride = screen.stride, .scale = screen.scale };
-            rebuildWallpaper();
+    // Three native-resolution caches cost 48 MiB at 2560x1600, within the
+    // 3 GiB desktop baseline. A failed allocation uses the procedural path.
+    // Build once at startup so a theme click never stalls input for a render.
+    for (0..wallpapers.len) |i| {
+        loadWallpaperSource(i);
+        if (pulp.shmCreate("", back_bytes)) |h| {
+            if (pulp.shmMap(h, true)) |pixels| {
+                wallpapers[i] = .{ .pixels = @ptrCast(@alignCast(pixels)), .width = screen.width, .height = screen.height, .stride = screen.stride, .scale = screen.scale };
+                buildWallpaper(i);
+            } else |_| pulp.handleClose(h);
         } else |_| {}
-    } else |_| {}
+    }
 
     // Optional, one-time storage; allocation failure preserves normal drawing.
     if (pulp.shmCreate("", back_bytes)) |h| {

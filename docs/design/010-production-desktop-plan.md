@@ -446,7 +446,9 @@ to prove absence of transient flicker. Save traces plus image sequences.
 Depends on: baseline measurements; native roll-out requires Phase 1.
 
 - Produce light/dark contact sheets and interactive states for the surfaces in
-  section 3. Pick one coherent direction with the user; do not keep adding styles.
+  section 3. The user approved all three numbered directions: Coastal Glass,
+  Citrus Atelier, and Midnight Aurora. Keep one shared component system across
+  them; each theme changes tokens/materials, not window behavior or layout.
 - Implement tokens, SVG family, common materials, contrast-aware labels, shared
   selection/hover/pressed/disabled states and reduced motion/transparency.
 - Replace inconsistent one-off paints in Welcome, shell and app chrome.

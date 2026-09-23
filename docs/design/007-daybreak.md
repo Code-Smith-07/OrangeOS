@@ -25,7 +25,11 @@ on OrangeOS's own compositor, processes, IPC, and framebuffer.
 - A colourful startup splash with four real initialization stages. Serial
   diagnostics remain available. Test builds retain the text boot console;
   panic handling reclaims the display and replays the retained boot log.
-- Three cached procedural wallpapers: Daybreak, Lagoon, and Orchid.
+- Three cached image-backed themes: Coastal Glass, Citrus Atelier, and Midnight
+  Aurora. Peel reads 1280×800 BMP resources from CitrusFS, scales them once to
+  native resolution at boot (about 47 MiB of cached surfaces plus 9 MiB source
+  storage at 2560×1600), and Appearance changes shell materials, text, accents, and
+  window title bars as well as the wallpaper. The selection is session-only.
 - A top menu/status bar showing the active window and a live weekday, date,
   and 12-hour clock at the far right. Click the date/time to open Calendar;
   the adjacent sliders open Appearance.
@@ -81,6 +85,27 @@ on OrangeOS's own compositor, processes, IPC, and framebuffer.
 | Files: back / dismiss preview | Back button or Backspace; Escape dismisses preview |
 
 ## Implementation
+
+### Three visual directions
+
+The user selected all three numbered design concepts. Appearance exposes the
+corresponding Coastal, Citrus, and Aurora choices, with native guest captures:
+[Coastal](../screenshots/theme-coastal.png),
+[Citrus](../screenshots/theme-citrus.png), and
+[Aurora](../screenshots/theme-aurora.png). These are newly generated clean
+wallpaper assets inspired by the approved concepts plus native compositor
+materials. The source PNGs are in `assets/wallpapers/`, the 24-bit guest BMPs
+in `userland/servers/peel/assets/`, and the compositor caches all three
+backgrounds at boot; pointer movement never decodes or scales them.
+
+This is a shell/theme milestone, not complete application theming or macOS
+feature parity. Existing clients still own their light content pixels; a dark
+Aurora title bar can therefore frame a light Welcome or Files view. A shared
+theme notification protocol, client palettes, persistent preferences, a real
+browser, and genuine host-device controls remain separate production-plan
+work. On the 2-vCPU QEMU TCG test profile, theme switching still incurs a
+roughly 500 ms full-screen recomposition, while ordinary interaction tests
+pass. Cached wallpaper generation does not remove that whole-scene cost.
 
 ### Reference-inspired Welcome and Calendar
 

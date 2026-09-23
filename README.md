@@ -13,7 +13,7 @@
 
 **[📐 Read the Architecture](ARCHITECTURE.md)**
 
-![Orange OS Daybreak desktop](docs/screenshots/daybreak.png)
+![Orange OS Coastal Glass theme](docs/screenshots/theme-coastal.png)
 
 </div>
 
@@ -78,7 +78,18 @@ tree, memory layout, syscall ABI, and IPC model — is in
 
 ## Status
 
-**Daybreak desktop.** A colourful desktop with three procedural wallpapers,
+**Orange OS themes.** The Appearance panel now offers Coastal Glass, Citrus
+Atelier, and Midnight Aurora. Each selection changes the cached image-backed
+wallpaper, menu bar, dock, floating panels, accents, and window chrome. The
+dark variant uses light shell text for contrast. Theme choice is session-only
+because persistent user preferences are not yet implemented. Application
+content is not yet theme-aware; a light app can remain open under the dark
+shell. These native screenshots show all three themes:
+[Coastal Glass](docs/screenshots/theme-coastal.png),
+[Citrus Atelier](docs/screenshots/theme-citrus.png), and
+[Midnight Aurora](docs/screenshots/theme-aurora.png).
+
+**Daybreak desktop.** A colourful desktop with three selectable themes,
 smooth Inter typography, a frosted-glass app dock, a top menu/status bar, and
 rounded windows with soft shadows. The controls work: close, minimize and
 restore, zoom, switch apps, reveal the desktop, and choose a wallpaper.

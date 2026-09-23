@@ -20,9 +20,13 @@ mkdir -p build
 rm -rf "$ROOTFS"
 mkdir -p "$ROOTFS/etc" "$ROOTFS/sbin" "$ROOTFS/bin"
 mkdir -p "$ROOTFS/share/licenses"
+mkdir -p "$ROOTFS/share/wallpapers"
 mkdir -p "$ROOTFS/Trash"
 cp assets/fonts/OFL-Inter.txt "$ROOTFS/share/licenses/OFL-Inter.txt"
 cp assets/fonts/OFL-JetBrainsMono.txt "$ROOTFS/share/licenses/OFL-JetBrainsMono.txt"
+cp userland/servers/peel/assets/coastal-glass-1280.bmp "$ROOTFS/share/wallpapers/coastal-glass.bmp"
+cp userland/servers/peel/assets/citrus-atelier-1280.bmp "$ROOTFS/share/wallpapers/citrus-atelier.bmp"
+cp userland/servers/peel/assets/midnight-aurora-1280.bmp "$ROOTFS/share/wallpapers/midnight-aurora.bmp"
 
 echo "Welcome to Orange OS." > "$ROOTFS/etc/motd"
 printf 'NAME="Orange OS"\nVERSION="0.1.0"\nKERNEL="Zest"\n' > "$ROOTFS/etc/os-release"

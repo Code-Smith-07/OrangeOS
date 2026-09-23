@@ -57,48 +57,88 @@ pub const State = struct {
     notice: []const u8 = "",
 };
 
-const WHITE = 0xFFFFFF;
-const INK = ui.Color.ink;
-const MUTED = 0x69788D;
-const ACCENT = ui.Color.accent;
+pub const ThemeColors = struct {
+    ink: u32,
+    muted: u32,
+    accent: u32,
+    surface: u32,
+    bar: u32,
+    dock: u32,
+    panel: u32,
+    hover: u32,
+    rim: u32,
+    frame: u32,
+    frame_inactive: u32,
+    frame_text: u32,
+};
+pub const THEME_NAMES = [_][]const u8{ "Coastal Glass", "Citrus Atelier", "Midnight Aurora" };
+const THEMES = [_]ThemeColors{
+    .{ .ink = 0x17334D, .muted = 0x5D748A, .accent = 0x1689DB, .surface = 0xFFFFFF, .bar = 0xF2FAFF, .dock = 0xEAF7FF, .panel = 0xF4FAFF, .hover = 0xD9EFFD, .rim = 0xFFFFFF, .frame = 0xF4FAFF, .frame_inactive = 0xDFECF5, .frame_text = 0x17334D },
+    .{ .ink = 0x4A2B36, .muted = 0x816A74, .accent = 0xDF5D32, .surface = 0xFFF9F4, .bar = 0xFFF3E9, .dock = 0xFFEDE5, .panel = 0xFFF4EE, .hover = 0xFFE4D8, .rim = 0xFFFFFF, .frame = 0xFFF7F1, .frame_inactive = 0xF6E4DF, .frame_text = 0x4A2B36 },
+    .{ .ink = 0xF4F7FF, .muted = 0xBDC9E0, .accent = 0x69E5E0, .surface = 0x263556, .bar = 0x14243F, .dock = 0x1E3154, .panel = 0x1C2D4B, .hover = 0x345272, .rim = 0xBAD8FB, .frame = 0x233653, .frame_inactive = 0x1A2942, .frame_text = 0xF4F7FF },
+};
+pub fn themeColors(index: usize) ThemeColors {
+    return THEMES[index % THEMES.len];
+}
+// Peel is single-threaded. Calendar/overview retained-layer updates use the
+// same active palette as full shell paints without allocating new surfaces.
+var WHITE: u32 = THEMES[0].surface;
+var INK: u32 = THEMES[0].ink;
+var MUTED: u32 = THEMES[0].muted;
+var ACCENT: u32 = THEMES[0].accent;
+var active_theme: ThemeColors = THEMES[0];
+fn activateTheme(index: usize) void {
+    active_theme = themeColors(index);
+    WHITE = active_theme.surface;
+    INK = active_theme.ink;
+    MUTED = active_theme.muted;
+    ACCENT = active_theme.accent;
+}
 const COLORS = [_]u32{ 0xFF9258, 0x7879F1, 0xFF5B86, 0x39CFC0, 0x63B5FF, 0xA895F3 };
 const LABELS = [_][]const u8{ "Files", "Welcome", "Terminal", "Clock", "About", "Windows", "Appearance", "Trash" };
 const DOCK_ACTIONS = [_]u16{ Action.files, Action.home, Action.terminal, Action.clock, Action.about, Action.overview, Action.settings, Action.trash };
 const DOCK_ICONS = [_]ui.Icon{ .files, .welcome, .terminal, .clock, .about, .windows, .appearance, .trash };
 const DOCK_APPS = [_]?usize{ 4, 0, 1, 2, 3, null, null, 5 };
-const PALETTES = [_][5]u32{
-    .{ 0x182E58, 0x667FB8, 0xCEB6D8, 0xEE9D91, 0xF1CCAA },
-    .{ 0x102E51, 0x357B9A, 0xAADCD6, 0x368EAE, 0x9CCDC9 },
-    .{ 0x2B2659, 0x7669A7, 0xD6BBDF, 0xA56CA2, 0xE7B8BA },
-};
+// Clean assets derived from the three approved concepts. The BMP resources
+// live on CitrusFS, not inside Peel's ELF (the kernel has an 8 MiB exec cap).
+// Peel loads each once into bounded SHM and installs a read-only slice here.
+const bitmap_width: i32 = 1280;
+const bitmap_height: i32 = 800;
+pub const WALLPAPER_BYTES: usize = 54 + bitmap_width * bitmap_height * 3;
+var wallpaper_bmps: [THEMES.len]?[]const u8 = [_]?[]const u8{null} ** THEMES.len;
+pub fn installWallpaperSource(index: usize, bmp: []const u8) bool {
+    if (index >= wallpaper_bmps.len or bmp.len != WALLPAPER_BYTES or
+        bmp[0] != 'B' or bmp[1] != 'M' or bmp[28] != 24 or bmp[29] != 0)
+        return false;
+    wallpaper_bmps[index] = bmp;
+    return true;
+}
 
-/// Original "Silk" wallpaper: broad folds, luminous seams and a quiet sky.
-/// Integer smoothstep gradients are rendered at native backing resolution and
-/// cached once per appearance change; no image decoding in the frame loop.
+/// All three wallpapers are cached at native backing resolution. Pointer
+/// motion never re-evaluates these pixels.
 pub fn wallpaperPixel(x: i32, y: i32, width: i32, height: i32, palette: usize) u32 {
-    const u = @divTrunc(x * 10000, @max(width, 1));
-    const v = @divTrunc(y * 10000, @max(height, 1));
-    const p = PALETTES[palette % PALETTES.len];
-    const a = u - 3400;
-    const fold = 7100 - @divTrunc(u * 57, 100) + @divTrunc(a * a, 21000);
-    const lower = 8800 - @divTrunc(u * 30, 100) + @divTrunc((u - 7200) * (u - 7200), 41000);
-    const sky = gfx.lerp(p[0], p[1], smooth(v + @divTrunc(u, 4), 10500));
-    const face = gfx.lerp(p[2], p[3], smooth(v - fold + 300, 4400));
-    var color = gfx.lerp(sky, face, smooth(v - fold + 450, 900));
-    const foot = gfx.lerp(p[4], p[3], smooth(v - lower, 3500));
-    color = gfx.lerp(color, foot, smooth(v - lower + 180, 360));
-    // Subtle reflected light along the main fold, not a hard aliased edge.
-    const glow = @max(0, 260 - @as(i32, @intCast(@abs(v - fold + 180))));
-    return gfx.lerp(color, 0xF5F2FF, @intCast(@divTrunc(glow, 10)));
+    const index = palette % wallpaper_bmps.len;
+    if (wallpaper_bmps[index]) |bmp| return bitmapPixel(x, y, width, height, bmp);
+    const t: u8 = @intCast(@max(0, @min(255, @divTrunc(y * 255, @max(1, height - 1)))));
+    const fallback = [_][2]u32{ .{ 0x8BCBF5, 0x196ABD }, .{ 0xF4A7A7, 0xFF8A66 }, .{ 0x101A3A, 0x273D69 } };
+    return gfx.lerp(fallback[index][0], fallback[index][1], t);
 }
 
-fn smooth(value: i32, total: i32) u8 {
-    const t: i32 = fraction(value, total);
-    return @intCast(@divTrunc(t * t * (765 - 2 * t), 65025));
+fn sourcePixel(bmp: []const u8, x: usize, y: usize) u32 {
+    const at = 54 + (y * @as(usize, bitmap_width) + x) * 3;
+    return (@as(u32, bmp[at + 2]) << 16) | (@as(u32, bmp[at + 1]) << 8) | bmp[at];
 }
 
-fn fraction(value: i32, total: i32) u8 {
-    return @intCast(@max(0, @min(255, @divTrunc(value * 255, @max(1, total)))));
+fn bitmapPixel(x: i32, y: i32, width: i32, height: i32, bmp: []const u8) u32 {
+    const sx: usize = @intCast(@divTrunc(@max(0, x) * (bitmap_width - 1) * 256, @max(1, width - 1)));
+    const sy: usize = @intCast(@divTrunc(@max(0, y) * (bitmap_height - 1) * 256, @max(1, height - 1)));
+    const x0 = @min(@as(usize, bitmap_width - 1), sx >> 8);
+    const y0 = @min(@as(usize, bitmap_height - 1), sy >> 8);
+    const x1 = @min(@as(usize, bitmap_width - 1), x0 + 1);
+    const y1 = @min(@as(usize, bitmap_height - 1), y0 + 1);
+    const top = gfx.lerp(sourcePixel(bmp, x0, y0), sourcePixel(bmp, x1, y0), @truncate(sx));
+    const bottom = gfx.lerp(sourcePixel(bmp, x0, y1), sourcePixel(bmp, x1, y1), @truncate(sx));
+    return gfx.lerp(top, bottom, @truncate(sy));
 }
 
 pub fn dockRect(s: *const Surface) Rect {
@@ -213,7 +253,7 @@ fn glassMaterial(s: *const Surface, r: Rect, radius: i32, opacity: u8, cache: ?*
             s.rounded(.{ .x = r.x - spread, .y = r.y + 3, .w = r.w + spread * 2, .h = r.h + spread }, radius + spread, 0x17182F, 4);
         }
     }
-    if (cache) |material| material.paint(s, r, radius, 0xF5F8FF, @min(opacity, 226)) else s.frost(r, radius, 0xF5F8FF, @min(opacity, 226));
+    if (cache) |material| material.paint(s, r, radius, active_theme.panel, @min(opacity, 226)) else s.frost(r, radius, active_theme.panel, @min(opacity, 226));
     glassRim(s, r, radius);
 }
 
@@ -228,7 +268,7 @@ fn glassRim(s: *const Surface, r: Rect, radius: i32) void {
         .{ .x = r.x, .y = inner.bottom(), .w = r.w, .h = 1 },
     }) |strip| {
         rim.setClip(Rect.intersect(s.clip, strip));
-        rim.rounded(r, radius, WHITE, 90);
+        rim.rounded(r, radius, active_theme.rim, 90);
     }
 }
 
@@ -364,6 +404,7 @@ pub fn invalidateCalendar() void {
     calendar_shadow.valid = false;
 }
 pub fn paintCalendarUpdate(s: *const Surface, state: *const State) bool {
+    activateTheme(state.palette);
     if (state.popup != .calendar or !calendar_base.restore(s)) return false;
     paintCalendar(s, state);
     calendar_finished.refresh(s);
@@ -381,6 +422,7 @@ pub fn invalidateOverview() void {
 }
 
 pub fn paintOverviewUpdate(s: *const Surface, state: *const State) bool {
+    activateTheme(state.palette);
     if (state.popup != .overview or !overview_base.restore(s)) return false;
     paintOverviewCards(s, state);
     return true;
@@ -391,7 +433,7 @@ fn paintOverviewCards(s: *const Surface, state: *const State) void {
         const r = windowCard(s, i);
         if (!Rect.overlaps(r, s.clip)) continue;
         const item = state.items[i];
-        s.rounded(r, 12, if (state.hover == Action.window + i) 0xDAE8FD else WHITE, 195);
+        s.rounded(r, 12, if (state.hover == Action.window + i) active_theme.hover else WHITE, 195);
         s.rounded(.{ .x = r.x + 10, .y = r.y + 9, .w = 76, .h = 46 }, 5, COLORS[item.app % 6], 255);
         if (item.pixels) |pixels| previews[i].paint(s, pixels, item.id, item.revision, item.width, item.height, r.x + 12, r.y + 15);
         text(s, item.title[0..@min(26, item.title.len)], r.x + 98, r.y + 17, INK);
@@ -400,8 +442,9 @@ fn paintOverviewCards(s: *const Surface, state: *const State) void {
 }
 
 pub fn paint(s: *const Surface, state: *const State) void {
+    activateTheme(state.palette);
     // Translucent top strip with only real, actionable menus/status.
-    bar_material.paint(s, .{ .x = 0, .y = 0, .w = s.width, .h = BAR_H }, 0, 0xF7FAFF, 222);
+    bar_material.paint(s, .{ .x = 0, .y = 0, .w = s.width, .h = BAR_H }, 0, active_theme.bar, 222);
     ui.icon(s, .brand, 14, 4, 20);
     text(s, "Orange OS", 42, 10, INK);
     text(s, state.active[0..@min(state.active.len, 25)], 162, 10, INK);
@@ -421,15 +464,15 @@ pub fn paint(s: *const Surface, state: *const State) void {
     const dock = dockRect(s);
     // A translucent pearl shelf with a fine rim and separate utility groups.
     const shelf = Rect{ .x = dock.x, .y = dock.y + 7, .w = dock.w, .h = dock.h - 10 };
-    dock_material.paintShadowed(s, shelf, 20, 0xF5F9FF, 146);
-    s.rounded(.{ .x = shelf.x + 20, .y = shelf.y, .w = shelf.w - 40, .h = 1 }, 0, 0xFFFFFF, 185);
+    dock_material.paintShadowed(s, shelf, 20, active_theme.dock, 185);
+    s.rounded(.{ .x = shelf.x + 20, .y = shelf.y, .w = shelf.w - 40, .h = 1 }, 0, active_theme.rim, 115);
     s.rounded(.{ .x = dock.x + 410, .y = dock.y + 24, .w = 1, .h = 41 }, 0, 0x778397, 60);
     s.rounded(.{ .x = dock.x + 575, .y = dock.y + 24, .w = 1, .h = 41 }, 0, 0x778397, 60);
     var drawing = s.*;
     for (DOCK_ACTIONS, 0..) |action, i| {
         const r = dockItem(s, i);
         const hovered = state.hover == action;
-        if (hovered) s.rounded(.{ .x = r.x + 2, .y = r.y, .w = r.w - 4, .h = 65 }, 16, WHITE, 90);
+        if (hovered) s.rounded(.{ .x = r.x + 2, .y = r.y, .w = r.w - 4, .h = 65 }, 16, active_theme.hover, 120);
         // Fixed optical size avoids abrupt magnification jumps on pointer entry.
         ui.icon(&drawing, DOCK_ICONS[i], r.x + 8, r.y + 3, 56);
         if (DOCK_APPS[i]) |app| if (state.running[app]) {
@@ -455,7 +498,7 @@ pub fn paint(s: *const Surface, state: *const State) void {
     if (state.popup == .calendar) {
         glassMaterial(s, p, 18, 242, &calendar_material);
     } else {
-        panel_material.paintShadowed(s, p, 18, 0xF5F8FF, 226);
+        panel_material.paintShadowed(s, p, 18, active_theme.panel, 226);
         glassRim(s, p, 18);
     }
     const material_finished = if (pulp.desktop_profile) pulp.uptimeMs() else 0;
@@ -466,7 +509,7 @@ pub fn paint(s: *const Surface, state: *const State) void {
             const actions = [_]u16{ Action.home, Action.new_terminal, Action.overview, Action.about };
             for (labels, 0..) |label, i| {
                 const r = Rect{ .x = p.x + 12, .y = p.y + 56 + @as(i32, @intCast(i)) * 35, .w = p.w - 24, .h = 33 };
-                if (state.hover == actions[i]) s.rounded(r, 7, 0xDAE8FD, 240);
+                if (state.hover == actions[i]) s.rounded(r, 7, active_theme.hover, 240);
                 text(s, label, r.x + 10, r.y + 12, INK);
             }
         },
@@ -479,11 +522,11 @@ pub fn paint(s: *const Surface, state: *const State) void {
         },
         .settings => {
             font.drawText(s, "Appearance", p.x + 20, p.y + 25, 2, INK);
-            text(s, "A different atmosphere", p.x + 20, p.y + 78, MUTED);
-            const names = [_][]const u8{ "Daybreak", "Lagoon", "Orchid" };
+            text(s, "Choose your Orange OS theme", p.x + 20, p.y + 78, MUTED);
+            const names = [_][]const u8{ "1 Coastal", "2 Citrus", "3 Aurora" };
             for (0..3) |i| {
                 const r = paletteCard(s, i);
-                s.rounded(.{ .x = r.x - 3, .y = r.y - 3, .w = r.w + 6, .h = r.h + 6 }, 10, if (state.palette == i) ACCENT else 0xD2DAE5, 255);
+                s.rounded(.{ .x = r.x - 3, .y = r.y - 3, .w = r.w + 6, .h = r.h + 6 }, 10, if (state.palette == i) ACCENT else active_theme.muted, 255);
                 var yy = r.y * s.scale;
                 while (yy < r.bottom() * s.scale) : (yy += 1) {
                     var xx = r.x * s.scale;
@@ -501,17 +544,17 @@ pub fn paint(s: *const Surface, state: *const State) void {
                 centered(s, names[i], .{ .x = r.x, .y = r.bottom() + 10, .w = r.w, .h = 14 }, INK);
             }
             const button = Rect{ .x = p.x + 20, .y = p.y + 210, .w = 320, .h = 40 };
-            s.rounded(button, 10, if (state.hover == Action.desktop) 0xE0EAFE else WHITE, 220);
+            s.rounded(button, 10, if (state.hover == Action.desktop) active_theme.hover else WHITE, 220);
             centered(s, "Show / restore desktop", button, ACCENT);
-            s.rounded(.{ .x = p.x + 20, .y = p.y + 269, .w = 320, .h = 1 }, 0, 0xD2DAE5, 180);
+            s.rounded(.{ .x = p.x + 20, .y = p.y + 269, .w = 320, .h = 1 }, 0, active_theme.muted, 100);
             text(s, "Display & session", p.x + 20, p.y + 286, INK);
             var buffer: [64]u8 = undefined;
             const dimensions = @import("std").fmt.bufPrint(&buffer, "Display  {d} x {d}  /  {d}x UI", .{ s.width * s.scale, s.height * s.scale, s.scale }) catch "Display information unavailable";
             text(s, dimensions, p.x + 20, p.y + 311, MUTED);
             text(s, "Green button: zoom / restore", p.x + 20, p.y + 328, MUTED);
-            text(s, "Wallpaper choice resets on reboot.", p.x + 20, p.y + 358, MUTED);
+            text(s, "Theme choice resets on reboot.", p.x + 20, p.y + 358, MUTED);
             const hardware = hardwareButton(s);
-            s.rounded(hardware, 10, if (state.hover == Action.hardware) 0xE0EAFE else WHITE, 220);
+            s.rounded(hardware, 10, if (state.hover == Action.hardware) active_theme.hover else WHITE, 220);
             ui.icon(s, .controls, hardware.x + 10, hardware.y + 8, 24);
             text(s, "Mac hardware status", hardware.x + 46, hardware.y + 14, INK);
         },
