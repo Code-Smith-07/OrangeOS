@@ -136,6 +136,11 @@ the actual QEMU guest, including reconnect testing. Click the menu-bar controls
 icon for **Control Center**: real Mac Wi-Fi/Bluetooth state, output volume,
 battery/AC state and display-adapter availability. Compact menu-bar indicators
 show these live observations; disconnected/unknown readings are marked `?`.
+Control Center is a top-right, rounded glass panel, not a draggable app window:
+no title bar or traffic lights, grouped status tiles, and pill-shaped sliders.
+It follows all three desktop palettes. Escape, an outside click, or another click
+on the menu icon dismisses it; reopening reuses the same client. It is excluded
+from the dock and window overview, and an outside dismissal never clicks through.
 A native volume slider sends
 requests to CoreAudio after you enable sound control in the companion's Mac
 menu; revoke that grant there at any time. The guest reports pending, denied,

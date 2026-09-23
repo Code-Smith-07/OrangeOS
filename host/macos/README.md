@@ -157,6 +157,21 @@ the frozen companion's separate RPC timeout; both fail-closed paths passed.
 
 ## Control Center, sound and battery (23 September 2026)
 
+Control Center now uses Peel's borderless, top-right transient-panel role.
+It follows the desktop palette, with rounded frosted edges, grouped radio/power
+status and pill-shaped Display/Sound sliders. There are no window buttons or
+dragging, and no dock/overview entry. Escape, an outside click or the menu-bar
+icon dismisses the panel; reopening reuses its process. Dismissal cancels an
+unfinished slider gesture without a host write. This presentation flag grants
+no privileges: the existing `/bin/hardware` command mailbox and per-run Mac
+sound/display grants remain unchanged. Radio state is still read-only, and no
+AirDrop, Focus, mirroring or media controls are claimed.
+
+`python3 tools/control_panel_smoke.py` covers real guest anchoring, non-draggable
+content, pixel-stable blank interactions, all three themes, dismissal with
+backdrop restoration, click-through prevention and singleton reuse.
+The sound fixture also tests cancellation during an active slider gesture.
+
 The menu-bar controls button now launches the native **Control Center**. Its
 original SVG Wi-Fi/Bluetooth/sun/speaker/battery symbols accompany real cached
 observations. CoreAudio supplies default-output volume, mute state and a route

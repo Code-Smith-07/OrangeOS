@@ -4,13 +4,24 @@ const pulp = @import("pulp");
 const libpeel = @import("libpeel");
 const ui = @import("ui");
 const model = @import("model.zig");
-const W = 480;
-const H = 480;
+const W = 360;
+const H = 424;
+const SLIDER_X = 32;
+const SLIDER_W = 296;
+var palette: u32 = 0;
+const Colors = struct { canvas: u32, tile: u32, ink: u32, muted: u32, track: u32 };
+fn colors() Colors {
+    return switch (palette) {
+        2 => .{ .canvas = 0x20242D, .tile = 0x30343E, .ink = 0xF5F6FA, .muted = 0xB2B8C4, .track = 0x535864 },
+        1 => .{ .canvas = 0xF4E8E0, .tile = 0xFFF8F1, .ink = 0x392E33, .muted = 0x7C6C70, .track = 0xDDCEC7 },
+        else => .{ .canvas = 0xE0EAF3, .tile = 0xF5F9FD, .ink = 0x24313D, .muted = 0x667889, .track = 0xCEDCE8 },
+    };
+}
 fn sliderRect(index: usize) ui.Rect {
-    return .{ .x = 18, .y = 176 + @as(i32, @intCast(index)) * 118, .w = 444, .h = 106 };
+    return .{ .x = 12, .y = 154 + @as(i32, @intCast(index)) * 100, .w = 336, .h = 90 };
 }
 fn sliderHit(index: usize) ui.Rect {
-    return .{ .x = 66, .y = sliderRect(index).y + 40, .w = 370, .h = 34 };
+    return .{ .x = SLIDER_X - 8, .y = sliderRect(index).y + 34, .w = SLIDER_W + 16, .h = 30 };
 }
 var staging: [W * H * 4]u32 = undefined;
 var json_memory: [32768]u8 = undefined;
@@ -35,68 +46,68 @@ fn reading(row: model.Row, buf: []u8) []const u8 {
     };
 }
 fn card(s: *ui.Surface, rect: ui.Rect) void {
-    s.rounded(rect, 16, 0xCEE2F2, 255);
-    s.rounded(.{ .x = rect.x + 1, .y = rect.y + 1, .w = rect.w - 2, .h = rect.h - 2 }, 15, 0xFFFFFF, 216);
+    s.rounded(.{ .x = rect.x, .y = rect.y + 2, .w = rect.w, .h = rect.h }, 12, 0x000000, 12);
+    s.rounded(rect, 12, colors().tile, 255);
 }
 fn paint(win: *const libpeel.Window, state: model.Model, region: ui.Rect) void {
     var s = ui.surface(win);
     s.pixels = &staging;
     s.setClip(region);
-    ui.gradient(&s, .{ .x = 0, .y = 0, .w = W, .h = H }, 0, 0xECF8FF, 0xD8EAF8);
-    ui.label(&s, "Control Center", 24, 21, 2, 0x17334D);
+    const c = colors();
+    s.fill(.{ .x = 0, .y = 0, .w = W, .h = H }, c.canvas);
+    card(&s, .{ .x = 12, .y = 12, .w = 204, .h = 130 });
+    for ([_][]const u8{ "Wi-Fi", "Bluetooth" }, [_]ui.Icon{ .menu_wifi, .menu_bluetooth }, 0..) |title, icon, i| {
+        const y: i32 = 25 + @as(i32, @intCast(i)) * 56;
+        s.circle(42, y + 16, 17, if (state.rows[i].reading == .on) 0x0787F9 else c.track);
+        ui.iconTint(&s, icon, 32, y + 6, 20, 0xFFFFFF);
+        ui.label(&s, title, 70, y + 2, 1, c.ink);
+        var buf: [48]u8 = undefined;
+        s.setClip(ui.Rect.intersect(region, .{ .x = 70, .y = y + 20, .w = 136, .h = 18 }));
+        ui.label(&s, reading(state.rows[i], &buf), 70, y + 22, 1, c.muted);
+        s.setClip(region);
+    }
+    card(&s, .{ .x = 226, .y = 12, .w = 122, .h = 130 });
+    ui.iconTint(&s, if (state.rows[4].power == true) .menu_battery else .menu_battery_plain, 242, 27, 32, c.ink);
+    var battery_buf: [48]u8 = undefined;
+    ui.label(&s, "Battery", 242, 72, 1, c.ink);
+    s.setClip(ui.Rect.intersect(region, .{ .x = 240, .y = 93, .w = 102, .h = 18 }));
+    ui.label(&s, reading(state.rows[4], &battery_buf), 242, 95, 1, c.muted);
+    s.setClip(region);
+    ui.label(&s, if (state.rows[4].power == true) "Power connected" else if (state.rows[4].power == false) "On battery" else "Mac power", 236, 120, 1, c.muted);
+    var text: [64]u8 = undefined;
+    for (0..2) |i| {
+        const r = sliderRect(i);
+        const row = state.rows[2 + i];
+        card(&s, r);
+        ui.label(&s, if (i == 0) "Display" else "Sound", 26, r.y + 14, 1, c.ink);
+        if (row.reading == .percent) {
+            ui.label(&s, if (row.muted == true) "Muted" else reading(row, &text), 290, r.y + 14, 1, c.muted);
+            const enabled = row.control and state.connection == .fresh;
+            const value = previews[i] orelse row.reading.percent;
+            s.rounded(.{ .x = 24, .y = r.y + 36, .w = 312, .h = 26 }, 13, c.track, 255);
+            const thumb = SLIDER_X + @divTrunc(SLIDER_W * @as(i32, value), 100);
+            s.rounded(.{ .x = 24, .y = r.y + 36, .w = thumb - 12, .h = 26 }, 13, if (enabled) 0xF7F9FC else 0x98A4B2, 255);
+            s.circle(thumb, r.y + 49, 12, if (enabled) 0xFFFFFF else 0xC4CDD7);
+            ui.iconTint(&s, if (i == 0) .sun else .menu_speaker, 31, r.y + 41, 16, 0x647183);
+            s.setClip(ui.Rect.intersect(region, .{ .x = 26, .y = r.y + 69, .w = 308, .h = 18 }));
+            ui.label(&s, if (previews[i] != null) "Release to apply" else if (messages[i].len != 0) messages[i] else if (enabled) (if (i == 0) "Built-in display / minimum 5%" else "Mac sound output") else "Allow control in Mac companion menu", 26, r.y + 71, 1, c.muted);
+            s.setClip(region);
+        } else {
+            ui.label(&s, reading(row, &text), 26, r.y + 47, 1, c.muted);
+        }
+    }
     ui.label(&s, switch (state.connection) {
         .fresh => "Connected to your Mac",
         .stale => "Waiting for your Mac",
         .disconnected => "Mac companion disconnected",
         .invalid => "Mac data unavailable",
         .unavailable => "Connecting to your Mac",
-    }, 24, 57, 1, 0x657E96);
-    for ([_][]const u8{ "Wi-Fi", "Bluetooth" }, [_]ui.Icon{ .wifi, .bluetooth }, 0..) |title, icon, i| {
-        const x: i32 = 18 + @as(i32, @intCast(i)) * 228;
-        card(&s, .{ .x = x, .y = 84, .w = 216, .h = 78 });
-        s.circle(x + 34, 120, 21, if (state.rows[i].reading == .on) 0x168CEB else 0x879FB6);
-        ui.icon(&s, icon, x + 19, 105, 30);
-        ui.label(&s, title, x + 65, 101, 1, 0x17334D);
-        var buf: [48]u8 = undefined;
-        s.setClip(ui.Rect.intersect(region, .{ .x = x + 65, .y = 119, .w = 143, .h = 18 }));
-        ui.label(&s, reading(state.rows[i], &buf), x + 65, 123, 1, 0x56728D);
-        s.setClip(region);
-        ui.label(&s, "Mac radio status", x + 65, 142, 1, 0x7C92A7);
-    }
-    var text: [64]u8 = undefined;
-    for (0..2) |i| {
-        const r = sliderRect(i);
-        const row = state.rows[2 + i];
-        card(&s, r);
-        ui.icon(&s, if (i == 0) .sun else .speaker, 32, r.y + 43, 29);
-        ui.label(&s, if (i == 0) "Mac display brightness" else "Mac output volume", 32, r.y + 15, 1, 0x17334D);
-        if (row.reading == .percent) {
-            ui.label(&s, if (row.muted == true) "Muted" else reading(row, &text), 370, r.y + 15, 1, 0x56728D);
-            const enabled = row.control and state.connection == .fresh;
-            const value = previews[i] orelse row.reading.percent;
-            s.rounded(.{ .x = 78, .y = r.y + 54, .w = 342, .h = 7 }, 3, 0xD2E1EC, 255);
-            s.rounded(.{ .x = 78, .y = r.y + 54, .w = @divTrunc(342 * @as(i32, value), 100), .h = 7 }, 3, if (enabled) 0x239DEE else 0x97B3CA, 255);
-            const thumb = 78 + @divTrunc(342 * @as(i32, value), 100);
-            s.circle(thumb, r.y + 58, 11, 0xBED2E2);
-            s.circle(thumb, r.y + 57, 9, 0xFFFFFF);
-            ui.label(&s, if (previews[i] != null) "Release to apply to this Mac" else if (messages[i].len != 0) messages[i] else if (enabled) (if (i == 0) "Built-in Mac display / 5-100%" else "Controls the Mac's current sound output") else if (i == 0) "Enable brightness in the Mac companion menu" else "Enable sound control in the Mac companion menu", 32, r.y + 84, 1, 0x6D849A);
-        } else {
-            ui.label(&s, reading(row, &text), 80, r.y + 51, 1, 0x6D849A);
-        }
-    }
-    card(&s, .{ .x = 18, .y = 414, .w = 444, .h = 50 });
-    ui.icon(&s, if (state.rows[4].power == true) .battery else .battery_plain, 32, 424, 30);
-    ui.label(&s, "Battery", 80, 428, 1, 0x17334D);
-    const battery = state.rows[4];
-    const value_text = reading(battery, &text);
-    var power_text: [96]u8 = undefined;
-    const power = if (battery.power == true) " / Power connected" else if (battery.power == false) " / On battery" else "";
-    const label = std.fmt.bufPrint(&power_text, "{s}{s}", .{ value_text, power }) catch value_text;
-    ui.label(&s, label, 187, 428, 1, 0x56728D);
+    }, 24, 363, 1, c.ink);
+    ui.label(&s, "Wi-Fi and Bluetooth: status only", 24, 389, 1, c.muted);
     ui.publishRegion(win, &staging, region);
 }
 export fn _start() callconv(.c) noreturn {
-    const win = libpeel.createWindow("Control Center", W, H, 390, 145) catch pulp.exit(1);
+    const win = libpeel.createWindowWithFlags("Control Center", W, H, 0, 0, libpeel.proto.WindowFlags.panel) catch pulp.exit(1);
     var buffer: [4096]u8 = undefined;
     var state: model.Model = .{};
     var events: [128]u8 = undefined;
@@ -112,6 +123,11 @@ export fn _start() callconv(.c) noreturn {
         while (true) {
             const event = pulp.portRecvMsg(win.reply, &events, false) catch break;
             if (event.len == 0) break;
+            if (event.opcode == libpeel.proto.Op.appearance and event.len == 4) {
+                palette = @as(*align(1) const u32, @ptrCast(&events)).*;
+                paint(&win, state, full);
+                continue;
+            }
             if (event.opcode == libpeel.proto.Op.close_requested) {
                 win.destroy();
                 pulp.puts("hardware: closed\n");
@@ -129,7 +145,7 @@ export fn _start() callconv(.c) noreturn {
             }
             if (captured) |i| {
                 if (pressed) {
-                    const raw = @divTrunc(std.math.clamp(input.x - 78, 0, 342) * 100, 342);
+                    const raw = @divTrunc(std.math.clamp(input.x - SLIDER_X, 0, SLIDER_W) * 100, SLIDER_W);
                     const percent: u8 = @intCast(@max(if (i == 0) @as(i32, 5) else 0, raw));
                     if (previews[i] == null or previews[i].? != percent) {
                         previews[i] = percent;

@@ -12,6 +12,9 @@ pub const PORT = "peel";
 
 pub const WindowFlags = struct {
     pub const closable: u32 = 1 << 0;
+    /// Top-right transient surface: no frame, dragging, dock or overview entry.
+    /// Presentation only; grants no host-control authority.
+    pub const panel: u32 = 1 << 1;
 };
 
 pub const Op = struct {
@@ -34,6 +37,8 @@ pub const Op = struct {
     pub const input: u32 = 129;
     /// Peel -> client: the user pressed the window's close button.
     pub const close_requested: u32 = 130;
+    /// Peel -> panel: current desktop palette (u32), on creation and changes.
+    pub const appearance: u32 = 132;
 };
 
 /// Request to create a window. `shm_name` names a buffer the client has

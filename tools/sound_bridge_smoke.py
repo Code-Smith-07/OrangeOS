@@ -107,37 +107,48 @@ def main():
         guest.scale = 2
         guest.click(1015, 16)
         guest.until(lambda: "hardware: view snapshot" in guest.log(), "menu bar opens native Control Center", 15)
-        # Window origin (390,145), title 36; slider x=78..420.
-        guest.click(390 + 78 + 171, 145 + 36 + 351)
+        # Escape while a slider is captured cancels, never commits a Mac write.
+        guest.move(908 + 32 + 148, 36 + 254 + 49)
+        guest.monitor("mouse_button 1")
+        time.sleep(.25)
+        guest.key("esc")
+        guest.monitor("mouse_button 0")
+        time.sleep(.4)
+        assert not commands and not brightness_commands, "dismissed gesture submitted a host write"
+        guest.click(1015, 16)
+        time.sleep(.4)
+        print("PASS Escape cancels a captured slider without changing host state", flush=True)
+        # Anchored borderless panel at (908,36); track x=32..328.
+        guest.click(908 + 32 + 148, 36 + 254 + 49)
         guest.until(lambda: "hardware: sound result 0" in guest.log(), "slider command completes through guest kernel and agent", 15)
         assert len(commands) == 1 and 49 <= commands[-1] <= 51
         applied_level = commands[-1] / 100
         guest.until(lambda: f'"level":{applied_level}' in guest.log(), "new volume readback reaches guest", 10)
         offset = len(guest.log()); fixture["failure"] = "permission_denied"
-        guest.click(390 + 78 + 239, 145 + 36 + 351)
+        guest.click(908 + 32 + 207, 36 + 254 + 49)
         guest.until(lambda: "hardware: sound result -13" in guest.log()[offset:], "revoked grant is reported without optimistic success", 15)
         assert fixture["level"] == applied_level
         offset = len(guest.log()); fixture["failure"] = "route_changed"
-        guest.click(390 + 78 + 205, 145 + 36 + 351)
+        guest.click(908 + 32 + 178, 36 + 254 + 49)
         guest.until(lambda: "hardware: sound result -116" in guest.log()[offset:], "changed route rejects stale command", 15)
         fixture["grant"] = False
         guest.until(lambda: '"control":false' in guest.log(), "revocation reaches guest", 10)
         time.sleep(.5)
         before = len(commands)
-        guest.click(390 + 78 + 171, 145 + 36 + 351)
+        guest.click(908 + 32 + 148, 36 + 254 + 49)
         time.sleep(1)
         assert len(commands) == before, "disabled slider submitted a host request"
         fixture["failure"] = None
         offset = len(guest.log())
-        guest.click(390 + 78 + 171, 145 + 36 + 233)
+        guest.click(908 + 32 + 148, 36 + 154 + 49)
         guest.until(lambda: "hardware: brightness result 0" in guest.log()[offset:], "independent display grant works while audio is revoked", 15)
         assert len(brightness_commands) == 1 and 49 <= brightness_commands[-1] <= 51
         offset = len(guest.log())
-        guest.click(390 + 78, 145 + 36 + 233)
+        guest.click(908 + 32, 36 + 154 + 49)
         guest.until(lambda: "hardware: brightness result 0" in guest.log()[offset:], "display slider respects visible minimum", 15)
         assert brightness_commands[-1] == 5
         offset = len(guest.log()); fixture["failure"] = "permission_denied"
-        guest.click(390 + 78 + 205, 145 + 36 + 233)
+        guest.click(908 + 32 + 178, 36 + 154 + 49)
         guest.until(lambda: "hardware: brightness result -13" in guest.log()[offset:], "display grant revocation rejects pending writes", 15)
         assert fixture["brightness"] == .05
         fixture["brightness_grant"] = False
@@ -145,7 +156,7 @@ def main():
         guest.until(lambda: '"device":1,"control":false' in guest.log()[offset:], "display revocation reaches guest", 10)
         time.sleep(.5)
         before = len(brightness_commands)
-        guest.click(390 + 78 + 171, 145 + 36 + 233)
+        guest.click(908 + 32 + 148, 36 + 154 + 49)
         time.sleep(1)
         assert len(brightness_commands) == before
         assert not errors, errors

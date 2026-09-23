@@ -58,6 +58,7 @@ const Window = struct {
     buffer_handle: i64 = -1,
     owner_pid: i64 = -1,
     closable: bool = true,
+    panel: bool = false,
     id: u32 = 0,
     revision: u64 = 0,
 
@@ -72,6 +73,7 @@ const Window = struct {
 
     /// Where the client's content sits inside the frame.
     fn contentRect(self: *const Window) Rect {
+        if (self.panel) return self.rect;
         return .{
             .x = self.rect.x + BORDER_W,
             .y = self.rect.y + TITLE_H,
@@ -81,6 +83,7 @@ const Window = struct {
     }
 
     fn titleBar(self: *const Window) Rect {
+        if (self.panel) return .{ .x = self.rect.x, .y = self.rect.y, .w = 0, .h = 0 };
         return .{ .x = self.rect.x, .y = self.rect.y, .w = self.rect.w, .h = TITLE_H };
     }
 
@@ -195,14 +198,52 @@ fn appIndex(title: []const u8) usize {
 }
 
 fn syncShell() void {
-    shell.active = if (activeWindow()) |idx| windows[idx].title() else "Desktop";
+    shell.active = "Desktop";
+    var z = window_count;
+    while (z > 0) {
+        z -= 1;
+        const w = &windows[z_order[z]];
+        if (w.visible and !w.panel) {
+            shell.active = w.title();
+            break;
+        }
+    }
     shell.running = [_]bool{false} ** 7;
-    shell.count = window_count;
+    shell.count = 0;
+    shell.controls_open = false;
     for (0..window_count) |i| {
+        if (windows[i].panel) {
+            shell.controls_open = shell.controls_open or windows[i].visible;
+            continue;
+        }
         const app = appIndex(windows[i].title());
         shell.running[app] = true;
-        shell.items[i] = .{ .id = windows[i].id, .revision = windows[i].revision, .title = windows[i].title(), .hidden = !windows[i].visible, .app = app, .pixels = windows[i].pixels, .width = windows[i].client_w * screen.scale, .height = windows[i].client_h * screen.scale };
+        shell.items[shell.count] = .{ .id = windows[i].id, .revision = windows[i].revision, .title = windows[i].title(), .hidden = !windows[i].visible, .app = app, .pixels = windows[i].pixels, .width = windows[i].client_w * screen.scale, .height = windows[i].client_h * screen.scale };
+        shell.count += 1;
     }
+}
+
+fn openPanel() ?usize {
+    for (0..window_count) |i| if (windows[i].panel and windows[i].visible) return i;
+    return null;
+}
+
+fn dismissPanel() void {
+    const idx = openPanel() orelse return;
+    // Cancel an unfinished slider gesture without submitting a host request.
+    sendInput(idx, pulp.EV_MOUSE, 0, 0, -10000, -10000);
+    pointer_capture = null;
+    hover_window = null;
+    windows[idx].visible = false;
+    addDamage(windows[idx].damageRect());
+    if (activeWindow()) |active| addDamage(windows[active].damageRect());
+    chromeDamage();
+    pulp.puts("desktop: control panel dismissed\n");
+}
+
+fn sendAppearance(idx: usize) void {
+    const palette: u32 = @intCast(shell.palette);
+    _ = pulp.portSend(windows[idx].reply_port, proto.Op.appearance, @import("std").mem.asBytes(&palette)) catch {};
 }
 
 fn launchApp(app: usize, new_instance: bool) void {
@@ -213,6 +254,7 @@ fn launchApp(app: usize, new_instance: bool) void {
             const idx = z_order[i];
             if (appIndex(windows[idx].title()) == app) {
                 focusWindow(idx);
+                if (windows[idx].panel) pulp.puts("desktop: control panel opened\n");
                 return;
             }
         }
@@ -265,6 +307,8 @@ fn zoomWindow(idx: usize) void {
 
 fn shellAction(action: u16) void {
     if (action == desktop.Action.keep_popup) return;
+    const panel_was_open = openPanel() != null;
+    dismissPanel();
     desktop.invalidateOverview();
     shell.notice = "";
     const old = shell.popup;
@@ -273,7 +317,7 @@ fn shellAction(action: u16) void {
         1...4 => launchApp(action - 1, false),
         desktop.Action.files => launchApp(4, false),
         desktop.Action.trash => launchApp(5, false),
-        desktop.Action.hardware => launchApp(6, false),
+        desktop.Action.hardware => if (!panel_was_open) launchApp(6, false),
         desktop.Action.menu => shell.popup = if (old == .menu) .none else .menu,
         desktop.Action.overview => shell.popup = if (old == .overview) .none else .overview,
         desktop.Action.settings => shell.popup = if (old == .settings) .none else .settings,
@@ -293,12 +337,13 @@ fn shellAction(action: u16) void {
         desktop.Action.new_terminal => launchApp(1, true),
         desktop.Action.wallpaper...desktop.Action.wallpaper + 2 => {
             shell.palette = action - desktop.Action.wallpaper;
+            for (0..window_count) |i| if (windows[i].panel) sendAppearance(i);
             shell.popup = .settings;
             pulp.print("desktop: theme {d} {s}\n", .{ shell.palette, desktop.THEME_NAMES[shell.palette] });
         },
         desktop.Action.window...desktop.Action.window + MAX_WINDOWS - 1 => {
             const idx = action - desktop.Action.window;
-            if (idx < window_count) focusWindow(idx);
+            if (idx < shell.count) if (findWindowById(shell.items[idx].id)) |wi| focusWindow(wi);
         },
         else => {},
     }
@@ -460,6 +505,11 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
 
     screen.setClip(clip);
     gfx.windowShadow(&screen, w.rect, active);
+    if (w.panel) {
+        screen.frost(w.rect, 13, 0, 0);
+        if (w.pixels) |src| window_body.paintPanel(&screen, w.rect, src);
+        return;
+    }
     // Diffuse the actual underlying desktop before painting opaque content.
     // Limit title writes to the title while rounding the full frame's top edge.
     screen.setClip(Rect.intersect(clip, w.titleBar()));
@@ -505,7 +555,7 @@ fn expandedDamage(area: Rect, retained_calendar: bool) Rect {
     while (true) {
         const before = clip;
         for (windows[0..window_count]) |*w| {
-            if (w.visible) clip = gfx.expandForGlass(clip, w.titleBar());
+            if (w.visible) clip = gfx.expandForGlass(clip, if (w.panel) w.rect else w.titleBar());
         }
         var state = shell;
         if (retained_calendar) state.popup = .none;
@@ -615,6 +665,12 @@ fn handleCreateWindow(payload: []const u8) void {
     }
     const w: i32 = @intCast(req.width);
     const h: i32 = @intCast(req.height);
+    const is_panel = req.flags & proto.WindowFlags.panel != 0;
+    if (is_panel and (w > screen.width - 24 or h > screen.height - desktop.BAR_H - 24)) {
+        sendCreated(reply, 0, req.width, req.height);
+        pulp.handleClose(reply);
+        return;
+    }
 
     const title_len = @min(req.title_len, 48);
     const name_len = @min(req.shm_name_len, 32);
@@ -636,10 +692,10 @@ fn handleCreateWindow(payload: []const u8) void {
         return;
     };
 
-    const frame_w = w + BORDER_W * 2;
-    const frame_h = h + TITLE_H + BORDER_W;
+    const frame_w = w + (if (is_panel) @as(i32, 0) else BORDER_W * 2);
+    const frame_h = h + (if (is_panel) @as(i32, 0) else TITLE_H + BORDER_W);
     const idx = addWindow(
-        .{ .x = @max(0, @min(req.x, screen.width - frame_w)), .y = @max(desktop.BAR_H + 10, @min(req.y, screen.height - desktop.DOCK_H - 30 - frame_h)), .w = frame_w, .h = frame_h },
+        .{ .x = if (is_panel) screen.width - w - 12 else @max(0, @min(req.x, screen.width - frame_w)), .y = if (is_panel) desktop.BAR_H + 8 else @max(desktop.BAR_H + 10, @min(req.y, screen.height - desktop.DOCK_H - 30 - frame_h)), .w = frame_w, .h = frame_h },
         req.title[0..title_len],
         ACCENTS[window_count % ACCENTS.len],
     ) orelse {
@@ -657,11 +713,16 @@ fn handleCreateWindow(payload: []const u8) void {
     windows[idx].buffer_handle = shm;
     windows[idx].owner_pid = req.pid;
     windows[idx].closable = req.flags & proto.WindowFlags.closable != 0;
+    windows[idx].panel = is_panel;
     pending_apps[appIndex(windows[idx].title())] = -1;
 
     // A shared reply port would deliver one client's answer to whichever
     // client happened to read first, so each process owns its own port.
     sendCreated(reply, windows[idx].id, req.width, req.height);
+    if (is_panel) {
+        sendAppearance(idx);
+        pulp.puts("desktop: control panel opened\n");
+    }
 
     pulp.print("peel: window {d} \"{s}\" {d}x{d} for pid {d}\n", .{
         windows[idx].id, windows[idx].title(), w, h, req.pid,
@@ -718,12 +779,16 @@ fn handleCommit(payload: []const u8) void {
     while (i < window_count) : (i += 1) {
         if (windows[i].id != c.window_id) continue;
         windows[i].revision +%= 1;
-        if (shell.popup == .overview) {
+        if (shell.popup == .overview and !windows[i].panel) {
             // Workspace-switcher semantics: hold the backdrop while live
             // previews update. On dismissal shellAction repaints the whole
             // desktop from current client buffers. A clock tick must not
             // trigger a full blurred multi-window reconstruction every second.
-            overview_damage.add(desktop.windowCard(&screen, i));
+            syncShell();
+            for (shell.items[0..shell.count], 0..) |item, slot| if (item.id == windows[i].id) {
+                overview_damage.add(desktop.windowCard(&screen, slot));
+                break;
+            };
             return;
         }
         if (!windows[i].visible) return;
@@ -807,6 +872,7 @@ var hover_window: ?u32 = null;
 var drag_dx: i32 = 0;
 var drag_dy: i32 = 0;
 var buttons: u8 = 0;
+var panel_dismiss_capture = false;
 var frames: u64 = 0;
 
 /// Send an input event to a window's client, in coordinates relative to its
@@ -864,14 +930,25 @@ fn handleMouse(e: *const pulp.InputEvent) void {
     buttons = e.code;
 
     cursor_dirty = cursor_dirty or prev_cursor_x != cursor_x or prev_cursor_y != cursor_y;
+    if (panel_dismiss_capture) {
+        if (!is_down) panel_dismiss_capture = false;
+        return;
+    }
+    if (is_down and !was_down and pointer_capture == null) if (openPanel()) |idx| {
+        if (!windows[idx].rect.contains(cursor_x, cursor_y)) {
+            dismissPanel();
+            panel_dismiss_capture = true;
+            return;
+        }
+    };
     if (shell.popup == .none) if (windowAt(prev_cursor_x, prev_cursor_y)) |idx| {
-        for (0..3) |i| {
+        for (0..if (windows[idx].panel) @as(usize, 0) else 3) |i| {
             const c = windows[idx].control(@intCast(i));
             if (c.contains(prev_cursor_x, prev_cursor_y) and !c.contains(cursor_x, cursor_y)) addDamage(c);
         }
     };
     if (shell.popup == .none) if (windowAt(cursor_x, cursor_y)) |idx| {
-        for (0..3) |i| {
+        for (0..if (windows[idx].panel) @as(usize, 0) else 3) |i| {
             const c = windows[idx].control(@intCast(i));
             if (c.contains(cursor_x, cursor_y) and !c.contains(prev_cursor_x, prev_cursor_y)) addDamage(c);
         }
@@ -1000,6 +1077,10 @@ fn handleMouse(e: *const pulp.InputEvent) void {
 
 fn handleKey(e: *const pulp.InputEvent) void {
     drag_backdrop_valid = false;
+    if (e.isPress() and e.code == 0x01 and openPanel() != null) {
+        dismissPanel();
+        return;
+    }
     if (e.isPress() and e.code == 0x01 and shell.popup != .none) {
         shellAction(desktop.Action.dismiss);
         return;
@@ -1022,10 +1103,10 @@ fn handleKey(e: *const pulp.InputEvent) void {
     };
     if (shell.popup != .none) return;
     // Tab cycles focus, so the compositor is demonstrable without a mouse.
-    if (e.isPress() and e.code == 0x0F and window_count > 1) {
+    if (e.isPress() and e.code == 0x0F and window_count > 1 and openPanel() == null) {
         for (0..window_count) |i| {
             const idx = z_order[i];
-            if (windows[idx].visible) {
+            if (windows[idx].visible and !windows[idx].panel) {
                 focusWindow(idx);
                 break;
             }

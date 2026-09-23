@@ -126,30 +126,30 @@ def run():
         status_bar = ui.region(800, 0, 180, 28)
         ui.key("f4")
         ui.click(1050, 458)
-        until(lambda: "hardware: view snapshot" in log(), "native hardware window displays live snapshot")
+        until(lambda: "hardware: view snapshot" in log(), "anchored Control Center displays live snapshot")
         ui.move(750, 80)
         time.sleep(.5)
-        baseline = ui.region(390, 181, 480, 330)
+        baseline = ui.region(908, 36, 360, 424)
         offset = len(log())
         for _ in range(3):
-            ui.click(825, 292)
+            ui.click(925, 387)
         ui.move(750, 80)
         time.sleep(2.5)
         assert "hardware: view" not in log()[offset:], "no-op clicks or snapshot timestamps caused repaint"
-        assert ui.region(390, 181, 480, 330) == baseline, "hardware view changed on no-op interactions"
+        assert ui.region(908, 36, 360, 424) == baseline, "hardware view changed on no-op interactions"
         print("PASS hardware no-op clicks, hover and timestamp-only refresh do not repaint", flush=True)
         ui.screenshot("hardware-connected")
         ui.key("f4")
         ui.click(1050, 458)
         assert log().count('"Control Center"') == 1, "hardware launcher opened duplicate window"
-        print("PASS hardware launcher focuses existing window", flush=True)
+        print("PASS hardware launcher reuses the existing panel", flush=True)
         offset = len(log())
         stop(host)
         until(lambda: "hardware: view unavailable" in log()[offset:], "disconnect clears guest UI state", 12)
         until(lambda: "desktop: host indicators disconnected" in log()[offset:], "disconnect expires menu-bar indicators", 5)
         assert ui.region(800, 0, 180, 28) != status_bar
         ui.screenshot("hardware-disconnected")
-        assert ui.region(390, 181, 480, 330) != baseline
+        assert ui.region(908, 36, 360, 424) != baseline
         offset = len(log())
         host = launch_host()
         until(lambda: "host-agent: pong" in log()[offset:], "companion restart re-authenticates and resumes heartbeat", 20)
@@ -158,7 +158,7 @@ def run():
         until(lambda: "hardware: view snapshot" in log()[offset:], "reconnect restores guest hardware view", 12)
         until(lambda: ui.region(800, 0, 180, 28) == status_bar, "reconnect restores real menu-bar indicators", 5)
         ui.move(750, 80)
-        until(lambda: ui.region(390, 181, 480, 330) == baseline, "restored hardware pixels match original")
+        until(lambda: ui.region(908, 36, 360, 424) == baseline, "restored hardware pixels match original")
         offset = len(log())
         host.send_signal(signal.SIGSTOP)
         try:
@@ -173,8 +173,9 @@ def run():
         host = launch_host()
         until(lambda: "hardware: view snapshot" in log()[offset:], "timed-out session recovers after fresh authentication", 20)
         assert "host-agent: authenticated" in log()[offset:]
-        ui.click(410, 161)
-        until(lambda: "hardware: closed" in log(), "hardware close button exits application")
+        offset = len(log())
+        ui.key("esc")
+        until(lambda: "desktop: control panel dismissed" in log()[offset:], "Escape dismisses Control Center")
         assert "PANIC" not in log()
         assert secret not in log() and secret not in (output / "host.log").read_text()
         print("PASS no credential in logs; no network device attached", flush=True)

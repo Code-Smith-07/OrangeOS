@@ -3,6 +3,53 @@
 const gfx = @import("gfx");
 const Rect = gfx.Rect;
 
+/// Borderless panel over a compositor-frosted backdrop. Native-size client
+/// pixels retain their antialiasing; the subtle material opacity is uniform.
+pub fn paintPanel(s: *const gfx.Surface, frame: Rect, src: [*]const u32) void {
+    const area = Rect.intersect(Rect.intersect(frame, s.clip), .{ .x = 0, .y = 0, .w = s.width, .h = s.height });
+    const sc = s.scale;
+    const radius = @min(13, @divTrunc(@min(frame.w, frame.h), 2)) * sc;
+    var y = area.y * sc;
+    while (y < area.bottom() * sc) : (y += 1) {
+        var x = area.x * sc;
+        while (x < area.right() * sc) : (x += 1) {
+            const mirrored_y = if (y < (frame.y + @divTrunc(frame.h, 2)) * sc) (frame.y + frame.bottom()) * sc - 1 - y else y;
+            const coverage = bottomCoverage(frame, sc, radius, x, mirrored_y);
+            const alpha: u8 = @intCast(@as(u32, coverage) * 238 / 255);
+            if (alpha == 0) continue;
+            const from: usize = @intCast((y - frame.y * sc) * frame.w * sc + x - frame.x * sc);
+            const to: usize = @intCast(y * s.stride + x);
+            s.pixels[to] = gfx.lerp(s.pixels[to], src[from], alpha);
+        }
+    }
+}
+
+test "panel has four symmetric transparent corners and respects damage" {
+    const std = @import("std");
+    const source = [_]u32{0x283044} ** (40 * 40 * 4);
+    var pixels: [60 * 60 * 4]u32 = undefined;
+    for ([_]i32{ 1, 2 }) |sc| {
+        @memset(&pixels, 0xCC8855);
+        var s = gfx.Surface{ .pixels = &pixels, .width = 60, .height = 60, .stride = 60 * sc, .scale = sc };
+        const r = Rect{ .x = 10, .y = 10, .w = 40, .h = 40 };
+        paintPanel(&s, r, &source);
+        try std.testing.expectEqual(@as(u32, 0xCC8855), s.getPhysical(10 * sc, 10 * sc));
+        try std.testing.expectEqual(gfx.lerp(0xCC8855, 0x283044, 238), s.getPhysical(30 * sc, 30 * sc));
+        for (0..@intCast(60 * sc)) |y| for (0..@intCast(60 * sc)) |x| {
+            try std.testing.expectEqual(s.getPhysical(@intCast(x), @intCast(y)), s.getPhysical(@intCast(60 * sc - 1 - @as(i32, @intCast(x))), @intCast(60 * sc - 1 - @as(i32, @intCast(y)))));
+        };
+        const full = pixels;
+        @memset(&pixels, 0xCC8855);
+        s.setClip(.{ .x = 13, .y = 14, .w = 12, .h = 17 });
+        paintPanel(&s, r, &source);
+        for (0..@intCast(60 * sc)) |y| for (0..@intCast(60 * sc)) |x| {
+            const inside = x >= 13 * sc and x < 25 * sc and y >= 14 * sc and y < 31 * sc;
+            const i = y * @as(usize, @intCast(60 * sc)) + x;
+            try std.testing.expectEqual(if (inside) full[i] else @as(u32, 0xCC8855), pixels[i]);
+        };
+    }
+}
+
 pub fn paint(s: *const gfx.Surface, frame: Rect, content: Rect, src: [*]const u32, source_w: i32, source_h: i32) void {
     paintImpl(s, frame, content, src, source_w, source_h, true);
 }

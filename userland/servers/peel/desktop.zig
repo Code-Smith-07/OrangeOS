@@ -57,6 +57,7 @@ pub const State = struct {
     month_offset: i32 = 0,
     notice: []const u8 = "",
     host: host_model.Model = .{},
+    controls_open: bool = false,
 };
 
 pub const ThemeColors = struct {
@@ -465,6 +466,7 @@ pub fn paint(s: *const Surface, state: *const State) void {
         const label = @import("std").fmt.bufPrint(&bar_buf, "{s}  {s}", .{ pulp.calendar.dateText(&date_buf, date), pulp.calendar.clockText(&time_buf, date) }) catch "";
         font.drawMenu(s, label, s.width - font.menuWidth(label, s.scale) - 18, 10, INK);
     } else font.drawMenu(s, "Clock unavailable", s.width - 180, 10, INK);
+    if (state.controls_open) s.rounded(.{ .x = s.width - 282, .y = 2, .w = 28, .h = 24 }, 5, INK, 26);
     ui.iconTint(s, .menu_controls, s.width - 278, 4, 20, INK);
     paintHostStatus(s, state);
 
