@@ -8,6 +8,7 @@ import os
 import pathlib
 import secrets
 import signal
+import shutil
 import subprocess
 import tempfile
 import time
@@ -16,6 +17,15 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def main():
+    preview = ROOT / "build/OrangeOS Preview.app/Contents/MacOS/orange-qemu"
+    if not preview.exists():
+        subprocess.run(["sh", str(ROOT / "host/macos/bundle-preview.sh")], check=True)
+    installed_qemu = shutil.which("qemu-system-x86_64")
+    if installed_qemu is None:
+        raise RuntimeError("Install QEMU before launching the preview")
+    firmware = pathlib.Path(installed_qemu).resolve().parents[1] / "share/qemu"
+    if not (firmware / "bios-256k.bin").exists():
+        raise RuntimeError(f"QEMU firmware not found: {firmware}")
     output = pathlib.Path(tempfile.mkdtemp(prefix="orange-preview-", dir="/tmp"))
     token = output / "key"
     fd = os.open(token, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -32,12 +42,12 @@ def main():
         channel = output / "agent.sock"
         with (output / "qemu.log").open("wb") as log:
             guest = subprocess.Popen([
-                "qemu-system-x86_64", "-M", "q35", "-m", "3G", "-smp", "2",
+                str(preview), "-L", str(firmware), "-M", "q35", "-m", "3G", "-smp", "2",
                 "-cdrom", str(ROOT / "build/orange.iso"), "-boot", "d",
                 "-drive", f"id=disk0,file={ROOT / 'build/disk.img'},format=raw,if=none,snapshot=on",
                 "-device", "ahci,id=ahci", "-device", "ide-hd,drive=disk0,bus=ahci.0",
                 "-netdev", "user,id=n0", "-device", "e1000,netdev=n0",
-                "-display", "cocoa,show-cursor=off", "-full-screen",
+                "-display", "cocoa,show-cursor=off,zoom-to-fit=on,full-screen=on",
                 "-serial", f"file:{output / 'serial.log'}",
                 "-qmp", f"unix:{output / 'qmp.sock'},server=on,wait=off",
                 "-device", "virtio-serial-pci,id=orangebus,disable-modern=on,max_ports=2",

@@ -171,6 +171,13 @@ sh host/macos/bundle.sh
 python3 tools/host_bridge_preview.py
 ```
 
+The preview now bundles the installed QEMU locally as **OrangeOS Preview**,
+with an explicit firmware path, Retina support, Cocoa full-screen and
+zoom-to-fit enabled. It is addressable as `org.orangeos.qemu-preview` for a real
+host-window check. Do not infer full-screen acceptance solely from launch flags:
+inspect the visible host window; the macOS green full-screen control is available
+when windowed. The bundle is local/ad-hoc signed and does not replace Homebrew QEMU.
+
 The local bundle is ad-hoc signed and stays in `build/OrangeOS Companion.app`.
 Its speaker menu contains **Allow OrangeOS to change Mac volume** (off by
 default) and **Disconnect and quit**. The grant lasts only for this companion
