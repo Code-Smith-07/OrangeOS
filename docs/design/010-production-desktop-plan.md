@@ -20,6 +20,13 @@ phases in [ARCHITECTURE.md](../../ARCHITECTURE.md). Existing implemented kernel
 work is preserved. This plan refines [Daybreak](007-daybreak.md),
 [browser feasibility](008-browser.md), and [performance](009-desktop-performance.md).
 
+Browser architecture revision (2026-09-23): the
+[native Chromium browser plan](011-native-chromium-browser.md) now governs
+engine selection and browser-specific acceptance: 4 GiB total guest RAM,
+native execution, graphics acceleration, smooth 1080p60 as the baseline target,
+and separately qualified hardware-dependent 4K/8K playback. These are planned
+targets, not completed capabilities; existing implementation ledgers remain valid.
+
 ## 1. Non-negotiable delivery rules
 
 - A feature is done only when its real backend, UI, failure states, automated

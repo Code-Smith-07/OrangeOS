@@ -1881,6 +1881,15 @@ assistance**, per our earlier estimate of roughly 2.5× solo-unassisted speed.
 
 ### 16.2 Resource policy (revised September 6, 2026)
 
+**Browser planning addendum (September 23, 2026):** the owner has authorized a
+**4 GiB (4096 MiB) total-guest browser qualification profile**, with GPU use as
+supported by implemented drivers. See the
+[native Chromium architecture](docs/design/011-native-chromium-browser.md)
+for memory accounting, performance gates and conditional 4K/8K media tiers.
+This is an additional planned profile, not a change to the launchers or the
+historical measurements below. The current desktop default remains 3 GiB;
+increasing memory alone does not enable GPU acceleration or video decoding.
+
 The owner has authorized a feature-rich desktop to use **up to 3 GiB RAM
 (3072 MiB) and 2 CPU cores as the baseline**, including GPU acceleration as
 the driver/rendering stack is implemented. These replace the former 128 MiB

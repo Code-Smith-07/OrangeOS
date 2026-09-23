@@ -6,7 +6,14 @@ lightweight shell; a plain-HTTP text viewer is not an acceptable substitute.
 
 ## Engine direction
 
-Evaluate a native WebKit port first, with WPE as the embedded reference.
+**Superseded direction (2026-09-23):** the leading candidate is now native
+Chromium with a minimal, maintainable browser interface. See the
+[native Chromium architecture](011-native-chromium-browser.md) for the 4 GiB
+browser profile, graphics/media design, conditional 8K tiers and phase gates.
+This file retains the verified runtime ledger; no engine port is complete.
+
+The earlier proposal was to evaluate a native WebKit port first, with WPE as
+the embedded reference. It remains a fallback for a recorded feasibility decision.
 WPE is designed for embedded/low-consumption devices and minimizes UI-layer
 dependencies. It still targets Linux-based systems; it cannot run unchanged
 on Zest. A browser shell, platform port, and security integration remain work.
@@ -20,7 +27,7 @@ Primary references:
 - [Chromium platform abstraction](https://chromium.googlesource.com/chromium/src/+/main/docs/ozone_overview.md)
 - [Chromium Linux build prerequisites](https://chromium.googlesource.com/chromium/src/+/main/docs/linux/build_instructions.md)
 
-Chromium remains an alternative if compatibility or port feasibility favors it.
+Chromium is the leading candidate, subject to the new plan's feasibility gate.
 Ozone abstracts graphics/input, not all of the operating system. Neither an
 Ozone backend nor a Peel window alone supplies a libc, threads, virtual memory,
 network security, process isolation, font shaping or media stack.
@@ -65,7 +72,9 @@ userland/libs/typography/typography.zig.
    real-site tests, sandbox/crash containment, sustained tab open/close stress
    and update policy. Media/DRM limitations must be explicit.
 
-The default guest allocation is 3 GiB / two vCPUs. Memory ceilings, background
+Current launchers still default to 3 GiB / two vCPUs. The new browser plan
+authorizes a 4 GiB total-guest qualification profile; it is not yet a launcher
+change or a measured browser result. Memory ceilings, background
 tab suspension, lazy startup, bounded caches and minimal browser chrome are
 ways to control overhead; there is no honest fixed RAM promise for arbitrary
 modern websites. No host-browser streaming, TLS-stripping proxy or hidden

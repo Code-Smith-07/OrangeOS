@@ -159,7 +159,11 @@ Per-process x87/SSE2 state is now isolated across CPU switches, and apps compile
 with native SSE2 support. Concurrent guest probes check register isolation and
 freestanding C/Zig floating-point calls, callbacks and blocking syscalls.
 The modern browser engine, HTTPS and remaining runtime work are still tracked
-in the [browser plan](docs/design/008-browser.md).
+in the [browser runtime ledger](docs/design/008-browser.md). The new
+[native Chromium browser architecture](docs/design/011-native-chromium-browser.md)
+defines a proposed 4 GiB profile, graphics/media integration, essential-site
+tests and hardware-dependent 4K/8K qualification. No browser engine or smooth
+video-playback capability is installed or certified yet.
 
 **Input responsiveness.** Relative pointer travel is independent of Retina
 scaling, sleeping input consumers wake promptly, and unchanged menu/dock glass
