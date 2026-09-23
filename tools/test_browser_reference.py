@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import fcntl
 from pathlib import Path
 import subprocess
 import tempfile
@@ -8,7 +9,7 @@ from unittest.mock import patch
 
 from browser_reference import (ReferenceBuild, ensure_text, environment, fingerprint,
                                gclient_config, guard_workspace, load_manifest,
-                               main, sdk_supported, source_audit, verify_repo)
+                               live_status, main, sdk_supported, source_audit, verify_repo)
 
 
 class ReferenceTests(unittest.TestCase):
@@ -184,6 +185,39 @@ class ReferenceTests(unittest.TestCase):
                     self.assertEqual(run.call_args_list[0].args[0], [build.depot / "ensure_bootstrap"])
                     self.assertEqual(run.call_args_list[1].args[0], [build.depot / "python-bin/python3", "--version"])
                     self.assertFalse(any("update_depot_tools" in str(c) for c in run.call_args_list))
+
+    def test_live_status_flags_stale_running_record_and_keeps_success_separate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "logs").mkdir()
+            log = root / "logs/build.log"
+            log.write_text("[18/100] 6.0s F CXX obj/example.o\n")
+            state = {"build": {"result": "running", "log": str(log)}}
+            report = live_status(root, state)
+            self.assertIn("no active runner", report["warning"])
+            self.assertEqual(report["recorded_result"], "running")
+            self.assertIn("[18/100]", report["latest_progress"])
+            self.assertFalse((root / ".lock").exists())
+
+    def test_live_status_refuses_external_logs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            report = live_status(Path(temp), {"build": {"result": "passed", "log": "/etc/hosts"}})
+            self.assertIn("outside", report["warning"])
+            self.assertNotIn("log_tail", report)
+
+    def test_live_status_detects_lock_and_only_reads_log_tail(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "logs").mkdir()
+            log = root / "logs/build.log"
+            log.write_text("[1/999] old progress\n" + "x" * 20000 + "\n[90/999] current progress\n")
+            with (root / ".lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                report = live_status(root, {"build": {"result": "running", "log": str(log)}})
+            self.assertTrue(report["runner_lock_held"])
+            self.assertNotIn("warning", report)
+            self.assertEqual(report["latest_progress"], "[90/999] current progress")
+            self.assertNotIn("old progress", str(report))
 
 
 if __name__ == "__main__":

@@ -105,6 +105,41 @@ def ensure_text(path, text):
             stream.write(text)
 
 
+def live_status(work, state):
+    """Bounded, read-only progress; never turn a log line into build success."""
+    result = {"runner_lock_held": False, "latest_progress": None}
+    lock_path = work / ".lock"
+    if lock_path.exists():
+        with lock_path.open("r") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                result["runner_lock_held"] = True
+    for stage in reversed(STAGES):
+        record = state.get(stage)
+        if not record:
+            continue
+        result["latest_stage"] = stage
+        result["recorded_result"] = record["result"]
+        if record["result"] == "running" and not result["runner_lock_held"]:
+            result["warning"] = "Running record has no active runner lock; inspect for interruption"
+        path = Path(record.get("log", ""))
+        if not path.resolve().is_relative_to((work / "logs").resolve()):
+            result["warning"] = "Refusing to read log outside workspace logs"
+            break
+        if path.is_file():
+            with path.open("rb") as stream:
+                stream.seek(max(0, path.stat().st_size - 16384))
+                tail = stream.read(16384).decode("utf-8", errors="replace")
+            for line in reversed(tail.splitlines()):
+                if re.match(r"^\[\d+/\d+\]", line):
+                    result["latest_progress"] = line
+                    break
+            result["log_tail"] = tail.splitlines()[-8:]
+        break
+    return result
+
+
 def git_text(repo, *args):
     return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
 
@@ -246,7 +281,8 @@ def main():
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
     if args.stage == "status":
         print(json.dumps({"workspace": str(WORK), "pins": manifest,
-                          "recorded_steps": state, "native_browser": "NOT IMPLEMENTED"}, indent=2))
+                          "recorded_steps": state, "live": live_status(WORK, state),
+                          "native_browser": "NOT IMPLEMENTED"}, indent=2))
         return 0
     if args.stage == "preflight":
         return subprocess.run([sys.executable, ROOT / "tools/browser_preflight.py",

@@ -25,6 +25,11 @@ python3 tools/browser_reference.py build
 ```
 
 `status` is read-only and reports **recorded** results, not fresh qualification.
+It also checks the runner lock and reads at most the last 16 KiB of the latest
+log to show live action progress. A stale running record is warned about, never
+converted to success. A held lock means a runner exists, not that it is making
+progress; inspect the log. Build-action totals can change as Siso expands the
+graph, so they are not a reliable time-remaining estimate.
 The other numbered stages enforce ordering. `sync` fetches dependencies without
 hooks; `hooks` downloads/prepares the pinned toolchain; `generate` writes GN
 configuration; `build` compiles `content_shell` with two local jobs. A successful

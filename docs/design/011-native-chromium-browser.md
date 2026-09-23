@@ -575,6 +575,28 @@ not a quick unit test or a guest installation. Once it succeeds, launch/render
 checks and the native-platform feasibility decision are still required. No
 background compile was left running by this checkpoint.
 
+### 11.5 First reference compilation attempt
+
+Compilation was subsequently started on 2026-09-23 with
+`python3 tools/browser_reference.py build`. The launch log confirms Siso
+`--offline` and `-local_jobs=2`; no remote build service is used. An early
+observation passed 2,300 actions without a detected compiler failure, with
+zero macOS swap usage. This is **progress, not build or performance qualification**;
+there were still tens of thousands of build actions outstanding. Action totals
+change during dependency expansion and are not a time estimate.
+
+The read-only `status` command now reports the runner lock, the latest action
+line and a bounded log tail. A leftover `running` record without a lock is
+flagged for inspection; log progress alone never becomes a successful result.
+The runner writes the final result when the build exits. Regression tests now
+total **39 passing**, including live lock detection, stale-state reporting,
+bounded log reads and rejecting log paths outside the workspace.
+
+The compile remains a Mac reference experiment. Native OrangeOS execution,
+sandboxing, GPU/video capability and websites remain unqualified. Consult
+`python3 tools/browser_reference.py status` for the current local result rather
+than treating this early-progress record as a completed build.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,
