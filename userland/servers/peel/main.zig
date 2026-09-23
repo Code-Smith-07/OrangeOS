@@ -470,7 +470,7 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
         screen.rounded(w.rect, 13, theme.surface, 255);
     }
     screen.setClip(clip);
-    screen.rounded(.{ .x = w.rect.x + 14, .y = w.rect.y, .w = w.rect.w - 28, .h = 1 }, 0, theme.rim, 120);
+    if (theme.edge_highlights) screen.rounded(.{ .x = w.rect.x + 14, .y = w.rect.y, .w = w.rect.w - 28, .h = 1 }, 0, theme.rim, 120);
     screen.rounded(.{ .x = w.rect.x + 1, .y = w.rect.y + TITLE_H - 1, .w = w.rect.w - 2, .h = 1 }, 0, theme.muted, 38);
     const title = w.title()[0..@min(w.title_len, @as(usize, @intCast(@max(1, @divTrunc(w.rect.w - 200, 8)))))];
     font.drawText(&screen, title, w.rect.x + @divTrunc(w.rect.w - font.textWidth(title, 1), 2), w.rect.y + 16, 1, if (active) theme.frame_text else theme.muted);

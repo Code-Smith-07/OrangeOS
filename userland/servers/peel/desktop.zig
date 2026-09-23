@@ -69,6 +69,9 @@ pub const ThemeColors = struct {
     panel: u32,
     hover: u32,
     rim: u32,
+    // Light materials catch a bright edge; dark materials rely on silhouette
+    // and shadow, without a luminous one-point outline.
+    edge_highlights: bool = true,
     frame: u32,
     frame_inactive: u32,
     frame_text: u32,
@@ -77,7 +80,7 @@ pub const THEME_NAMES = [_][]const u8{ "Coastal Glass", "Citrus Atelier", "Midni
 const THEMES = [_]ThemeColors{
     .{ .ink = 0x26313E, .muted = 0x78818D, .accent = 0x1689DB, .surface = 0xFFFFFF, .bar = 0xF2FAFF, .dock = 0xF1F5F8, .panel = 0xF4FAFF, .hover = 0xD9EFFD, .rim = 0xFFFFFF, .frame = 0xF5F5F7, .frame_inactive = 0xECEDEF, .frame_text = 0x36383D },
     .{ .ink = 0x4A2B36, .muted = 0x816A74, .accent = 0xDF5D32, .surface = 0xFFF9F4, .bar = 0xFFF3E9, .dock = 0xFFEDE5, .panel = 0xFFF4EE, .hover = 0xFFE4D8, .rim = 0xFFFFFF, .frame = 0xFFF7F1, .frame_inactive = 0xF6E4DF, .frame_text = 0x4A2B36 },
-    .{ .ink = 0xF4F7FF, .muted = 0xBDC9E0, .accent = 0x69E5E0, .surface = 0x263556, .bar = 0x14243F, .dock = 0x1E3154, .panel = 0x1C2D4B, .hover = 0x345272, .rim = 0xBAD8FB, .frame = 0x233653, .frame_inactive = 0x1A2942, .frame_text = 0xF4F7FF },
+    .{ .ink = 0xF4F7FF, .muted = 0xBDC9E0, .accent = 0x69E5E0, .surface = 0x263556, .bar = 0x14243F, .dock = 0x1E3154, .panel = 0x1C2D4B, .hover = 0x345272, .rim = 0xBAD8FB, .edge_highlights = false, .frame = 0x233653, .frame_inactive = 0x1A2942, .frame_text = 0xF4F7FF },
 };
 pub fn themeColors(index: usize) ThemeColors {
     return THEMES[index % THEMES.len];
@@ -260,6 +263,7 @@ fn glassMaterial(s: *const Surface, r: Rect, radius: i32, opacity: u8, cache: ?*
 }
 
 fn glassRim(s: *const Surface, r: Rect, radius: i32) void {
+    if (!active_theme.edge_highlights) return;
     // Fine luminous rim, without filling the interior a second time.
     const inner = Rect{ .x = r.x + 1, .y = r.y + 1, .w = r.w - 2, .h = r.h - 2 };
     var rim = s.*;
@@ -465,10 +469,10 @@ pub fn paint(s: *const Surface, state: *const State) void {
     paintHostStatus(s, state);
 
     const dock = dockRect(s);
-    // A translucent pearl shelf with a fine rim and separate utility groups.
+    // A translucent shelf; only light themes receive a luminous top edge.
     const shelf = Rect{ .x = dock.x, .y = dock.y + 7, .w = dock.w, .h = dock.h - 10 };
     dock_material.paintShadowed(s, shelf, 20, active_theme.dock, 185);
-    s.rounded(.{ .x = shelf.x + 20, .y = shelf.y, .w = shelf.w - 40, .h = 1 }, 0, active_theme.rim, 115);
+    if (active_theme.edge_highlights) s.rounded(.{ .x = shelf.x + 20, .y = shelf.y, .w = shelf.w - 40, .h = 1 }, 0, active_theme.rim, 115);
     s.rounded(.{ .x = dock.x + 410, .y = dock.y + 24, .w = 1, .h = 41 }, 0, 0x778397, 60);
     s.rounded(.{ .x = dock.x + 575, .y = dock.y + 24, .w = 1, .h = 41 }, 0, 0x778397, 60);
     var drawing = s.*;

@@ -355,6 +355,14 @@ This is a focused visual refinement, not complete macOS parity. A truly unified
 client toolbar/titlebar protocol, theme-aware content in every app, keyboard
 focus/accessibility and richer app functionality remain separate work.
 
+Midnight Aurora omits luminous outlines on window tops, the dock and glass
+popups. Rounded silhouettes, frosted materials and shadows remain; Coastal
+Glass and Citrus Atelier retain their light-material highlights. The QEMU
+regression `tools/dark_chrome_smoke.py` compares top-edge pixels with adjacent
+material, checks active/inactive windows and hover restoration, and verifies
+that light-theme highlights still render. This does not change client content
+colours: apps such as Welcome still have a light body in the dark shell.
+
 - The high-DPI desktop is tested at 2560×1600 (1280×800 logical points).
   QEMU may still resample to fit a different host display size. Arbitrary
   monitor modes, runtime scale changes, and exact panel-native output are
