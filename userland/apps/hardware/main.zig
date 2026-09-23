@@ -5,13 +5,17 @@ const libpeel = @import("libpeel");
 const ui = @import("ui");
 const model = @import("model.zig");
 const W = 480;
-const H = 452;
-const sound_rect: ui.Rect = .{ .x = 18, .y = 264, .w = 444, .h = 106 };
-const slider_hit: ui.Rect = .{ .x = 66, .y = 304, .w = 370, .h = 34 };
+const H = 480;
+fn sliderRect(index: usize) ui.Rect {
+    return .{ .x = 18, .y = 176 + @as(i32, @intCast(index)) * 118, .w = 444, .h = 106 };
+}
+fn sliderHit(index: usize) ui.Rect {
+    return .{ .x = 66, .y = sliderRect(index).y + 40, .w = 370, .h = 34 };
+}
 var staging: [W * H * 4]u32 = undefined;
 var json_memory: [32768]u8 = undefined;
-var preview: ?u8 = null;
-var message: []const u8 = "";
+var previews: [2]?u8 = .{ null, null };
+var messages: [2][]const u8 = .{ "", "" };
 fn reading(row: model.Row, buf: []u8) []const u8 {
     return switch (row.reading) {
         .on => "On",
@@ -59,35 +63,36 @@ fn paint(win: *const libpeel.Window, state: model.Model, region: ui.Rect) void {
         s.setClip(region);
         ui.label(&s, "Mac radio status", x + 65, 142, 1, 0x7C92A7);
     }
-    card(&s, .{ .x = 18, .y = 176, .w = 444, .h = 74 });
-    ui.icon(&s, .sun, 34, 195, 30);
-    ui.label(&s, "Display brightness", 80, 190, 1, 0x17334D);
     var text: [64]u8 = undefined;
-    ui.label(&s, reading(state.rows[2], &text), 80, 218, 1, 0x6D849A);
-    card(&s, sound_rect);
-    ui.icon(&s, .speaker, 32, 307, 29);
-    ui.label(&s, "Mac output volume", 32, 279, 1, 0x17334D);
-    const audio = state.rows[3];
-    ui.label(&s, if (audio.muted == true) "Muted" else reading(audio, &text), 370, 279, 1, 0x56728D);
-    const enabled = audio.control and state.connection == .fresh;
-    const value: u8 = preview orelse if (audio.reading == .percent) audio.reading.percent else 0;
-    s.rounded(.{ .x = 78, .y = 318, .w = 342, .h = 7 }, 3, 0xD2E1EC, 255);
-    if (audio.reading == .percent) {
-        s.rounded(.{ .x = 78, .y = 318, .w = @divTrunc(342 * @as(i32, value), 100), .h = 7 }, 3, if (enabled) 0x239DEE else 0x97B3CA, 255);
-        const thumb = 78 + @divTrunc(342 * @as(i32, value), 100);
-        s.circle(thumb, 322, 11, 0xBED2E2);
-        s.circle(thumb, 321, 9, 0xFFFFFF);
+    for (0..2) |i| {
+        const r = sliderRect(i);
+        const row = state.rows[2 + i];
+        card(&s, r);
+        ui.icon(&s, if (i == 0) .sun else .speaker, 32, r.y + 43, 29);
+        ui.label(&s, if (i == 0) "Mac display brightness" else "Mac output volume", 32, r.y + 15, 1, 0x17334D);
+        if (row.reading == .percent) {
+            ui.label(&s, if (row.muted == true) "Muted" else reading(row, &text), 370, r.y + 15, 1, 0x56728D);
+            const enabled = row.control and state.connection == .fresh;
+            const value = previews[i] orelse row.reading.percent;
+            s.rounded(.{ .x = 78, .y = r.y + 54, .w = 342, .h = 7 }, 3, 0xD2E1EC, 255);
+            s.rounded(.{ .x = 78, .y = r.y + 54, .w = @divTrunc(342 * @as(i32, value), 100), .h = 7 }, 3, if (enabled) 0x239DEE else 0x97B3CA, 255);
+            const thumb = 78 + @divTrunc(342 * @as(i32, value), 100);
+            s.circle(thumb, r.y + 58, 11, 0xBED2E2);
+            s.circle(thumb, r.y + 57, 9, 0xFFFFFF);
+            ui.label(&s, if (previews[i] != null) "Release to apply to this Mac" else if (messages[i].len != 0) messages[i] else if (enabled) (if (i == 0) "Built-in Mac display / 5-100%" else "Controls the Mac's current sound output") else if (i == 0) "Enable brightness in the Mac companion menu" else "Enable sound control in the Mac companion menu", 32, r.y + 84, 1, 0x6D849A);
+        } else {
+            ui.label(&s, reading(row, &text), 80, r.y + 51, 1, 0x6D849A);
+        }
     }
-    ui.label(&s, if (preview != null) "Release to apply to this Mac" else if (message.len != 0) message else if (enabled) "Controls the Mac's current sound output" else if (audio.reading == .percent) "Enable sound control in the Mac companion menu" else "No controllable sound output available", 32, 348, 1, 0x6D849A);
-    card(&s, .{ .x = 18, .y = 384, .w = 444, .h = 50 });
-    ui.icon(&s, .battery, 32, 394, 30);
-    ui.label(&s, "Battery", 80, 398, 1, 0x17334D);
+    card(&s, .{ .x = 18, .y = 414, .w = 444, .h = 50 });
+    ui.icon(&s, .battery, 32, 424, 30);
+    ui.label(&s, "Battery", 80, 428, 1, 0x17334D);
     const battery = state.rows[4];
     const value_text = reading(battery, &text);
     var power_text: [96]u8 = undefined;
     const power = if (battery.power == true) " / Power connected" else if (battery.power == false) " / On battery" else "";
     const label = std.fmt.bufPrint(&power_text, "{s}{s}", .{ value_text, power }) catch value_text;
-    ui.label(&s, label, 187, 398, 1, 0x56728D);
+    ui.label(&s, label, 187, 428, 1, 0x56728D);
     ui.publishRegion(win, &staging, region);
 }
 export fn _start() callconv(.c) noreturn {
@@ -97,12 +102,13 @@ export fn _start() callconv(.c) noreturn {
     var events: [128]u8 = undefined;
     var pending: u64 = 0;
     var down = false;
-    var captured = false;
+    var captured: ?usize = null;
+    var pending_control: usize = 0;
     var last_poll: u64 = 0;
     const full: ui.Rect = .{ .x = 0, .y = 0, .w = W, .h = H };
     paint(&win, state, full);
     while (true) {
-        var dirty_sound = false;
+        var dirty = [_]bool{ false, false };
         while (true) {
             const event = pulp.portRecvMsg(win.reply, &events, false) catch break;
             if (event.len == 0) break;
@@ -115,46 +121,54 @@ export fn _start() callconv(.c) noreturn {
             const input: *align(1) const libpeel.proto.Input = @ptrCast(&events);
             if (input.kind != pulp.EV_MOUSE) continue;
             const pressed = input.code & 1 != 0;
-            if (pressed and !down) captured = pending == 0 and state.rows[3].control and slider_hit.contains(input.x, input.y);
-            if (captured and pressed) {
-                const percent: u8 = @intCast(@divTrunc(std.math.clamp(input.x - 78, 0, 342) * 100, 342));
-                if (preview == null or preview.? != percent) {
-                    preview = percent;
-                    dirty_sound = true;
-                }
+            if (pressed and !down) {
+                captured = null;
+                if (pending == 0) for (0..2) |i| {
+                    if (state.rows[2 + i].control and sliderHit(i).contains(input.x, input.y)) captured = i;
+                };
             }
-            if (!pressed and down and captured) {
-                if (preview) |percent| {
-                    if (slider_hit.contains(input.x, input.y) and state.rows[3].control) {
-                        const id = pulp.syscall3(112, 0, percent, state.rows[3].device);
-                        if (id > 0) {
-                            pending = @intCast(id);
-                            message = "Applying to Mac sound output...";
-                        } else {
-                            message = "Request unavailable. Please try again.";
+            if (captured) |i| {
+                if (pressed) {
+                    const raw = @divTrunc(std.math.clamp(input.x - 78, 0, 342) * 100, 342);
+                    const percent: u8 = @intCast(@max(if (i == 0) @as(i32, 5) else 0, raw));
+                    if (previews[i] == null or previews[i].? != percent) {
+                        previews[i] = percent;
+                        dirty[i] = true;
+                    }
+                } else if (down) {
+                    if (previews[i]) |percent| {
+                        if (sliderHit(i).contains(input.x, input.y) and state.rows[2 + i].control) {
+                            const id = pulp.syscall3(112, if (i == 0) 5 else 0, percent, state.rows[2 + i].device);
+                            if (id > 0) {
+                                pending = @intCast(id);
+                                pending_control = i;
+                                messages[i] = "Applying to your Mac...";
+                            } else {
+                                messages[i] = "Request unavailable. Please try again.";
+                            }
                         }
                     }
+                    captured = null;
+                    previews[i] = null;
+                    dirty[i] = true;
                 }
-                captured = false;
-                preview = null;
-                dirty_sound = true;
             }
             down = pressed;
         }
         if (pending != 0) {
             const result = pulp.syscall3(112, 1, pending, 0);
             if (result != -11) {
-                message = switch (result) {
-                    0 => "Mac volume updated",
-                    -13 => "Sound permission revoked on Mac",
-                    -95 => "Output does not support volume control",
-                    -116 => "Sound output changed. Try again.",
+                messages[pending_control] = switch (result) {
+                    0 => if (pending_control == 0) "Mac brightness updated" else "Mac volume updated",
+                    -13 => "Permission revoked on Mac",
+                    -95 => "This device does not support control",
+                    -116 => "Mac device changed. Try again.",
                     -110, -107 => "Mac connection lost. Try again.",
-                    else => "Could not update Mac volume",
+                    else => "Could not update this Mac setting",
                 };
                 pending = 0;
-                dirty_sound = true;
-                pulp.print("hardware: sound result {d}\n", .{result});
+                dirty[pending_control] = true;
+                pulp.print("hardware: {s} result {d}\n", .{ if (pending_control == 0) "brightness" else "sound", result });
             }
         }
         const now = pulp.uptimeMs();
@@ -164,17 +178,21 @@ export fn _start() callconv(.c) noreturn {
             const n: usize = if (result > 0) @intCast(result) else 0;
             const next = model.parse(buffer[0..n], &json_memory);
             if (!state.eql(next)) {
-                if (!next.rows[3].control or next.rows[3].device != state.rows[3].device) {
-                    captured = false;
-                    preview = null;
+                for (0..2) |i| {
+                    if (!next.rows[2 + i].control or next.rows[2 + i].device != state.rows[2 + i].device) {
+                        if (captured == i) captured = null;
+                        previews[i] = null;
+                    }
                 }
                 state = next;
                 paint(&win, state, full);
-                dirty_sound = false;
+                dirty = .{ false, false };
                 pulp.print("hardware: view {s}\n", .{if (n == 0) "unavailable" else "snapshot"});
             }
         }
-        if (dirty_sound) paint(&win, state, sound_rect);
+        for (dirty, 0..) |changed, i| if (changed) {
+            paint(&win, state, sliderRect(i));
+        };
         pulp.sleepMs(20);
     }
 }

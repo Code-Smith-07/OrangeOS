@@ -52,10 +52,12 @@ func connectSocket(_ path: String) throws -> Int32 {
     return fd
 }
 
-func serve(_ fd: Int32, token: Data, monitor: HardwareMonitor, consent: AudioConsent?) throws {
+func serve(_ fd: Int32, token: Data, monitor: HardwareMonitor, consent: AudioConsent?, brightness: BrightnessConsent?) throws {
     var decoder = Decoder()
     var session = try Session(token:token, hardware: { monitor.current() }, audioControl: consent.map { grant in
         { device, percent in grant.apply(device: device, percent: percent) }
+    }, brightnessControl: brightness.map { grant in
+        { display, percent in grant.apply(display: display, percent: percent) }
     })
     var input = [UInt8](repeating:0,count:4096)
     var period = ProcessInfo.processInfo.systemUptime
@@ -91,20 +93,26 @@ func serve(_ fd: Int32, token: Data, monitor: HardwareMonitor, consent: AudioCon
 
 final class CompanionMenu: NSObject {
     let consent: AudioConsent
+    let brightness: BrightnessConsent
     let item: NSStatusItem
     let grantItem = NSMenuItem(title: "Allow OrangeOS to change Mac volume", action: #selector(toggleAudio), keyEquivalent: "")
-    init(consent: AudioConsent) {
+    let brightnessItem = NSMenuItem(title: "Allow built-in display brightness control", action: #selector(toggleBrightness), keyEquivalent: "")
+    init(consent: AudioConsent, brightness: BrightnessConsent) {
         self.consent = consent
+        self.brightness = brightness
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         item.button?.image = NSImage(systemSymbolName: "speaker.wave.2", accessibilityDescription: "OrangeOS Companion")
         let menu = NSMenu()
         let title = NSMenuItem(title: "OrangeOS Companion", action: nil, keyEquivalent: "")
         title.isEnabled = false; menu.addItem(title)
-        let scope = NSMenuItem(title: "Sound control affects this Mac", action: nil, keyEquivalent: "")
+        let scope = NSMenuItem(title: "These controls affect this Mac", action: nil, keyEquivalent: "")
         scope.isEnabled = false; menu.addItem(scope)
         menu.addItem(.separator())
         grantItem.target = self; menu.addItem(grantItem)
+        brightnessItem.target = self; menu.addItem(brightnessItem)
+        let compatibility = NSMenuItem(title: "Display uses a macOS compatibility adapter", action: nil, keyEquivalent: "")
+        compatibility.isEnabled = false; menu.addItem(compatibility)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Disconnect and quit", action: #selector(disconnect), keyEquivalent: "")
         quit.target = self; menu.addItem(quit)
@@ -114,15 +122,19 @@ final class CompanionMenu: NSObject {
         consent.setAllowed(!consent.allowed)
         grantItem.state = consent.allowed ? .on : .off
     }
-    @objc func disconnect() { consent.setAllowed(false); NSApplication.shared.terminate(nil) }
+    @objc func toggleBrightness() {
+        brightness.setAllowed(!brightness.allowed)
+        brightnessItem.state = brightness.allowed ? .on : .off
+    }
+    @objc func disconnect() { consent.setAllowed(false); brightness.setAllowed(false); NSApplication.shared.terminate(nil) }
 }
 
-func runConnections(path: String, token: Data, monitor: HardwareMonitor, consent: AudioConsent?) throws {
+func runConnections(path: String, token: Data, monitor: HardwareMonitor, consent: AudioConsent?, brightness: BrightnessConsent?) throws {
     while true {
         let fd: Int32
         do { fd = try connectSocket(path) }
         catch RunError.connection { Thread.sleep(forTimeInterval:0.25); continue }
-        do { try serve(fd,token:token,monitor:monitor,consent:consent) }
+        do { try serve(fd,token:token,monitor:monitor,consent:consent,brightness:brightness) }
         catch { fputs("orange-host: rejected session or transport failure\n",stderr) }
         close(fd)
         Thread.sleep(forTimeInterval:0.25)
@@ -131,6 +143,11 @@ func runConnections(path: String, token: Data, monitor: HardwareMonitor, consent
 
 do {
     let args = CommandLine.arguments
+    if args.count == 2 && args[1] == "--verify-brightness-write" {
+        let result = BuiltinDisplay.verifyUnchangedWrite()
+        print("Built-in brightness unchanged-level write/readback: \(result)")
+        exit(result == "applied" ? 0 : 1)
+    }
     if args.count == 2 && args[1] == "--verify-audio-write" {
         let result = AudioPower.verifyUnchangedVolumeWrite()
         print("CoreAudio unchanged-level write/readback: \(result)")
@@ -149,20 +166,21 @@ do {
     let token = try readToken(args[4])
     _ = try Session(token: token)
     let consent = AudioConsent()
-    let monitor = HardwareMonitor(audioConsent: consent)
-    print(controls ? "orange-host: sound control requires a live grant in the Mac menu bar" : "orange-host: read-only companion; host mutations disabled")
+    let brightness = BrightnessConsent()
+    let monitor = HardwareMonitor(audioConsent: consent, brightnessConsent: brightness)
+    print(controls ? "orange-host: controls require individual live grants in the Mac menu bar" : "orange-host: read-only companion; host mutations disabled")
     fflush(stdout)
     if controls {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
-        let menu = CompanionMenu(consent: consent)
+        let menu = CompanionMenu(consent: consent, brightness: brightness)
         Thread.detachNewThread {
-            do { try runConnections(path: args[2], token: token, monitor: monitor, consent: consent) }
+            do { try runConnections(path: args[2], token: token, monitor: monitor, consent: consent, brightness: brightness) }
             catch { fputs("orange-host: unsafe session path\n", stderr); exit(1) }
         }
         withExtendedLifetime(menu) { app.run() }
     } else {
-        try runConnections(path: args[2], token: token, monitor: monitor, consent: nil)
+        try runConnections(path: args[2], token: token, monitor: monitor, consent: nil, brightness: nil)
     }
 } catch {
     fputs("orange-host: invalid arguments or unsafe session files\n",stderr)

@@ -1,11 +1,11 @@
-//! Bounded VM-to-host sound request mailbox. Only the read-only system
+//! Bounded VM-to-host audio/display request mailbox. Only the read-only system
 //! hardware app may submit; only the boot-authorized agent may dispatch/ack.
 const std = @import("std");
 const sched = @import("../sched/sched.zig");
 const sync = @import("../sync/spinlock.zig");
 const validate = @import("validate.zig");
 const time = @import("../time/time.zig");
-const Command = extern struct { id: u32, percent: u32, device: u32, reserved: u32 = 0 };
+const Command = extern struct { id: u32, percent: u32, device: u32, kind: u32 = 1 };
 var lock: sync.SpinLock = .{};
 var command: Command = .{ .id = 0, .percent = 0, .device = 0 };
 var serial: u32 = 0;
@@ -18,8 +18,8 @@ var deadline: u64 = 0;
 
 pub fn operation(op: u64, arg0: u64, arg1: u64) i64 {
     const task = sched.currentTask() orelse return -13;
-    if ((op <= 1 and !task.host_controls) or (op >= 2 and !task.host_bridge)) return -13;
-    if (op > 4) return -22;
+    if (((op <= 1 or op == 5) and !task.host_controls) or (op >= 2 and op != 5 and !task.host_bridge)) return -13;
+    if (op > 5) return -22;
     if (op == 2) {
         if (arg1 != @sizeOf(Command)) return -22;
         validate.check(task.address_space, arg0, @sizeOf(Command), true) catch return -14;
@@ -32,12 +32,12 @@ pub fn operation(op: u64, arg0: u64, arg1: u64) i64 {
         result = -110;
     }
     switch (op) {
-        0 => {
-            if (arg0 > 100 or arg1 == 0 or arg1 > std.math.maxInt(u32)) return -22;
+        0, 5 => {
+            if (arg0 > 100 or (op == 5 and arg0 < 5) or arg1 == 0 or arg1 > std.math.maxInt(u32)) return -22;
             if (active and now < deadline + 6000) return -16;
             if (serial == std.math.maxInt(u32)) return -75;
             serial += 1;
-            command = .{ .id = serial, .percent = @intCast(arg0), .device = @intCast(arg1) };
+            command = .{ .id = serial, .percent = @intCast(arg0), .device = @intCast(arg1), .kind = if (op == 5) 2 else 1 };
             owner = task.tid;
             active = true;
             done = false;

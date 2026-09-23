@@ -169,7 +169,7 @@ overlap, focus, hover, window drag and reduced-transparency modes.
 | Finder-style folders, sidebar and toolbar | Files now has a 4×2 real-directory grid, original colored folder sprites and a list toggle; browsing remains read-only | Real Home/Documents/Downloads only after durable user storage exists; selection, previews, keyboard navigation and file operations |
 | Browser window and web start page | No browser executable or rendering engine; `fetch` is HTTP-only | Phases 5–7: TLS/trust, engine port, real navigation, tabs, downloads and security states; never paint a fake address bar as proof |
 | Wi-Fi/Bluetooth tiles | Bridge reports limited read-only Mac radio status | Capability and consent flow, supported operations with readback/revoke, truthful unavailable states (Phases 10–11) |
-| Speaker and brightness sliders | Native Mac volume slider and live companion grant/revoke path implemented; IOKit display probe remains unsupported | Physical volume adjustment through menu grant still needs manual acceptance; guest PCM mixer and qualified brightness backend remain (Phases 9c/12) |
+| Speaker and brightness sliders | Native volume and built-in display sliders, independent host grants and readback implemented; both actual same-value setters verified on this Mac | Interactive physical slider acceptance remains manual. Display uses a private compatibility API; guest PCM mixer/external displays remain (Phases 9c/12) |
 | Dock app icons and running indicators | Original app icons and dock exist; some concept apps do not | Add icons only with real launchable apps; verify focus, close, running state and tooltip/keyboard access |
 | Menu-bar status, clock and battery | Real wall clock; Control Center shows live Mac battery/AC and sound/radio readings | Add compact live menu-bar indicators; complete missing service operations |
 | Rounded glass window chrome | Shared themed chrome and glass are implemented, but app contents are not all theme-aware | Match concept spacing, radii, typography and contrast; fix clipping/corner seams and measure repaint cost on all themes |
@@ -792,7 +792,7 @@ eviction/tab suspension or a visible resource limit, never an unexplained hang.
 | MacBook-first bridge architecture | Initial vertical slice implemented; remaining architecture planned | Swift companion + Zig guest agent; no standalone driver prerequisite |
 | Bridge 9a / 9b | Transport and hardware-state subset verified; production gates open | [Mac companion and guest bridge](../../host/macos/README.md): authenticated named virtio port, boot-only agent grant, live time/timezone and read-only hardware view; bounded snapshot ABI, expiry, reconnect and negative probes |
 | Host Wi-Fi / Bluetooth adapters | Read-only power/permission probes connected, 2026-09-09 | Both radios observed on; Appearance → Mac hardware status. No SSID/scan/pairing/power mutations or silent permission prompts. Phases 10/11 control gates remain open. |
-| Host display adapter | Public IOKit readback probe implemented; no endpoint on this Mac | UI reports unsupported, never zero; qualify a supported brightness backend before control work (12a). |
+| Host display adapter | DisplayServices compatibility get/set qualified on this built-in panel; native slider and independent grant implemented | Real same-level setter/readback verified; fixture validates guest control/denial/minimum. Private API may change; manual physical-slider acceptance and external displays remain (12a). |
 | Host audio / power | CoreAudio volume/mute and IOPowerSources battery/AC readback verified; native sound RPC and revocable menu grant implemented | `tools/host_bridge_smoke.py` for real readback; `tools/sound_bridge_smoke.py` for guest mutations against fixture. Menu interaction/physical slider acceptance, guest PCM and media remain open. |
 | Welcome blank-click fix | Verified locally | `9835784`, `tools/welcome_smoke.py` |
 | Whole-desktop flicker audit | Initial six-app CLI pass complete; expanded stress open | About/Files/Trash 8 redraws per 4 blank clicks; Files 1 transient sample |
@@ -808,7 +808,8 @@ Immediate order: finish the all-app baseline audit; fix rendering/publication an
 remaining non-calendar slow paths; agree the design system. In the next platform
 work, continue Phase 9a with host consent/revoke UI and operation grants before
 mutations; extend 9b beyond the verified radio/display probes to battery/audio.
-Qualify a supported brightness backend on this Mac before adding its slider.
+Finish physical-slider acceptance for the qualified built-in display compatibility
+backend; do not treat the private API as a stable cross-version driver contract.
 Runtime/HTTPS/browser proof continues as its own critical path; wireless and
 optional motion do **not** block
 it. No standalone hardware purchase or driver port is on either critical path.

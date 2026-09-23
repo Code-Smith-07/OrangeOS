@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real guest sound-command pipeline against an explicitly simulated host.
+"""Real guest sound/display command pipeline against a simulated host.
 
 No Mac sound setting is touched. Real CoreAudio readback is tested separately
 by host_bridge_smoke.py; this fixture tests controls/errors deterministically.
@@ -27,7 +27,9 @@ def main():
     guest = None
     peer = None
     commands = []
-    fixture = {"level": .31, "failure": None, "grant": True}
+    brightness_commands = []
+    fixture = {"level": .31, "failure": None, "grant": True,
+               "brightness": .67, "brightness_grant": True}
     stopping = threading.Event()
     errors = []
 
@@ -69,17 +71,20 @@ def main():
                             return {"source": source, "status": "available", "permission": "allowed", **fields}
                         response = {"schema": 1, "provider": "macos", "observed_unix_seconds": int(time.time()), "freshness": "fresh",
                                     "wifi": state("Fixture", power=True), "bluetooth": state("Fixture", power=True),
-                                    "brightness": {"source": "Fixture", "status": "unsupported", "permission": "not_requested"},
+                                    "brightness": state("Fixture", level=fixture["brightness"], device=1, control=fixture["brightness_grant"]),
                                     "audio": state("Fixture", level=fixture["level"], device=103, control=fixture["grant"]),
                                     "battery": state("Fixture", level=.71, power=True)}
-                    elif method == 6:
+                    elif method in (6, 7):
                         operation, percent, device = struct.unpack("<III", payload)
-                        assert operation == 1 and percent <= 100 and device == 103
-                        commands.append(percent)
+                        assert operation == 1 and percent <= 100
+                        assert device == (1 if method == 7 else 103)
+                        if method == 7:
+                            assert percent >= 5
+                        (brightness_commands if method == 7 else commands).append(percent)
                         failure = fixture["failure"]
                         error = failure is not None
                         if not error:
-                            fixture["level"] = percent / 100
+                            fixture["brightness" if method == 7 else "level"] = percent / 100
                         response = {"status": failure or "applied"}
                     else:
                         raise AssertionError(f"Unexpected method {method}")
@@ -102,26 +107,47 @@ def main():
         guest.scale = 2
         guest.click(1015, 16)
         guest.until(lambda: "hardware: view snapshot" in guest.log(), "menu bar opens native Control Center", 15)
-        # Window origin (390,145), title 36; slider x=78..420, y=321.
-        guest.click(390 + 78 + 171, 145 + 36 + 321)
+        # Window origin (390,145), title 36; slider x=78..420.
+        guest.click(390 + 78 + 171, 145 + 36 + 351)
         guest.until(lambda: "hardware: sound result 0" in guest.log(), "slider command completes through guest kernel and agent", 15)
         assert len(commands) == 1 and 49 <= commands[-1] <= 51
         applied_level = commands[-1] / 100
         guest.until(lambda: f'"level":{applied_level}' in guest.log(), "new volume readback reaches guest", 10)
         offset = len(guest.log()); fixture["failure"] = "permission_denied"
-        guest.click(390 + 78 + 239, 145 + 36 + 321)
+        guest.click(390 + 78 + 239, 145 + 36 + 351)
         guest.until(lambda: "hardware: sound result -13" in guest.log()[offset:], "revoked grant is reported without optimistic success", 15)
         assert fixture["level"] == applied_level
         offset = len(guest.log()); fixture["failure"] = "route_changed"
-        guest.click(390 + 78 + 205, 145 + 36 + 321)
+        guest.click(390 + 78 + 205, 145 + 36 + 351)
         guest.until(lambda: "hardware: sound result -116" in guest.log()[offset:], "changed route rejects stale command", 15)
         fixture["grant"] = False
         guest.until(lambda: '"control":false' in guest.log(), "revocation reaches guest", 10)
         time.sleep(.5)
         before = len(commands)
-        guest.click(390 + 78 + 171, 145 + 36 + 321)
+        guest.click(390 + 78 + 171, 145 + 36 + 351)
         time.sleep(1)
         assert len(commands) == before, "disabled slider submitted a host request"
+        fixture["failure"] = None
+        offset = len(guest.log())
+        guest.click(390 + 78 + 171, 145 + 36 + 233)
+        guest.until(lambda: "hardware: brightness result 0" in guest.log()[offset:], "independent display grant works while audio is revoked", 15)
+        assert len(brightness_commands) == 1 and 49 <= brightness_commands[-1] <= 51
+        offset = len(guest.log())
+        guest.click(390 + 78, 145 + 36 + 233)
+        guest.until(lambda: "hardware: brightness result 0" in guest.log()[offset:], "display slider respects visible minimum", 15)
+        assert brightness_commands[-1] == 5
+        offset = len(guest.log()); fixture["failure"] = "permission_denied"
+        guest.click(390 + 78 + 205, 145 + 36 + 233)
+        guest.until(lambda: "hardware: brightness result -13" in guest.log()[offset:], "display grant revocation rejects pending writes", 15)
+        assert fixture["brightness"] == .05
+        fixture["brightness_grant"] = False
+        offset = len(guest.log())
+        guest.until(lambda: '"device":1,"control":false' in guest.log()[offset:], "display revocation reaches guest", 10)
+        time.sleep(.5)
+        before = len(brightness_commands)
+        guest.click(390 + 78 + 171, 145 + 36 + 233)
+        time.sleep(1)
+        assert len(brightness_commands) == before
         assert not errors, errors
         assert secret.decode() not in guest.log()
         print("PASS disabled controls send nothing; no credentials logged", flush=True)

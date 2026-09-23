@@ -15,8 +15,10 @@ public final class HardwareMonitor {
     private var observedUptime: TimeInterval = 0
     private var timer: DispatchSourceTimer?
     private let audioConsent: AudioConsent
-    public init(audioConsent: AudioConsent = AudioConsent()) {
+    private let brightnessConsent: BrightnessConsent
+    public init(audioConsent: AudioConsent = AudioConsent(), brightnessConsent: BrightnessConsent = BrightnessConsent()) {
         self.audioConsent = audioConsent
+        self.brightnessConsent = brightnessConsent
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now(), repeating: 2)
         timer.setEventHandler { [weak self] in self?.refresh() }
@@ -28,6 +30,7 @@ public final class HardwareMonitor {
         lock.lock(); defer { lock.unlock() }
         var result = snapshot.aged(now: Date())
         if !audioConsent.allowed { result.audio.control = false; result.audio.permission = "not_granted" }
+        if !brightnessConsent.allowed { result.brightness.control = false; result.brightness.permission = "not_granted" }
         if result.freshness == "fresh" && ProcessInfo.processInfo.systemUptime - observedUptime > 6 { result.freshness = "stale" }
         return result
     }
@@ -54,7 +57,10 @@ public final class HardwareMonitor {
         case .restricted: bluetooth = .init(source: "CoreBluetooth.authorization", status: "permission_required", permission: "restricted", note: "Restricted by host policy")
         default: bluetooth = .init(source: "CoreBluetooth.authorization", status: "permission_required", permission: "not_determined", note: "Companion onboarding required; no automatic permission prompt")
         }
-        let brightness = Self.brightness()
+        // Prefer the built-in-display adapter, which binds controls to a stable
+        // observed CGDisplayID; retain IOKit readback for other configurations.
+        let compatibility = BuiltinDisplay.read(allowControl: brightnessConsent.allowed)
+        let brightness = compatibility.status == "available" ? compatibility : Self.brightness()
         let value = HardwareSnapshot(observed: Int64(started.timeIntervalSince1970), freshness: "fresh", wifi: wifi, bluetooth: bluetooth, brightness: brightness,
                                      audio: AudioPower.audio(allowControl: audioConsent.allowed), battery: AudioPower.battery())
         lock.lock(); snapshot = value; observedUptime = startedUptime; lock.unlock()

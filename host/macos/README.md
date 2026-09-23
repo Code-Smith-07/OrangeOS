@@ -99,7 +99,7 @@ the image while this preview is running.
 |---|---|---|
 | CoreWLAN `powerOn()` | Wi-Fi on | A false return also permits query failure, so it is reported as unknown, never fabricated as off. No SSID, scan or network credentials. |
 | CoreBluetooth authorization + IOBluetooth `powerState` | Permission already allowed; Bluetooth on | Permission is checked before querying the controller; no manager creation/prompt, discovery, pairing or device-name enumeration. |
-| Public IOKit `IODisplayGetFloatParameter` | Unsupported on this Mac | No readable endpoint returned; no private API fallback or fake brightness slider. Multiple readable displays require selection rather than guessing. |
+| Public IOKit `IODisplayGetFloatParameter` | Unsupported on this Mac | Initial public-API probe returned no endpoint. Superseded for this MacBook by the separately qualified compatibility adapter below; remains a read-only fallback. |
 
 Queries run every two seconds on a dedicated serial worker. RPC reads a locked
 cache instead of blocking on framework calls. Observations expire after six
@@ -204,6 +204,31 @@ The Mac menu's interactive grant/revoke check remains manual: the computer-use
 inspector timed out on the status app in this session. End-to-end physical
 volume adjustment through that menu has not yet been certified.
 
-Wi-Fi association, Bluetooth discovery/pairing, guest PCM audio and Mac display
-brightness control remain separate unfinished work. The current IOKit display
-adapter still reports unsupported on this Mac.
+Wi-Fi association, Bluetooth discovery/pairing and guest PCM audio remain
+separate unfinished work.
+
+## Built-in display control (23 September 2026)
+
+Control Center now includes a second, independent slider. Enable **Allow built-in
+display brightness control** in the companion menu; this grant is off by default
+and is separate from sound permission. Method 7 `display.set_brightness` has the
+same 12-byte command shape as method 6, with a 5–100 percent range and the observed
+CGDisplayID. Guest syscall 112 operation 5 submits display requests; the mailbox
+kind selects display versus audio. No optimistic readback or automatic retry.
+
+The new adapter dynamically resolves DisplayServices get/set symbols and accepts
+only one online built-in panel. This is a **private macOS compatibility API**, not
+a stable public driver contract. Missing symbols, failed reads, an ambiguous
+display or device changes fail closed. External monitors are not controlled.
+The public IOKit probe remains a read-only fallback. The adapter's ABI was checked
+against [the upstream brightness implementation](https://github.com/nriley/brightness/pull/36).
+No screen overlay is used to simulate a physical brightness change.
+
+This Mac returned display 1 at about 67%; `orange-host --verify-brightness-write`
+applied the exact existing value and verified it, without intentionally changing
+the panel level. Eight Swift protocol tests and six Zig model tests pass. The
+simulated-host suite exercises real guest dispatch, independent grants, the 5%
+floor, denial and disabled controls. Real hardware snapshot, reconnect, expiry
+and no-op-redraw tests passed in `/tmp/orange-host-aiwcgw8g`; fixture evidence is
+`orange-daybreak-uq5hb4_1` in the macOS temporary directory. The physical slider
+and interactive menu grant still need manual acceptance, as with sound.

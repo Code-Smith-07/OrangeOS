@@ -129,8 +129,11 @@ battery/AC state and display-adapter availability. A native volume slider sends
 requests to CoreAudio after you enable sound control in the companion's Mac
 menu; revoke that grant there at any time. The guest reports pending, denied,
 unsupported, changed-route and disconnected outcomes. Unchanged snapshots do
-not repaint. Brightness remains unsupported by the current adapter on this Mac;
-radio changes, pairing and a working brightness backend remain unfinished.
+not repaint. A separately granted brightness slider now controls the built-in
+Mac display (5–100%) through a capability-probed DisplayServices compatibility
+adapter. Actual same-level write/readback passed on this Mac; this private API
+may change with macOS updates. Interactive physical-slider acceptance is still
+manual. Radio changes and Bluetooth pairing remain unfinished.
 See the [native Control Center screenshot](docs/screenshots/control-center.png).
 
 **Browser runtime progress.** Apps can now allocate, protect and release private

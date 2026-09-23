@@ -67,6 +67,34 @@ final class ProtocolTests: XCTestCase {
         _ = try session.respond(Frame(method: 1, request: 1, payload: token))
         XCTAssertEqual(try session.respond(Frame(method: 5, request: 2)).flags, 2)
     }
+    func testDisplayRequiresSeparateGrantAndVisibleMinimum() throws {
+        var granted = false, writes = 0
+        var session = try Session(token: token, audioControl: { _, _ in "applied" }, brightnessControl: { device, _ in
+            guard granted else { return "permission_denied" }
+            guard device == 1 else { return "route_changed" }
+            writes += 1
+            return "applied"
+        })
+        func payload(_ percent: UInt32, _ device: UInt32 = 1) -> Data {
+            Data([1, percent, device].flatMap { n in (0..<4).map { UInt8(truncatingIfNeeded: n >> ($0*8)) } })
+        }
+        XCTAssertThrowsError(try session.respond(Frame(method: 7, request: 1, payload: payload(50))))
+        _ = try session.respond(Frame(method: 1, request: 2, payload: token))
+        XCTAssertEqual(try session.respond(Frame(method: 6, request: 3, payload: payload(50))).flags, 1)
+        XCTAssertEqual(try session.respond(Frame(method: 7, request: 4, payload: payload(50))).flags, 2)
+        granted = true
+        for (i, percent) in [0, 4, 101].enumerated() {
+            XCTAssertEqual(try session.respond(Frame(method: 7, request: UInt32(5+i), payload: payload(UInt32(percent)))).flags, 2)
+        }
+        XCTAssertEqual(writes, 0)
+        XCTAssertEqual(try session.respond(Frame(method: 7, request: 8, payload: payload(5))).flags, 1)
+        XCTAssertEqual(try session.respond(Frame(method: 7, request: 9, payload: payload(100))).flags, 1)
+        XCTAssertEqual(try session.respond(Frame(method: 7, request: 10, payload: payload(50, 999))).flags, 2)
+        granted = false
+        XCTAssertEqual(try session.respond(Frame(method: 7, request: 11, payload: payload(50))).flags, 2)
+        XCTAssertEqual(writes, 2)
+        XCTAssertEqual(try session.respond(Frame(method: 4, request: 12)).flags, 1)
+    }
     func testAudioRequiresLiveGrantAndValidRouteCommand() throws {
         var allowed = false, calls = 0
         var session = try Session(token: token, audioControl: { device, percent in

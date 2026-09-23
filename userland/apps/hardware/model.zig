@@ -94,7 +94,7 @@ pub fn parse(bytes: []const u8, scratch: []u8) Model {
             if (field(item, "muted")) |value| {
                 if (value == .bool) row.muted = value.bool;
             }
-            if (i == 3 and row.reading == .percent) {
+            if ((i == 2 or i == 3) and row.reading == .percent) {
                 if (field(item, "device")) |device| {
                     if (device == .integer and device.integer > 0 and device.integer <= std.math.maxInt(u32)) row.device = @intCast(device.integer);
                 }
@@ -152,6 +152,15 @@ test "bounded parsing rejects malformed and incompatible snapshots" {
     var tiny: [8]u8 = undefined;
     try std.testing.expectEqual(Connection.invalid, parse(prefix ++ wifi ++ bluetooth ++ brightness ++ "0.5}}", &tiny).connection);
     try std.testing.expectEqual(Connection.disconnected, decode("").connection);
+}
+
+test "display controls require explicit grant and expire with the snapshot" {
+    const tail = ",\"brightness\":{\"source\":\"DisplayServices\",\"status\":\"available\",\"permission\":\"allowed\",\"device\":1,\"control\":true,\"level\":0.67}}";
+    const m = decode(prefix ++ wifi ++ bluetooth ++ tail);
+    try std.testing.expect(m.rows[2].control and m.rows[2].device == 1 and m.rows[2].reading.percent == 67);
+    try std.testing.expect(!m.rows[3].control);
+    const stale = "{\"schema\":1,\"provider\":\"macos\",\"observed_unix_seconds\":100,\"freshness\":\"stale\"";
+    try std.testing.expect(!decode(stale ++ wifi ++ bluetooth ++ tail).rows[2].control);
 }
 
 test "audio controls require a fresh available reading, route and explicit host grant" {
