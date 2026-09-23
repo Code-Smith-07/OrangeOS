@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Full-screen OrangeOS preview with read-only Mac hardware integration.
+"""Full-screen OrangeOS preview with readback and separately consented controls.
 
 Build both components and the disk first. Closing QEMU stops the companion
 and deletes its per-run credential. All guest disk writes are disposable.

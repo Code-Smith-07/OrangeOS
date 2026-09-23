@@ -232,3 +232,16 @@ floor, denial and disabled controls. Real hardware snapshot, reconnect, expiry
 and no-op-redraw tests passed in `/tmp/orange-host-aiwcgw8g`; fixture evidence is
 `orange-daybreak-uq5hb4_1` in the macOS temporary directory. The physical slider
 and interactive menu grant still need manual acceptance, as with sound.
+
+The guest menu bar now shares the bounded Control Center snapshot parser. Its
+Wi-Fi/Bluetooth/sound symbols and battery percentage follow real observations,
+expire to `?` when disconnected, and open Control Center when clicked. No query
+timestamp-only repaint; updates damage only the bar. The symbols use original
+SVG alpha masks with theme-specific ink, and the battery bolt appears only with
+host power connected. Small display modes omit the compact cluster rather than
+overlap the menus. Live expiry/reconnect pixels were checked in
+`/tmp/orange-host-tzhuadzl`; SVG tests cover clipped masks at 1x and 2x.
+The full desktop interaction suite passed (`orange-daybreak-uqvymvea`). The
+six-app blank-click/hover audit passed (`orange-daybreak-hol130o1`): 144 sampled
+frames showed no transient pixel changes; Welcome, About, Files and Trash issued
+zero blank-click repaints. Sampling does not certify every scanout frame.

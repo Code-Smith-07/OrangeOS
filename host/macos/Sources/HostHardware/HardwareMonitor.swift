@@ -86,6 +86,6 @@ public final class HardwareMonitor {
             return .init(source: "IOKit.IODisplayGetFloatParameter", status: "available", permission: "not_required_for_probe", level: levels[0], note: "One readable display; write support not qualified")
         }
         return .init(source: "IOKit.IODisplayGetFloatParameter", status: levels.isEmpty ? "unsupported" : "ambiguous",
-                     note: levels.isEmpty ? "No public IODisplay brightness endpoint; no private API fallback" : "Explicit display selection required")
+                     note: levels.isEmpty ? "Built-in compatibility adapter and public IODisplay endpoint unavailable" : "Explicit display selection required")
     }
 }

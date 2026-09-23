@@ -121,7 +121,9 @@ def run():
         ui.command("qmp_capabilities")
         ui.x, ui.y, ui.scale = 640, 400, 2
         until(lambda: '"Welcome"' in log() and "squeeze: window" in log(), "desktop ready")
+        until(lambda: "desktop: host indicators fresh" in log(), "live Mac indicators reach menu bar")
         time.sleep(1)
+        status_bar = ui.region(800, 0, 180, 28)
         ui.key("f4")
         ui.click(1050, 458)
         until(lambda: "hardware: view snapshot" in log(), "native hardware window displays live snapshot")
@@ -144,6 +146,8 @@ def run():
         offset = len(log())
         stop(host)
         until(lambda: "hardware: view unavailable" in log()[offset:], "disconnect clears guest UI state", 12)
+        until(lambda: "desktop: host indicators disconnected" in log()[offset:], "disconnect expires menu-bar indicators", 5)
+        assert ui.region(800, 0, 180, 28) != status_bar
         ui.screenshot("hardware-disconnected")
         assert ui.region(390, 181, 480, 330) != baseline
         offset = len(log())
@@ -152,6 +156,7 @@ def run():
         assert "host-agent: authenticated" in log()[offset:]
         assert "host-agent: hardware " in log()[offset:]
         until(lambda: "hardware: view snapshot" in log()[offset:], "reconnect restores guest hardware view", 12)
+        until(lambda: ui.region(800, 0, 180, 28) == status_bar, "reconnect restores real menu-bar indicators", 5)
         ui.move(750, 80)
         until(lambda: ui.region(390, 181, 480, 330) == baseline, "restored hardware pixels match original")
         offset = len(log())

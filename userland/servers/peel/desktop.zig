@@ -7,6 +7,7 @@ const Rect = gfx.Rect;
 const Surface = gfx.Surface;
 const pulp = @import("pulp");
 const overview = @import("overview.zig");
+const host_model = @import("host_model");
 
 pub const BAR_H = 28;
 pub const DOCK_H = 92;
@@ -55,6 +56,7 @@ pub const State = struct {
     seconds: ?u64 = null,
     month_offset: i32 = 0,
     notice: []const u8 = "",
+    host: host_model.Model = .{},
 };
 
 pub const ThemeColors = struct {
@@ -170,7 +172,7 @@ pub fn hit(s: *const Surface, state: *const State, x: i32, y: i32) u16 {
     if (y < BAR_H) {
         if (x < 145) return Action.menu;
         if (x >= s.width - 240) return Action.calendar;
-        if (x >= s.width - 300) return Action.hardware;
+        if (x >= s.width - (if (s.width >= 1160) @as(i32, 480) else 300)) return Action.hardware;
         if (x >= 390 and x < 486) return Action.overview;
         if (x >= 500 and x < 600) return Action.desktop;
         return Action.dismiss;
@@ -459,7 +461,8 @@ pub fn paint(s: *const Surface, state: *const State) void {
         const label = @import("std").fmt.bufPrint(&bar_buf, "{s}  {s}", .{ pulp.calendar.dateText(&date_buf, date), pulp.calendar.clockText(&time_buf, date) }) catch "";
         text(s, label, s.width - font.textWidth(label, 1) - 18, 10, INK);
     } else text(s, "Clock unavailable", s.width - 180, 10, INK);
-    ui.icon(s, .controls, s.width - 278, 4, 20);
+    ui.iconTint(s, .controls, s.width - 278, 4, 20, INK);
+    paintHostStatus(s, state);
 
     const dock = dockRect(s);
     // A translucent pearl shelf with a fine rim and separate utility groups.
@@ -578,6 +581,29 @@ pub fn paint(s: *const Surface, state: *const State) void {
         },
         .none => {},
     }
+}
+
+/// Compact observations, not connection claims: radio On does not mean an
+/// internet link or paired device. Unknown/stale readings get a question mark.
+fn paintHostStatus(s: *const Surface, state: *const State) void {
+    if (s.width < 1160) return; // Preserve usable menus on narrower modes.
+    const x = s.width - 472;
+    for ([_]usize{ 0, 1, 3 }, [_]ui.Icon{ .wifi, .bluetooth, .speaker }, 0..) |row_index, icon, i| {
+        const row = state.host.rows[row_index];
+        const px = x + @as(i32, @intCast(i)) * 32;
+        const unknown = state.host.connection != .fresh or row.reading == .status;
+        const off = row.reading == .off or (row_index == 3 and (row.muted == true or (row.reading == .percent and row.reading.percent == 0)));
+        ui.iconTint(s, icon, px, 4, 20, if (unknown or off) MUTED else INK);
+        if (unknown) text(s, "?", px + 17, 10, MUTED) else if (off) text(s, "-", px + 17, 10, MUTED);
+    }
+    const battery = state.host.rows[4];
+    ui.iconTint(s, if (battery.power == true and state.host.connection == .fresh) .battery else .battery_plain, x + 99, 3, 23, INK);
+    var buf: [12]u8 = undefined;
+    const value = if (state.host.connection == .fresh and battery.reading == .percent)
+        @import("std").fmt.bufPrint(&buf, "{d}%", .{battery.reading.percent}) catch "?"
+    else
+        "?";
+    text(s, value, x + 127, 10, INK);
 }
 
 fn hardwareButton(s: *const Surface) Rect {

@@ -14,7 +14,7 @@ pub const Color = struct {
     pub const selection: u32 = 0xE5EEFD;
 };
 const font = @import("typography");
-pub const Icon = enum { welcome, terminal, clock, about, windows, appearance, files, trash, chevron_left, chevron_right, chevron_up, document, brand, controls, close, minimize, maximize, pointer, folder_orange, folder_green, folder_purple, folder_pink, folder_gold, wifi, bluetooth, speaker, sun, battery };
+pub const Icon = enum { welcome, terminal, clock, about, windows, appearance, files, trash, chevron_left, chevron_right, chevron_up, document, brand, controls, close, minimize, maximize, pointer, folder_orange, folder_green, folder_purple, folder_pink, folder_gold, wifi, bluetooth, speaker, sun, battery, battery_plain };
 pub const Button = struct { id: u32, rect: Rect };
 /// Capture starts on press; moving onto a button while held cannot activate it.
 pub const Pointer = struct {
@@ -87,6 +87,13 @@ fn mix(a: u32, b: u32, t: u8) u32 {
 /// SVG-derived RGBA sprites; sample at backing resolution, with
 /// premultiplied-alpha interpolation so transparent edges have no dark halo.
 pub fn icon(s: *const Surface, kind: Icon, x: i32, y: i32, size: i32) void {
+    drawIcon(s, kind, x, y, size, null);
+}
+/// Use the original SVG's antialiased alpha mask with theme-aware ink.
+pub fn iconTint(s: *const Surface, kind: Icon, x: i32, y: i32, size: i32, color: u32) void {
+    drawIcon(s, kind, x, y, size, color);
+}
+fn drawIcon(s: *const Surface, kind: Icon, x: i32, y: i32, size: i32, tint: ?u32) void {
     if (size <= 0) return;
     const h = @as(usize, @intFromEnum(kind)) * 8;
     const width = u16at(h);
@@ -110,6 +117,10 @@ pub fn icon(s: *const Surface, kind: Icon, x: i32, y: i32, size: i32) void {
             const alpha = p >> 24;
             if (alpha == 0) continue;
             const bg = s.getPhysical(xx, yy);
+            if (tint) |color| {
+                s.putPhysical(xx, yy, gfx.lerp(bg, color, @intCast(alpha)));
+                continue;
+            }
             const red: u32 = @min(255, ((p >> 16) & 255) + ((bg >> 16) & 255) * (255 - alpha) / 255);
             const green: u32 = @min(255, ((p >> 8) & 255) + ((bg >> 8) & 255) * (255 - alpha) / 255);
             const blue: u32 = @min(255, (p & 255) + (bg & 255) * (255 - alpha) / 255);
@@ -120,6 +131,30 @@ pub fn icon(s: *const Surface, kind: Icon, x: i32, y: i32, size: i32) void {
 
 pub fn label(s: *const Surface, str: []const u8, x: i32, y: i32, scale: i32, color: u32) void {
     font.drawText(s, str, x, y, scale, color);
+}
+
+test "monochrome SVG symbols preserve alpha and theme contrast" {
+    const std = @import("std");
+    var pixels: [128 * 128]u32 = undefined;
+    for ([_]i32{ 1, 2 }) |scale| {
+        var s = Surface{ .pixels = &pixels, .width = 64, .height = 64, .stride = 64 * scale, .scale = scale };
+        for ([_]u32{ 0x17334D, 0xF4F7FF }) |color| {
+            @memset(&pixels, 0);
+            s.setClip(.{ .x = 10, .y = 10, .w = 20, .h = 20 });
+            iconTint(&s, .wifi, 0, 0, 40, color);
+            var changed: usize = 0;
+            for (0..@intCast(64 * scale)) |y| for (0..@intCast(64 * scale)) |x| {
+                const p = pixels[y * @as(usize, @intCast(s.stride)) + x];
+                if (!s.clip.contains(@divTrunc(@as(i32, @intCast(x)), scale), @divTrunc(@as(i32, @intCast(y)), scale))) {
+                    try std.testing.expectEqual(@as(u32, 0), p);
+                } else if (p != 0) {
+                    changed += 1;
+                    inline for (.{ 0, 8, 16 }) |shift| try std.testing.expect(((p >> shift) & 255) <= ((color >> shift) & 255));
+                }
+            };
+            try std.testing.expect(changed > 0);
+        }
+    }
 }
 
 test "every SVG sprite renders at 1x and 2x with clipped alpha edges" {

@@ -125,7 +125,9 @@ hardware controls. These phases are planned, not completed features.
 exchanges authenticated capabilities, live Mac time/timezone and heartbeats with
 the actual QEMU guest, including reconnect testing. Click the menu-bar controls
 icon for **Control Center**: real Mac Wi-Fi/Bluetooth state, output volume,
-battery/AC state and display-adapter availability. A native volume slider sends
+battery/AC state and display-adapter availability. Compact menu-bar indicators
+show these live observations; disconnected/unknown readings are marked `?`.
+A native volume slider sends
 requests to CoreAudio after you enable sound control in the companion's Mac
 menu; revoke that grant there at any time. The guest reports pending, denied,
 unsupported, changed-route and disconnected outcomes. Unchanged snapshots do

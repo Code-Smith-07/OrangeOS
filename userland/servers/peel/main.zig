@@ -19,6 +19,9 @@ const font = @import("font.zig");
 const desktop = @import("desktop.zig");
 const pointer = @import("pointer.zig");
 const window_body = @import("window_body.zig");
+const host_model = @import("host_model");
+var host_json: [4096]u8 = undefined;
+var host_scratch: [32768]u8 = undefined;
 
 const Rect = gfx.Rect;
 const Color = gfx.Color;
@@ -1127,7 +1130,19 @@ export fn _start() callconv(.c) noreturn {
     clearDamage();
 
     var events: [64]pulp.InputEvent = undefined;
+    var last_host_poll: u64 = 0;
     while (true) {
+        const host_now = pulp.uptimeMs();
+        if (host_now -| last_host_poll >= 1000) {
+            last_host_poll = host_now;
+            const result = pulp.syscall3(111, 0, @intFromPtr(&host_json), host_json.len);
+            const host = host_model.parse(host_json[0..if (result > 0) @intCast(result) else 0], &host_scratch);
+            if (!shell.host.eql(host)) {
+                shell.host = host;
+                addDamage(.{ .x = screen.width - 480, .y = 0, .w = 180, .h = desktop.BAR_H });
+                if (pulp.desktop_profile) pulp.print("desktop: host indicators {s}\n", .{@tagName(host.connection)});
+            }
+        }
         const seconds = pulp.wallTime();
         if (seconds != shell.seconds) {
             if (shell.seconds == null and seconds != null) pulp.print("desktop: wall clock UTC {d}, offset {d} minutes\n", .{ seconds.?, pulp.timezone_minutes });

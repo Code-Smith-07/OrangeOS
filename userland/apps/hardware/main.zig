@@ -85,7 +85,7 @@ fn paint(win: *const libpeel.Window, state: model.Model, region: ui.Rect) void {
         }
     }
     card(&s, .{ .x = 18, .y = 414, .w = 444, .h = 50 });
-    ui.icon(&s, .battery, 32, 424, 30);
+    ui.icon(&s, if (state.rows[4].power == true) .battery else .battery_plain, 32, 424, 30);
     ui.label(&s, "Battery", 80, 428, 1, 0x17334D);
     const battery = state.rows[4];
     const value_text = reading(battery, &text);

@@ -171,7 +171,7 @@ overlap, focus, hover, window drag and reduced-transparency modes.
 | Wi-Fi/Bluetooth tiles | Bridge reports limited read-only Mac radio status | Capability and consent flow, supported operations with readback/revoke, truthful unavailable states (Phases 10–11) |
 | Speaker and brightness sliders | Native volume and built-in display sliders, independent host grants and readback implemented; both actual same-value setters verified on this Mac | Interactive physical slider acceptance remains manual. Display uses a private compatibility API; guest PCM mixer/external displays remain (Phases 9c/12) |
 | Dock app icons and running indicators | Original app icons and dock exist; some concept apps do not | Add icons only with real launchable apps; verify focus, close, running state and tooltip/keyboard access |
-| Menu-bar status, clock and battery | Real wall clock; Control Center shows live Mac battery/AC and sound/radio readings | Add compact live menu-bar indicators; complete missing service operations |
+| Menu-bar status, clock and battery | Real wall clock plus SVG radio/sound/battery indicators with live Mac readback and disconnect expiry; click opens Control Center | Complete missing service operations; radio On does not prove internet connectivity or a Bluetooth connection |
 | Rounded glass window chrome | Shared themed chrome and glass are implemented, but app contents are not all theme-aware | Match concept spacing, radii, typography and contrast; fix clipping/corner seams and measure repaint cost on all themes |
 
 Screenshot parity is a visual gate, not a substitute for behavior. A matched
