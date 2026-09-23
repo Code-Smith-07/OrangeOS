@@ -32,6 +32,12 @@ build still needs launch/render verification. No step automatically launches a
 host browser, changes shell configuration, touches guest images, installs Xcode
 or makes a Git commit in the OrangeOS repository.
 
+The tool stage explicitly initializes depot_tools' Python launcher as well as
+vpython. With auto-updates disabled, successfully running `gclient` alone does
+not initialize GN's `python-bin/python3` wrapper. Later stages check this too,
+allowing an older workspace to recover through `ensure_bootstrap` without
+updating its pinned depot_tools commit.
+
 The workspace is `build/browser` on the project's mounted external `/Volumes`
 volume. It must be APFS, have no whitespace in its resolved path, and have at
 least 100 GiB free before each mutating step (our planning reserve, not an
@@ -81,3 +87,4 @@ python3 -m unittest discover -s tools -p 'test_*.py'
 - [Minimum SDK](https://chromium.googlesource.com/chromium/src/+/a654841425914cbb703a2931e07b70a83aedbafd/build/config/mac/mac_sdk_overrides.gni) and [official SDK](https://chromium.googlesource.com/chromium/src/+/a654841425914cbb703a2931e07b70a83aedbafd/build/config/mac/mac_sdk.gni)
 - [Pinned Clang package](https://chromium.googlesource.com/chromium/src/+/a654841425914cbb703a2931e07b70a83aedbafd/tools/clang/scripts/update.py)
 - [depot_tools auto-update control](https://chromium.googlesource.com/chromium/tools/depot_tools/+/910f54316dac310fadee0c453c4d460c0c446189/update_depot_tools)
+- [Bootstrap without updating the checkout](https://chromium.googlesource.com/chromium/tools/depot_tools/+/910f54316dac310fadee0c453c4d460c0c446189/ensure_bootstrap)

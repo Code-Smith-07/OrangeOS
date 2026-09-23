@@ -184,13 +184,24 @@ class ReferenceBuild:
         self.run(["git", "checkout", "--detach", spec["revision"]], repo)
         verify_repo(repo, spec)
 
+    def ensure_tool_runtime(self):
+        # gclient uses vpython, but gn/autoninja use python-bin/python3. With
+        # auto-update disabled, gclient alone does NOT bootstrap that launcher.
+        # ensure_bootstrap explicitly keeps the existing depot_tools revision.
+        if not (self.depot / "python3_bin_reldir.txt").is_file():
+            self.run([self.depot / "ensure_bootstrap"])
+        self.run([self.depot / "python-bin/python3", "--version"])
+        verify_repo(self.depot, self.manifest["depot_tools"])
+
     def execute(self, stage):
         if stage == "tools":
             self.checkout_pin(self.depot, self.manifest["depot_tools"])
+            self.ensure_tool_runtime()
             self.run([self.depot / "gclient", "--version"])
             verify_repo(self.depot, self.manifest["depot_tools"])
             return
         verify_repo(self.depot, self.manifest["depot_tools"])
+        self.ensure_tool_runtime()
         if stage == "source":
             self.checkout.mkdir(exist_ok=True)
             ensure_text(self.checkout / ".gclient", gclient_config(self.manifest))

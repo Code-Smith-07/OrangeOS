@@ -174,6 +174,17 @@ class ReferenceTests(unittest.TestCase):
                     build.checkout_pin(checkout, spec)
                 self.assertEqual((checkout / "fixture").read_text(), "user edit\n")
 
+    def test_pinned_python_launcher_bootstrapped_without_updating_tools(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with (root / "log").open("w") as log:
+                build = ReferenceBuild(root, load_manifest(), log)
+                with patch.object(build, "run") as run, patch("browser_reference.verify_repo"):
+                    build.ensure_tool_runtime()
+                    self.assertEqual(run.call_args_list[0].args[0], [build.depot / "ensure_bootstrap"])
+                    self.assertEqual(run.call_args_list[1].args[0], [build.depot / "python-bin/python3", "--version"])
+                    self.assertFalse(any("update_depot_tools" in str(c) for c in run.call_args_list))
+
 
 if __name__ == "__main__":
     unittest.main()

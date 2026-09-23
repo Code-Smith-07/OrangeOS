@@ -500,9 +500,10 @@ Implemented and exercised on 2026-09-23:
   workspace occupies about **7.7 GiB** before dependency sync.
 
 Runbook: [pinned reference workspace](../../tools/browser/README.md).
-The source/tools milestone is complete, **not Phase 1 as a whole**. A complete
-dependency sync, successful reference compile/launch, embedding decision,
-dependency/patch inventory and native-port feasibility gate remain outstanding.
+The source/tools milestone is complete, **not Phase 1 as a whole**. Subsequent
+dependency/bootstrap results appear in section 11.4. A successful reference
+compile/launch, embedding decision, complete dependency/patch inventory and
+native-port feasibility gate remain outstanding.
 No native guest browser, web compatibility or media performance is claimed.
 
 ### 11.3 Initial source-inspected port inventory
@@ -533,6 +534,46 @@ The source-audit DEPS SHA-256 is
 `cd59c0f5c31e1dbbc65b2db96bb11a18f7bdc91496fafb5b6a4e7f94d8ad797c`.
 After a successful dependency sync, `gclient revinfo --actual` records resolved
 checkouts in the local sync log; it is not yet a complete release SBOM.
+
+### 11.4 Dependency/bootstrap qualification checkpoint
+
+Observed on the same external workspace, 2026-09-23:
+
+| Check | Actual result |
+|---|---|
+| Shallow dependency sync and `gclient revinfo --actual` | Passed; resolved repository/package information retained in the local sync log |
+| Upstream setup hooks | Passed, including the 124-package Python environment; system Xcode was retained |
+| Clang launcher and package stamp | Passed; package `llvmorg-24-init-3796-g20e97c4b-27`, Clang 24.0.0git |
+| Rust launcher | Passed; upstream Chromium package `0913b18e489ac1011b580e31fa5559654be12bfc-2-llvmorg-24-init-3796-g20e97c4b`, reporting 1.99.0-nightly; no OrangeOS Rust target implied |
+| GN launcher | Version 2540 (`150a9d6ba0aa`), resolved from pinned dependencies |
+| `gn gen out/OrangeReference` | Passed: 34,239 targets from 4,987 files, 7,375 ms in this run |
+| Runner/profile/preflight regression suite | 36 tests passed, including a real temporary Git checkout and Python-launcher bootstrap coverage |
+| Reference `content_shell` compilation / launch | **Not run**; generation is not a compiled or working browser |
+| Native OrangeOS engine / site / media qualification | **Not implemented / not run** |
+
+The first GN attempt correctly failed because gclient's vpython bootstrap did
+not initialize depot_tools' separate Python launcher while auto-updates were
+disabled. The runner now explicitly bootstraps that launcher at the locked
+depot_tools revision and checks it before continuing. The retry generated the
+build successfully using Xcode 26.3 / SDK 26.2. This does **not** yet establish
+compile compatibility or parity with the official SDK 26.5 build.
+
+gsutil transfer state is now explicitly configured externally too, and its
+actual state-directory resolver was checked. The initial sync left approximately
+20 KiB of gsutil bookkeeping internally before this correction; it was not
+removed or confused with the large source/package downloads. No project source,
+dependency tree or build output was placed on the internal disk.
+
+To resume the next explicit gate:
+
+```sh
+python3 tools/browser_reference.py build
+```
+
+This is a full **host reference** `content_shell` compile with two local jobs,
+not a quick unit test or a guest installation. Once it succeeds, launch/render
+checks and the native-platform feasibility decision are still required. No
+background compile was left running by this checkpoint.
 
 ## 12. Security updates and distribution
 

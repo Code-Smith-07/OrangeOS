@@ -174,9 +174,10 @@ limitations without treating an advertised device as qualified acceleration.
 See the [Phase 1 implementation ledger](docs/design/011-native-chromium-browser.md#111-phase-1a-resource-profiles-and-preflight).
 
 **Pinned upstream workspace.** Chromium 154.0.8037.58 and depot_tools now have
-full-commit pins and a guarded external-drive setup runner. The source checkout
-and tools are verified locally; dependency sync, compilation and native guest
-integration are separate gates. The [reference-build runbook](tools/browser/README.md)
+full-commit pins and a guarded external-drive setup runner. Source/dependency
+sync, setup hooks and GN generation have passed locally (34,239 targets).
+Compilation, launch and native guest integration have **not** passed yet.
+The [reference-build runbook](tools/browser/README.md)
 documents explicit steps, recovery, SDK differences and storage safeguards.
 
 **Input responsiveness.** Relative pointer travel is independent of Retina
