@@ -1,3 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-<defs><linearGradient id="back" x2="0" y2="1"><stop stop-color="#8de5ff"/><stop offset="1" stop-color="#288fd3"/></linearGradient><linearGradient id="front" x2=".2" y2="1"><stop stop-color="#89e5ff"/><stop offset=".35" stop-color="#4fc6f5"/><stop offset="1" stop-color="#168de1"/></linearGradient></defs><path d="M6 16Q6 10 12 10H24Q27 10 30 15H52Q59 15 59 22V51Q59 57 52 57H12Q5 57 5 50Z" fill="#075e9f" opacity=".18" transform="translate(0 3)"/><path d="M5 14Q5 8 11 8H24Q27 8 30 13H52Q59 13 59 20V49Q59 55 52 55H11Q5 55 5 49Z" fill="url(#back)" stroke="#a8ebff" stroke-width=".7"/><rect x="10" y="19" width="44" height="29" rx="3" fill="#e9fcff"/><path d="M14 17H51Q54 17 54 20V47H14Z" fill="#fff" opacity=".7"/><path d="M4 28Q4 23 10 23H54Q60 23 60 29L58 50Q57.5 56 51 56H12Q6 56 5.5 50Z" fill="url(#front)" stroke="#94e4ff" stroke-width=".7"/><path d="M10 25H54" stroke="#d2f7ff" opacity=".8" stroke-linecap="round"/><path d="M16 51H48" stroke="#086fb9" opacity=".25" stroke-width="1.2" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="back" x1="0" y1="0" x2=".3" y2="1">
+      <stop stop-color="#88d7fb"/><stop offset="1" stop-color="#399bdf"/>
+    </linearGradient>
+    <linearGradient id="front" x1=".15" y1="0" x2=".8" y2="1">
+      <stop stop-color="#70d2fc"/><stop offset=".5" stop-color="#3cabea"/><stop offset="1" stop-color="#2285d6"/>
+    </linearGradient>
+  </defs>
+  <path d="M5 17Q5 11 11 11H23Q25.5 11 28 15H52Q59 15 59 22V49Q59 56 52 56H12Q5 56 5 49Z" fill="#186eaa" opacity=".15" transform="translate(0 3)"/>
+  <path d="M5 16Q5 10 11 10H22Q25 10 28 14H52Q59 14 59 21V47Q59 54 52 54H12Q5 54 5 47Z" fill="url(#back)"/>
+  <path d="M6 16Q6 11 11 11H22Q25 11 27.5 15H52Q57.5 15 58 20" fill="none" stroke="#d0efff" stroke-opacity=".68" stroke-width=".7"/>
+  <rect x="10" y="21" width="44" height="25" rx="3" fill="#c7ebff"/>
+  <rect x="12" y="19" width="40" height="27" rx="2.5" fill="#f4fbff"/>
+  <path d="M4 29Q4 24 9 24H55Q60 24 60 29L58.4 49.4Q58 55 52 55H12Q6 55 5.6 49.4Z" fill="url(#front)"/>
+  <path d="M5 29Q5 25 9 25H55Q59 25 59 29" fill="none" stroke="#c1efff" stroke-opacity=".75" stroke-width=".8"/>
+  <path d="M13 53H51" stroke="#106fb9" stroke-opacity=".22" stroke-width=".7" stroke-linecap="round"/>
 </svg>

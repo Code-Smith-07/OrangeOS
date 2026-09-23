@@ -1,3 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-<defs><linearGradient id="g" x2=".7" y2="1"><stop stop-color="#a8ddff"/><stop offset=".5" stop-color="#689ffa"/><stop offset="1" stop-color="#6059df"/></linearGradient><linearGradient id="f" x2="0" y2="1"><stop stop-color="#fff"/><stop offset="1" stop-color="#d7e8fc"/></linearGradient></defs><rect x="5" y="7" width="54" height="54" rx="15" fill="#363176" opacity=".2"/><rect x="4" y="3" width="56" height="56" rx="15" fill="url(#g)" stroke="#d2e7ff" stroke-width=".6"/><rect x="10" y="13" width="33" height="29" rx="5" fill="#cae9ff" stroke="#fff" stroke-width=".6"/><path d="M10 21H43" stroke="#83b0df"/><circle cx="15" cy="17" r="1" fill="#609bcf"/><circle cx="19" cy="17" r="1" fill="#609bcf"/><rect x="21" y="25" width="34" height="28" rx="5" fill="#3e529e" opacity=".25"/><rect x="20" y="22" width="34" height="28" rx="5" fill="url(#f)" stroke="#fff" stroke-width=".7"/><path d="M20 30H54" stroke="#b4cce9"/><rect x="24" y="34" width="8" height="12" rx="2" fill="#79aaf1"/><rect x="35" y="34" width="15" height="4" rx="2" fill="#b1caf4"/><rect x="35" y="41" width="11" height="3" rx="1.5" fill="#c2d7f5"/>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2=".9" y2="1">
+      <stop stop-color="#92b7f7"/><stop offset=".5" stop-color="#668bea"/><stop offset="1" stop-color="#5663ce"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2=".4" y2="1">
+      <stop stop-color="#fff"/><stop offset="1" stop-color="#e5edff"/>
+    </linearGradient>
+  </defs>
+  <rect x="5" y="6" width="54" height="54" rx="14" fill="#3b468d" opacity=".12"/>
+  <rect x="4" y="3" width="56" height="56" rx="14" fill="url(#tile)"/>
+  <rect x="4.4" y="3.4" width="55.2" height="55.2" rx="13.6" fill="none" stroke="#fff" stroke-opacity=".38" stroke-width=".8"/>
+  <rect x="11" y="14" width="32" height="25" rx="4.5" fill="#e9f1ff" fill-opacity=".53" stroke="#fff" stroke-opacity=".66" stroke-width=".75"/>
+  <path d="M12 21H42" stroke="#fff" stroke-opacity=".65" stroke-width=".65"/>
+  <rect x="20" y="25" width="33" height="26" rx="4.5" fill="#31478b" opacity=".16"/>
+  <rect x="20" y="23" width="33" height="26" rx="4.5" fill="url(#panel)" stroke="#fff" stroke-width=".6"/>
+  <path d="M21 30H52" stroke="#7190be" stroke-opacity=".24" stroke-width=".65"/>
+  <circle cx="25" cy="26.5" r=".9" fill="#87a2d1"/>
+  <circle cx="29" cy="26.5" r=".9" fill="#b0c4e8"/>
+  <rect x="24" y="34" width="7" height="11" rx="1.7" fill="#7c9edc"/>
+  <rect x="34" y="34" width="14" height="4" rx="1.5" fill="#a8c1ee"/>
+  <rect x="34" y="41" width="10" height="3" rx="1.5" fill="#c9d7ee"/>
 </svg>

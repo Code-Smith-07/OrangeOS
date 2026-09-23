@@ -1,10 +1,11 @@
-//! Grove: a welcoming launch surface, using the same artwork as the dock.
+//! Grove: a calm launch surface, using the same artwork as the dock.
 const pulp = @import("pulp");
 const libpeel = @import("libpeel");
 const ui = @import("ui");
 // Build complete frames privately. The compositor must never observe our
 // wallpaper/blur/card construction in the shared client surface.
 var staging: [430 * 382 * 4]u32 = undefined;
+var background: [430 * 382 * 4]u32 = undefined;
 const targets = [_]ui.Button{
     .{ .id = 1, .rect = .{ .x = 24, .y = 206, .w = 118, .h = 92 } },
     .{ .id = 2, .rect = .{ .x = 156, .y = 206, .w = 118, .h = 92 } },
@@ -14,68 +15,83 @@ const targets = [_]ui.Button{
     .{ .id = 6, .rect = .{ .x = 156, .y = 156, .w = 118, .h = 28 } },
     .{ .id = 7, .rect = .{ .x = 288, .y = 156, .w = 118, .h = 28 } },
 };
-fn paint(win: *const libpeel.Window, pointer: ui.Pointer) void {
+fn prepare(win: *const libpeel.Window) void {
+    var s = ui.surface(win);
+    s.pixels = &background;
+    // Build the editorial header once. Hover never recomputes a backdrop,
+    // blur or full-window frame; each launch control has isolated damage.
+    ui.gradient(&s, .{ .x = 0, .y = 0, .w = 430, .h = 382 }, 0, 0xFBFCFE, 0xF0F4FA);
+    ui.gradient(&s, .{ .x = 0, .y = 0, .w = 430, .h = 141 }, 0, 0xFFFFFF, 0xF3F7FC);
+    s.rounded(.{ .x = 24, .y = 24, .w = 4, .h = 12 }, 2, 0xF38B42, 255);
+    ui.label(&s, "ORANGE OS", 37, 27, 1, 0x778397);
+    ui.label(&s, "A fresh start.", 24, 52, 2, 0x253247);
+    ui.label(&s, "Your files, favourite tools", 25, 92, 1, 0x778397);
+    ui.label(&s, "and a little room to create.", 25, 112, 1, 0x778397);
+    s.rounded(.{ .x = 321, .y = 37, .w = 74, .h = 76 }, 23, 0xDEE8F5, 130);
+    ui.icon(&s, .welcome, 319, 32, 78);
+    s.fill(.{ .x = 24, .y = 140, .w = 382, .h = 1 }, 0xE1E7EF);
+    ui.label(&s, "QUICK LAUNCH", 24, 192, 1, 0x778397);
+}
+fn control(s: *ui.Surface, t: ui.Button, pointer: ui.Pointer) void {
+    const hover = pointer.hover == t.id;
+    const pressed = pointer.pressed == t.id;
+    const border: u32 = if (pressed) 0xAAC8F4 else if (hover) 0xC3D7F5 else 0xE1E7EF;
+    const fill: u32 = if (pressed) 0xE7F0FC else if (hover) 0xF6FAFF else 0xFFFFFF;
+    if (t.id <= 3) {
+        const kinds = [_]ui.Icon{ .files, .terminal, .clock };
+        const titles = [_][]const u8{ "Files", "Terminal", "Clock" };
+        s.rounded(.{ .x = t.rect.x, .y = t.rect.y + 2, .w = t.rect.w, .h = t.rect.h }, 15, 0x253247, 9);
+        s.rounded(t.rect, 15, border, 255);
+        s.rounded(.{ .x = t.rect.x + 1, .y = t.rect.y + 1, .w = t.rect.w - 2, .h = t.rect.h - 2 }, 14, fill, 255);
+        ui.icon(s, kinds[t.id - 1], t.rect.x + 37, t.rect.y + 10, 44);
+        ui.label(s, titles[t.id - 1], t.rect.x + 14, t.rect.y + 68, 1, 0x253247);
+        ui.icon(s, .chevron_right, t.rect.right() - 26, t.rect.y + 62, 17);
+    } else if (t.id == 4) {
+        s.rounded(t.rect, 12, border, 255);
+        s.rounded(.{ .x = t.rect.x + 1, .y = t.rect.y + 1, .w = t.rect.w - 2, .h = t.rect.h - 2 }, 11, fill, 255);
+        ui.icon(s, .appearance, t.rect.x + 12, t.rect.y + 8, 30);
+        ui.label(s, "Make it yours", t.rect.x + 54, t.rect.y + 11, 1, 0x253247);
+        ui.label(s, "Wallpaper and appearance", t.rect.x + 54, t.rect.y + 29, 1, 0x778397);
+        ui.icon(s, .chevron_right, t.rect.right() - 27, t.rect.y + 15, 18);
+    } else {
+        const kinds = [_]ui.Icon{ .windows, .trash, .about };
+        const names = [_][]const u8{ "Windows", "Trash", "About" };
+        s.rounded(t.rect, 8, if (pressed) 0xE0EAF8 else if (hover) 0xEAF1FB else 0xFFFFFF, if (hover or pressed) 255 else 105);
+        ui.icon(s, kinds[t.id - 5], t.rect.x + 8, t.rect.y + 4, 20);
+        ui.label(s, names[t.id - 5], t.rect.x + 36, t.rect.y + 10, 1, 0x556378);
+    }
+}
+fn paint(win: *const libpeel.Window, pointer: ui.Pointer, previous: ?ui.Pointer) void {
     var s = ui.surface(win);
     s.pixels = &staging;
-    // The full-resolution aurora is reconstructed before every glass
-    // pass, never blurred repeatedly over an old card.
-    var y: i32 = 0;
-    while (y < s.height * s.scale) : (y += 1) {
-        var x: i32 = 0;
-        while (x < s.width * s.scale) : (x += 1) {
-            const nx = @divTrunc(x * 430, s.width * s.scale);
-            const ny = @divTrunc(y * 382, s.height * s.scale);
-            const peach = @max(0, 255 - @divTrunc((nx - 400) * (nx - 400) + (ny - 70) * (ny - 70), 240));
-            const violet = @max(0, 255 - @divTrunc((nx - 25) * (nx - 25) + (ny - 310) * (ny - 310), 390));
-            var c = ui.gfx.lerp(0xF2EEFD, 0xFFBBAA, @intCast(peach));
-            c = ui.gfx.lerp(c, 0xBCAAF0, @intCast(violet));
-            s.putPhysical(x, y, c);
+    if (previous == null) {
+        const length: usize = @intCast(win.stride * win.height * win.scale);
+        @memcpy(staging[0..length], background[0..length]);
+        for (targets) |t| control(&s, t, pointer);
+        ui.publishRegion(win, staging[0..length], .{ .x = 0, .y = 0, .w = win.width, .h = win.height });
+    } else for (targets) |t| {
+        const old = previous.?;
+        if ((old.hover == t.id) == (pointer.hover == t.id) and (old.pressed == t.id) == (pointer.pressed == t.id)) continue;
+        const r = ui.Rect{ .x = t.rect.x, .y = t.rect.y, .w = t.rect.w, .h = t.rect.h + 2 };
+        var y = r.y * win.scale;
+        while (y < r.bottom() * win.scale) : (y += 1) {
+            const start: usize = @intCast(y * win.stride + r.x * win.scale);
+            const n: usize = @intCast(r.w * win.scale);
+            @memcpy(staging[start..][0..n], background[start..][0..n]);
         }
+        control(&s, t, pointer);
+        ui.publishRegion(win, &staging, r);
     }
-    // A single inset glass hero, then a compact utility strip and app cards.
-    s.frost(.{ .x = 12, .y = 12, .w = 406, .h = 132 }, 22, 0xFFFFFF, 46);
-    s.rounded(.{ .x = 304, .y = 37, .w = 94, .h = 98 }, 28, 0x9569AE, 22);
-    s.frost(.{ .x = 300, .y = 31, .w = 94, .h = 98 }, 27, 0xFFFFFF, 70);
-    ui.icon(&s, .welcome, 304, 35, 86);
-    ui.label(&s, "O R A N G E   O S", 24, 23, 1, 0x7B698D);
-    ui.label(&s, "Make yourself", 24, 49, 2, 0x37334F);
-    ui.label(&s, "at home.", 24, 82, 2, 0x37334F);
-    ui.label(&s, "A little colour. A world of possibility.", 24, 124, 1, 0x726984);
-    const utility_icons = [_]ui.Icon{ .windows, .trash, .about };
-    const utility_names = [_][]const u8{ "Windows", "Trash", "About" };
-    for (targets[4..], 0..) |t, i| {
-        s.rounded(t.rect, 10, 0xFFFFFF, if (pointer.pressed == t.id) 65 else if (pointer.hover == t.id) 200 else 115);
-        ui.icon(&s, utility_icons[i], t.rect.x + 8, t.rect.y + 4, 20);
-        ui.label(&s, utility_names[i], t.rect.x + 35, t.rect.y + 10, 1, 0x55477C);
-    }
-    ui.label(&s, "YOUR EVERYDAY ESSENTIALS", 24, 191, 1, 0x7E7593);
-    const kinds = [_]ui.Icon{ .files, .terminal, .clock };
-    const titles = [_][]const u8{ "Files", "Terminal", "Clock" };
-    for (targets[0..3], 0..) |t, i| {
-        const hover = pointer.hover == t.id;
-        s.rounded(.{ .x = t.rect.x, .y = t.rect.y + 4, .w = t.rect.w, .h = t.rect.h }, 18, 0x887EA8, 24);
-        s.frost(t.rect, 18, 0xFFFFFF, if (pointer.pressed == t.id) 90 else if (hover) 200 else 145);
-        s.rounded(.{ .x = t.rect.x + 18, .y = t.rect.y, .w = t.rect.w - 36, .h = 1 }, 0, 0xFFFFFF, 210);
-        ui.icon(&s, kinds[i], t.rect.x + 35, t.rect.y + 7, 48);
-        ui.label(&s, titles[i], t.rect.x + 16, t.rect.y + 65, 1, 0x333852);
-        ui.icon(&s, .chevron_right, t.rect.right() - 28, t.rect.y + 59, 20);
-    }
-    const r = targets[3].rect;
-    s.frost(r, 16, 0xFFFFFF, if (pointer.hover == 4) 170 else 100);
-    ui.icon(&s, .appearance, r.x + 9, r.y + 6, 34);
-    ui.label(&s, "Your desktop, your way", r.x + 53, r.y + 12, 1, 0x55477C);
-    ui.label(&s, "Choose a wallpaper", r.x + 53, r.y + 29, 1, 0x88809D);
-    ui.icon(&s, .chevron_right, r.right() - 29, r.y + 14, 20);
-    @memcpy(win.pixels[0..@intCast(win.stride * win.height * win.scale)], staging[0..@intCast(win.stride * win.height * win.scale)]);
-    win.commitAll();
     if (pulp.desktop_profile) pulp.puts("grove: painted\n");
 }
 export fn _start() callconv(.c) noreturn {
     const win = libpeel.createWindow("Welcome", 430, 382, 754, 112) catch pulp.exit(1);
     var pointer: ui.Pointer = .{};
-    paint(&win, pointer);
+    prepare(&win);
+    paint(&win, pointer, null);
     var buf: [128]u8 = undefined;
     while (true) {
+        const previous = pointer;
         var dirty = false;
         while (true) {
             const m = pulp.portRecvMsg(win.reply, &buf, false) catch break;
@@ -101,7 +117,7 @@ export fn _start() callconv(.c) noreturn {
                 _ = pulp.portSend(win.server, libpeel.proto.Op.launch_app, @import("std").mem.asBytes(&index)) catch {};
             }
         }
-        if (dirty) paint(&win, pointer);
+        if (dirty and pointer.visualChanged(previous)) paint(&win, pointer, previous);
         pulp.sleepMs(16);
     }
 }

@@ -187,16 +187,121 @@ const shadow_tables = tables: {
 };
 
 pub fn windowShadow(s: *const Surface, r: Rect, active: bool) void {
-    windowShadowImpl(s, r, active, true);
+    windowShadowImpl(s, r, active, true, true);
 }
 
-fn windowShadowImpl(s: *const Surface, r: Rect, active: bool, fast: bool) void {
+// Rounded shadow geometry is translation-invariant at normal window sizes.
+// Cache only the exact thirteen alpha operations, NOT finished backdrop pixels:
+// moving windows and live applications always receive the current backdrop.
+// Horizontal corners are mirror images, so two masks cover all four corners.
+// Four bounded entries cover active/inactive shadows at 1x/2x (495,616 bytes).
+const SHADOW_CORNER_PIXELS = 44 * (38 + 50) * 4;
+var shadow_corner_masks: [2][2][SHADOW_CORNER_PIXELS]u64 = undefined;
+var shadow_corner_valid = [_][2]bool{.{ false, false }} ** 2;
+const shadow_single_blends = tables: {
+    @setEvalBranchQuota(100_000);
+    var result: [6][3][256]u8 = undefined;
+    for (0..6) |alpha| for (0..3) |channel| for (0..256) |value| {
+        const tint = ([_]usize{ 0x1F, 0x18, 0x3C })[channel];
+        result[alpha][channel][value] = @intCast((value * (255 - alpha) + tint * alpha) / 255);
+    };
+    break :tables result;
+};
+
+fn shadowCornerMasks(scale: i32, active: bool) []const u64 {
+    const si: usize = @intCast(scale - 1);
+    const ai = @intFromBool(active);
+    const masks = &shadow_corner_masks[si][ai];
+    if (shadow_corner_valid[si][ai]) return masks;
+    const width: usize = @intCast(44 * scale);
+    var offset: usize = 0;
+    for ([_]bool{ false, true }) |bottom| {
+        const height: usize = @intCast((if (bottom) @as(i32, 50) else 38) * scale);
+        for (0..height) |row| for (0..width) |col| {
+            const x = @as(i32, @intCast(col)) - 14 * scale;
+            const y = @as(i32, @intCast(row)) + (if (bottom) @as(i32, 34) else -8) * scale;
+            // Original renderer paints the outside fringe plus 13-point
+            // interior corner cutouts. Keep the remaining interior untouched.
+            const eligible = x < 0 or y < 0 or y >= 64 * scale or
+                (x < 13 * scale and (y < 13 * scale or y >= 51 * scale));
+            var mask: u64 = 0;
+            if (eligible) {
+                var layer: i32 = 14;
+                while (layer >= 2) : (layer -= 1) {
+                    if (x < -layer * scale or y < (6 - layer) * scale or
+                        x >= (64 + layer) * scale or y >= (70 + layer) * scale) continue;
+                    const radius = (16 + layer) * scale;
+                    const dx = @max(@max(16 * scale - x - 1, x - 48 * scale), 0);
+                    const dy = @max(@max(22 * scale - y - 1, y - 54 * scale), 0);
+                    const d = dx * dx + dy * dy;
+                    if (d > radius * radius) continue;
+                    var alpha: u32 = if (active) 5 else 3;
+                    if (d > radius * radius - 2 * radius)
+                        alpha = alpha * @as(u32, @intCast(radius * radius - d)) / @as(u32, @intCast(2 * radius));
+                    mask |= @as(u64, alpha) << @as(u6, @intCast((14 - layer) * 3));
+                    // lerp with zero alpha still canonicalizes the RGB word.
+                    mask |= @as(u64, 1) << 63;
+                }
+            }
+            masks[offset + row * width + col] = mask;
+        };
+        offset += width * height;
+    }
+    shadow_corner_valid[si][ai] = true;
+    return masks;
+}
+
+fn paintShadowCorners(s: *const Surface, r: Rect, active: bool) void {
+    const masks = shadowCornerMasks(s.scale, active);
+    const mask_width: usize = @intCast(44 * s.scale);
+    var offset: usize = 0;
+    for ([_]bool{ false, true }) |bottom| {
+        const height: i32 = if (bottom) 50 else 38;
+        for ([_]bool{ false, true }) |right| {
+            const patch = Rect{ .x = if (right) r.right() - 30 else r.x - 14, .y = if (bottom) r.bottom() - 30 else r.y - 8, .w = 44, .h = height };
+            const area = s.clipped(patch);
+            if (area.isEmpty()) continue;
+            var y = area.y * s.scale;
+            while (y < area.bottom() * s.scale) : (y += 1) {
+                const row: usize = @intCast(y - patch.y * s.scale);
+                var x = area.x * s.scale;
+                while (x < area.right() * s.scale) : (x += 1) {
+                    const col: usize = @intCast(x - patch.x * s.scale);
+                    const mask_col = if (right) mask_width - 1 - col else col;
+                    var mask = masks[offset + row * mask_width + mask_col];
+                    if (mask == 0) continue;
+                    mask &= ~(@as(u64, 1) << 63);
+                    const index: usize = @intCast(y * s.stride + x);
+                    const pixel = s.pixels[index];
+                    var red = (pixel >> 16) & 255;
+                    var green = (pixel >> 8) & 255;
+                    var blue = pixel & 255;
+                    while (mask != 0) : (mask >>= 3) {
+                        const alpha: usize = @intCast(mask & 7);
+                        if (alpha == 0) continue;
+                        const lut = &shadow_single_blends[alpha];
+                        red = lut[0][red];
+                        green = lut[1][green];
+                        blue = lut[2][blue];
+                    }
+                    s.pixels[index] = (red << 16) | (green << 8) | blue;
+                }
+            }
+        }
+        offset += mask_width * @as(usize, @intCast(height * s.scale));
+    }
+}
+
+fn windowShadowImpl(s: *const Surface, r: Rect, active: bool, fast: bool, cache_corners: bool) void {
     // Rounded windows expose backdrop INSIDE their rectangular bounds. Paint
     // the shadow there too; the window silhouette masks it during composition.
     // Previously the fringe-only optimization left hard square shadow cutouts.
+    const optimized = fast and r.w >= 64 and r.h >= 64;
+    const cached_corners = optimized and cache_corners and (s.scale == 1 or s.scale == 2);
+    if (cached_corners) paintShadowCorners(s, r, active);
     const corner_size = @min(13, @divTrunc(@min(r.w, r.h), 2));
     var layer: i32 = 14;
-    while (layer >= 2) : (layer -= 1) {
+    while (!cached_corners and layer >= 2) : (layer -= 1) {
         const shadow = Rect{ .x = r.x - layer, .y = r.y - layer + 6, .w = r.w + layer * 2, .h = r.h + layer * 2 };
         for ([_]i32{ r.y, r.bottom() - corner_size }) |y| for ([_]i32{ r.x, r.right() - corner_size }) |x| {
             var corner = s.*;
@@ -206,7 +311,6 @@ fn windowShadowImpl(s: *const Surface, r: Rect, active: bool, fast: bool) void {
     }
     // Only the corners need rounded coverage evaluated for all thirteen
     // layers. Straight edges use the exact precomputed colour transformation.
-    const optimized = fast and r.w >= 64 and r.h >= 64;
     const centers = [_]Rect{
         .{ .x = r.x + 30, .y = r.y - 14, .w = r.w - 60, .h = 14 },
         .{ .x = r.x + 30, .y = r.bottom(), .w = r.w - 60, .h = 20 },
@@ -214,7 +318,7 @@ fn windowShadowImpl(s: *const Surface, r: Rect, active: bool, fast: bool) void {
         .{ .x = r.right(), .y = r.y + 30, .w = 14, .h = r.h - 60 },
     };
     var spread: i32 = 14;
-    while (spread >= 2) : (spread -= 1) {
+    while (!cached_corners and spread >= 2) : (spread -= 1) {
         const shadow = Rect{ .x = r.x - spread, .y = r.y - spread + 6, .w = r.w + spread * 2, .h = r.h + spread * 2 };
         const strips = [_]Rect{
             .{ .x = shadow.x, .y = shadow.y, .w = shadow.w, .h = r.y - shadow.y },
@@ -283,12 +387,62 @@ test "fast window shadows exactly match layered shadows at 1x and 2x" {
         var s = Surface{ .pixels = &pixels, .width = 140, .height = 130, .stride = 140 * scale, .scale = scale };
         const r = if (variant == 0) Rect{ .x = 20, .y = 20, .w = 90, .h = 80 } else Rect{ .x = -4, .y = -3, .w = 104, .h = 99 };
         if (variant == 2) s.setClip(.{ .x = 3, .y = 4, .w = 87, .h = 102 });
-        windowShadowImpl(&s, r, active, false);
+        windowShadowImpl(&s, r, active, false, false);
         const expected = pixels;
         pixels = original;
         windowShadow(&s, r, active);
         try std.testing.expectEqualSlices(u32, &expected, &pixels);
     };
+}
+
+test "shadow masks preserve live backdrop changes, minimum geometry and clipped translations" {
+    const std = @import("std");
+    const pixels = try std.testing.allocator.alloc(u32, 144 * 136 * 9);
+    defer std.testing.allocator.free(pixels);
+    const original = try std.testing.allocator.alloc(u32, pixels.len);
+    defer std.testing.allocator.free(original);
+    const expected = try std.testing.allocator.alloc(u32, pixels.len);
+    defer std.testing.allocator.free(expected);
+    for ([_]i32{ 1, 2, 3 }) |scale| for (0..12) |iteration| {
+        // Vary all 32 bits so even zero-alpha RGB canonicalization is covered.
+        for (pixels, 0..) |*p, i| p.* = @truncate((i + iteration * 773) *% 917_813);
+        @memcpy(original, pixels);
+        var s = Surface{ .pixels = pixels.ptr, .width = 144, .height = 136, .stride = 144 * scale, .scale = scale };
+        const r = Rect{ .x = @as(i32, @intCast(iteration)) * 5 - 20, .y = @as(i32, @intCast(iteration)) * 4 - 16, .w = 62 + @as(i32, @intCast(iteration)) * 3, .h = 64 + @as(i32, @intCast(iteration)) * 2 };
+        if (iteration % 3 != 0) s.setClip(.{ .x = 7, .y = 9, .w = 109, .h = 99 });
+        windowShadowImpl(&s, r, iteration % 2 == 0, true, false);
+        @memcpy(expected, pixels);
+        @memcpy(pixels, original);
+        windowShadow(&s, r, iteration % 2 == 0);
+        try std.testing.expectEqualSlices(u32, expected, pixels);
+    };
+}
+
+test "optional native shadow microbenchmark" {
+    const std = @import("std");
+    if (!std.process.hasEnvVarConstant("ORANGE_SHADOW_BENCH")) return;
+    const pixels = try std.testing.allocator.alloc(u32, 1280 * 800 * 4);
+    defer std.testing.allocator.free(pixels);
+    for (pixels, 0..) |*p, i| p.* = @truncate(i *% 917_813);
+    const s = Surface{ .pixels = pixels.ptr, .width = 1280, .height = 800, .stride = 2560, .scale = 2 };
+    const r = Rect{ .x = 160, .y = 120, .w = 580, .h = 410 };
+    // Keep a cold native measurement separate from warm moving-window work.
+    shadow_corner_valid[1][1] = false;
+    var timer = try std.time.Timer.start();
+    windowShadow(&s, r, true);
+    const cold = timer.read();
+    var times: [2]u64 = undefined;
+    for ([_]bool{ false, true }, 0..) |cached, mode| {
+        timer.reset();
+        for (0..160) |frame| {
+            var moved = r;
+            moved.x += @as(i32, @intCast(frame % 11));
+            windowShadowImpl(&s, moved, true, true, cached);
+        }
+        times[mode] = timer.read() / 160;
+    }
+    std.debug.print("\n2x native shadow: cold {d} us; previous straight-edge fast path {d} us; cached corners {d} us (not guest timings)\n", .{ cold / 1000, times[0] / 1000, times[1] / 1000 });
+    std.mem.doNotOptimizeAway(pixels);
 }
 
 pub const Rect = struct {

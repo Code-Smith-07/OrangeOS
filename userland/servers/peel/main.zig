@@ -26,11 +26,11 @@ const Color = gfx.Color;
 // ── Theme ───────────────────────────────────────────────────────────────────
 
 const ORANGE: Color = 0xFF8C1A;
-const WIN_BG: Color = 0xF5F4FC;
-const WIN_TITLE: Color = 0xE8E7F2;
-const WIN_TITLE_ACTIVE: Color = 0xF7F5FC;
-const TEXT: Color = 0x33334C;
-const TEXT_DIM: Color = 0x77758C;
+const WIN_BG: Color = ui.Color.canvas;
+const WIN_TITLE: Color = 0xE9EDF3;
+const WIN_TITLE_ACTIVE: Color = 0xF9FBFE;
+const TEXT: Color = ui.Color.ink;
+const TEXT_DIM: Color = 0x718095;
 
 const TITLE_H: i32 = 38;
 const BORDER_W: i32 = 1;
@@ -434,21 +434,21 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
     // Diffuse the actual underlying desktop before painting opaque content.
     // Limit title writes to the title while rounding the full frame's top edge.
     screen.setClip(Rect.intersect(clip, w.titleBar()));
-    screen.frostTop(w.titleBar(), 13, if (active) WIN_TITLE_ACTIVE else WIN_TITLE, if (active) 196 else 172);
+    screen.frostTop(w.titleBar(), 13, if (active) WIN_TITLE_ACTIVE else WIN_TITLE, if (active) 238 else 221);
     if (w.pixels == null) {
         screen.setClip(Rect.intersect(clip, .{ .x = w.rect.x, .y = w.rect.y + TITLE_H, .w = w.rect.w, .h = w.rect.h - TITLE_H }));
         screen.rounded(w.rect, 13, WIN_BG, 255);
     }
     screen.setClip(clip);
     screen.rounded(.{ .x = w.rect.x + 14, .y = w.rect.y, .w = w.rect.w - 28, .h = 1 }, 0, 0xFFFFFF, 160);
-    screen.rounded(.{ .x = w.rect.x + 1, .y = w.rect.y + TITLE_H - 1, .w = w.rect.w - 2, .h = 1 }, 0, 0x9C95B9, 60);
+    screen.rounded(.{ .x = w.rect.x + 1, .y = w.rect.y + TITLE_H - 1, .w = w.rect.w - 2, .h = 1 }, 0, 0x8797AA, 38);
     const title = w.title()[0..@min(w.title_len, @as(usize, @intCast(@max(1, @divTrunc(w.rect.w - 200, 8)))))];
     font.drawText(&screen, title, w.rect.x + @divTrunc(w.rect.w - font.textWidth(title, 1), 2) + 20, w.rect.y + 16, 1, if (active) TEXT else TEXT_DIM);
-    const colors = [_]u32{ 0xFF605C, 0xFFBD44, 0x00CA70 };
+    const colors = [_]u32{ 0xFF615B, 0xF6BC42, 0x30C85A };
     for (0..3) |i| {
         if (i == 0 and !w.closable) continue;
         const c = w.control(@intCast(i));
-        screen.circle(c.x + 11, c.y + 12, 7, colors[i]);
+        screen.circle(c.x + 11, c.y + 12, 6, colors[i]);
         if (dragging == null and c.contains(cursor_x, cursor_y)) {
             ui.icon(&screen, ([_]ui.Icon{ .close, .minimize, .maximize })[i], c.x + 3, c.y + 4, 16);
         }

@@ -4,6 +4,10 @@ const gfx = @import("gfx");
 const Rect = gfx.Rect;
 
 pub fn paint(s: *const gfx.Surface, frame: Rect, content: Rect, src: [*]const u32, source_w: i32, source_h: i32) void {
+    paintImpl(s, frame, content, src, source_w, source_h, true);
+}
+
+fn paintImpl(s: *const gfx.Surface, frame: Rect, content: Rect, src: [*]const u32, source_w: i32, source_h: i32, fast: bool) void {
     if (source_w <= 0 or source_h <= 0 or content.w <= 0 or content.h <= 0) return;
     const body = Rect{ .x = frame.x, .y = content.y, .w = frame.w, .h = frame.bottom() - content.y };
     const area = Rect.intersect(Rect.intersect(body, s.clip), .{ .x = 0, .y = 0, .w = s.width, .h = s.height });
@@ -13,14 +17,17 @@ pub fn paint(s: *const gfx.Surface, frame: Rect, content: Rect, src: [*]const u3
     var y = area.y * sc;
     while (y < area.bottom() * sc) : (y += 1) {
         const sy = @max(0, @min(source_h * sc - 1, @divTrunc((y - content.y * sc) * source_h, content.h)));
+        const bottom_corner = y >= frame.bottom() * sc - radius;
+        const copy_left = @max(content.x * sc, if (bottom_corner) frame.x * sc + radius else content.x * sc);
+        const copy_right = @min(content.right() * sc, if (bottom_corner) frame.right() * sc - radius else content.right() * sc);
         // Preserve the bulk-copy interior. Only edges and corner pixels need
-        // per-pixel mapping/masking, including when a client is zoomed.
+        // per-pixel mapping/masking, including when a client is zoomed. Bottom
+        // rows still have a wide rectangular interior: do not remap thousands
+        // of opaque pixels merely because the two small corner squares curve.
         var x = area.x * sc;
         while (x < area.right() * sc) {
-            if (source_w == content.w and source_h == content.h and
-                y < (frame.bottom() * sc - radius) and x >= content.x * sc and x < content.right() * sc)
-            {
-                const end = @min(area.right(), content.right()) * sc;
+            if (fast and source_w == content.w and source_h == content.h and x >= copy_left and x < copy_right) {
+                const end = @min(area.right() * sc, copy_right);
                 const from: usize = @intCast(sy * source_w * sc + x - content.x * sc);
                 const to: usize = @intCast(y * s.stride + x);
                 const len: usize = @intCast(end - x);
@@ -38,6 +45,28 @@ pub fn paint(s: *const gfx.Surface, frame: Rect, content: Rect, src: [*]const u3
             x += 1;
         }
     }
+}
+
+test "bottom interior copies match scalar body mapping on changing patterned clients" {
+    const std = @import("std");
+    var source: [100 * 90 * 4]u32 = undefined;
+    var pixels: [140 * 120 * 4]u32 = undefined;
+    for ([_]i32{ 1, 2 }) |scale| for (0..9) |iteration| {
+        for (&source, 0..) |*p, i| p.* = @truncate((i + iteration * 117) *% 78113);
+        for (&pixels, 0..) |*p, i| p.* = @truncate((i + iteration * 1331) *% 16713);
+        const original = pixels;
+        var s = gfx.Surface{ .pixels = &pixels, .width = 140, .height = 120, .stride = 140 * scale, .scale = scale };
+        const frame = Rect{ .x = @as(i32, @intCast(iteration)) * 5 - 15, .y = 1, .w = 102, .h = 97 };
+        const content = Rect{ .x = frame.x + 1, .y = 7, .w = 100, .h = 90 };
+        if (iteration % 3 == 1) s.setClip(.{ .x = 9, .y = 84, .w = 89, .h = 13 });
+        const source_w: i32 = if (iteration % 3 == 2) 50 else 100;
+        const source_h: i32 = if (iteration % 3 == 2) 45 else 90;
+        paintImpl(&s, frame, content, &source, source_w, source_h, false);
+        const expected = pixels;
+        pixels = original;
+        paint(&s, frame, content, &source, source_w, source_h);
+        try std.testing.expectEqualSlices(u32, &expected, &pixels);
+    };
 }
 
 fn bottomCoverage(r: Rect, sc: i32, radius: i32, x: i32, y: i32) u8 {

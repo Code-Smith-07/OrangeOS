@@ -14,9 +14,13 @@ export fn _start() callconv(.c) noreturn {
     var frame = win;
     frame.pixels = &background;
     var surface = ui.surface(&frame);
-    ui.gradient(&surface, .{ .x = 0, .y = 0, .w = 360, .h = 210 }, 0, 0xFAE3E7, 0xDADAF4);
-    surface.frost(.{ .x = 20, .y = 20, .w = 320, .h = 170 }, 22, 0xFFFFFF, 130);
-    ui.icon(&surface, .clock, 281, 33, 34);
+    ui.gradient(&surface, .{ .x = 0, .y = 0, .w = 360, .h = 210 }, 0, 0xF8FAFE, 0xEEF3FA);
+    surface.rounded(.{ .x = 20, .y = 20, .w = 320, .h = 172 }, 16, 0x253247, 10);
+    surface.rounded(.{ .x = 20, .y = 18, .w = 320, .h = 172 }, 16, 0xE1E7EF, 255);
+    surface.rounded(.{ .x = 21, .y = 19, .w = 318, .h = 170 }, 15, 0xFFFFFF, 255);
+    surface.rounded(.{ .x = 42, .y = 28, .w = 24, .h = 3 }, 1, 0xF38B42, 255);
+    surface.fill(.{ .x = 42, .y = 139, .w = 276, .h = 1 }, 0xE1E7EF);
+    ui.icon(&surface, .clock, 282, 34, 30);
     frame.pixels = &staging;
     const length: usize = @intCast(win.stride * win.height * win.scale);
     var msg: [64]u8 = undefined;
@@ -33,28 +37,22 @@ export fn _start() callconv(.c) noreturn {
         const seconds = pulp.wallTime();
         if (!painted or seconds != last) {
             last = seconds;
-            // Frost/gradient are immutable. Build time text privately and
+            // Card and gradient are immutable. Build time text privately and
             // publish only the changed digits, not 75,600 logical pixels.
             @memcpy(staging[0..length], background[0..length]);
             if (seconds) |value| {
                 const date = pulp.calendar.fromEpoch(value, pulp.timezone_minutes);
                 var buf: [64]u8 = undefined;
                 const label = pulp.calendar.dateText(&buf, date);
-                typography.drawText(&frame, label, 42, 43, 1, 0x8A738E);
+                typography.drawText(&frame, label, 42, 49, 1, 0x778397);
                 const clock = pulp.calendar.clockText(&buf, date);
-                typography.drawText(&frame, clock, @divTrunc(win.width - typography.textWidth(clock, 3), 2), 83, 3, 0x554965);
+                typography.drawText(&frame, clock, @divTrunc(win.width - typography.textWidth(clock, 3), 2), 85, 3, 0x253247);
                 const offset = pulp.timezone_minutes;
                 const tz = std.fmt.bufPrint(&buf, "{d}  /  UTC{s}{d:0>2}:{d:0>2}", .{ date.year, if (offset < 0) "-" else "+", @abs(offset) / 60, @abs(offset) % 60 }) catch "";
-                typography.drawText(&frame, tz, 42, 150, 1, 0x786190);
-            } else typography.drawText(&frame, "Hardware clock unavailable", 36, 88, 1, 0x584176);
+                typography.drawText(&frame, tz, 42, 160, 1, 0x778397);
+            } else typography.drawText(&frame, "Hardware clock unavailable", 36, 88, 1, 0x556378);
             const dirty = if (painted) ui.gfx.changedPixelBounds(win.pixels[0..length], staging[0..length], win.stride, win.scale) else ui.Rect{ .x = 0, .y = 0, .w = win.width, .h = win.height };
-            var y = dirty.y * win.scale;
-            while (y < dirty.bottom() * win.scale) : (y += 1) {
-                const start: usize = @intCast(y * win.stride + dirty.x * win.scale);
-                const n: usize = @intCast(dirty.w * win.scale);
-                @memcpy(win.pixels[start..][0..n], staging[start..][0..n]);
-            }
-            if (!dirty.isEmpty()) win.commit(dirty.x, dirty.y, dirty.w, dirty.h);
+            ui.publishRegion(&win, staging[0..length], dirty);
             painted = true;
         }
         pulp.sleepMs(100);

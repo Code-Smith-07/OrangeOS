@@ -22,8 +22,8 @@ const PAD: i32 = 6;
 const WIN_W: i32 = COLS * CELL_W + PAD * 2;
 const WIN_H: i32 = ROWS * CELL_H + PAD * 2;
 
-const BG: u32 = 0x202338;
-const FG: u32 = 0xE4E7FF;
+const BG: u32 = 0x182332;
+const FG: u32 = 0xE3EBF5;
 const ACCENT: u32 = 0xFF8C1A;
 const CURSOR: u32 = 0xFF8C1A;
 

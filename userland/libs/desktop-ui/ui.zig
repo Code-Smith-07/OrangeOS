@@ -2,6 +2,17 @@
 pub const gfx = @import("gfx");
 pub const Surface = gfx.Surface;
 pub const Rect = gfx.Rect;
+/// Aurora's shared surface/ink palette. Colour is intentional, not a layer of
+/// purple tint on every control. Keep readable content more opaque than chrome.
+pub const Color = struct {
+    pub const canvas: u32 = 0xF7F9FC;
+    pub const paper: u32 = 0xFFFFFF;
+    pub const ink: u32 = 0x253247;
+    pub const muted: u32 = 0x778397;
+    pub const line: u32 = 0xE1E7EF;
+    pub const accent: u32 = 0x397BE8;
+    pub const selection: u32 = 0xE5EEFD;
+};
 const font = @import("typography");
 pub const Icon = enum { welcome, terminal, clock, about, windows, appearance, files, trash, chevron_left, chevron_right, chevron_up, document, brand, controls, close, minimize, maximize, pointer };
 pub const Button = struct { id: u32, rect: Rect };
@@ -31,6 +42,21 @@ pub const Pointer = struct {
 
 pub fn surface(win: anytype) Surface {
     return .{ .pixels = win.pixels, .width = win.width, .height = win.height, .stride = win.stride, .scale = win.scale };
+}
+
+/// Publish only a completed rectangle from a private frame. This avoids
+/// exposing multi-pass construction and reduces compositor work; the row copy
+/// is still not the future atomic buffer-ownership protocol.
+pub fn publishRegion(win: anytype, pixels: []const u32, rect: Rect) void {
+    const r = Rect.intersect(rect, .{ .x = 0, .y = 0, .w = win.width, .h = win.height });
+    if (r.isEmpty()) return;
+    var y = r.y * win.scale;
+    while (y < r.bottom() * win.scale) : (y += 1) {
+        const start: usize = @intCast(y * win.stride + r.x * win.scale);
+        const n: usize = @intCast(r.w * win.scale);
+        @memcpy(win.pixels[start..][0..n], pixels[start..][0..n]);
+    }
+    win.commit(r.x, r.y, r.w, r.h);
 }
 
 pub fn gradient(s: *Surface, r: Rect, radius: i32, top: u32, bottom: u32) void {
@@ -131,4 +157,35 @@ test "pointer only activates the originally pressed target" {
     try std.testing.expectEqual(@as(u32, 1), p.update(15, 15, 0, &buttons));
     _ = p.update(15, 15, 1, &buttons);
     try std.testing.expectEqual(@as(u32, 0), p.update(-100, -100, 0, &buttons));
+}
+
+test "private publication clips rows at 1x and 2x and skips empty damage" {
+    const std = @import("std");
+    const Window = struct {
+        width: i32 = 8,
+        height: i32 = 6,
+        stride: i32,
+        scale: i32,
+        pixels: [*]u32,
+        commits: usize = 0,
+        damage: Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+        pub fn commit(self: *@This(), x: i32, y: i32, w: i32, h: i32) void {
+            self.commits += 1;
+            self.damage = .{ .x = x, .y = y, .w = w, .h = h };
+        }
+    };
+    var pixels: [8 * 6 * 4]u32 = undefined;
+    const source = [_]u32{0xABCDEF} ** pixels.len;
+    for ([_]i32{ 1, 2 }) |scale| {
+        @memset(&pixels, 0x123456);
+        var win = Window{ .stride = 8 * scale, .scale = scale, .pixels = &pixels };
+        publishRegion(&win, &source, .{ .x = -2, .y = 2, .w = 5, .h = 8 });
+        try std.testing.expectEqual(@as(usize, 1), win.commits);
+        try std.testing.expectEqualDeep(Rect{ .x = 0, .y = 2, .w = 3, .h = 4 }, win.damage);
+        for (0..@intCast(6 * scale)) |y| for (0..@intCast(8 * scale)) |x| {
+            try std.testing.expectEqual(if (y >= 2 * scale and x < 3 * scale) @as(u32, 0xABCDEF) else @as(u32, 0x123456), pixels[y * @as(usize, @intCast(win.stride)) + x]);
+        };
+        publishRegion(&win, &source, .{ .x = 8, .y = 0, .w = 2, .h = 2 });
+        try std.testing.expectEqual(@as(usize, 1), win.commits);
+    }
 }

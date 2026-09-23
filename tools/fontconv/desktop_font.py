@@ -13,20 +13,27 @@ DEST = ROOT / "userland/libs/typography/inter-atlas.bin"
 SIZES = (13, 26, 39, 52, 65, 78, 91, 104)
 
 
-def bake(source, sizes, axes, dest):
+def bake(source, sizes, axes, dest, metric_axes=None):
     metadata = bytearray()
     pixels = bytearray()
     header_size = len(sizes) * 95 * 12
     for size in sizes:
         font = ImageFont.truetype(str(ROOT / "assets/fonts" / source), size)
         font.set_variation_by_axes(axes)
+        # Retain the established advance-width contract while refining coverage.
+        # Retina body and 1x headings share atlas entries, so selecting weights
+        # by physical atlas size would produce inconsistent text across displays.
+        metrics = font
+        if metric_axes is not None:
+            metrics = ImageFont.truetype(str(ROOT / "assets/fonts" / source), size)
+            metrics.set_variation_by_axes(metric_axes)
         for code in range(32, 127):
             char = chr(code)
             left, top, right, bottom = font.getbbox(char, anchor="ls")
             width, height = right - left, bottom - top
             tile = Image.new("L", (max(1, width), max(1, height)))
             ImageDraw.Draw(tile).text((-left, -top), char, font=font, anchor="ls", fill=255)
-            advance = round(font.getlength(char))
+            advance = round(metrics.getlength(char))
             metadata.extend(struct.pack("<IBBbbB3x", header_size + len(pixels), width, height, left, top + round(size * .8), advance))
             if width and height:
                 pixels.extend(tile.tobytes())
@@ -35,7 +42,7 @@ def bake(source, sizes, axes, dest):
 
 
 def main():
-    bake("Inter.ttf", SIZES, [14, 500], DEST)
+    bake("Inter.ttf", SIZES, [14, 450], DEST, metric_axes=[14, 500])
     bake("JetBrainsMono.ttf", (13,26), [450], DEST.with_name("mono-atlas.bin"))
 
 

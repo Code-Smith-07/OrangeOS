@@ -1,3 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-<defs><linearGradient id="g" x2=".7" y2="1"><stop stop-color="#636e92"/><stop offset="1" stop-color="#20243e"/></linearGradient><linearGradient id="b" x2="0" y2="1"><stop stop-color="#26324f"/><stop offset="1" stop-color="#101a30"/></linearGradient></defs><rect x="5" y="7" width="54" height="54" rx="15" fill="#202135" opacity=".2"/><rect x="4" y="3" width="56" height="56" rx="15" fill="url(#g)" stroke="#acb8d3" stroke-width=".5"/><rect x="10" y="12" width="44" height="40" rx="8" fill="url(#b)" stroke="#73829d" stroke-width=".6"/><path d="M10 23H54" stroke="#76839b" opacity=".5"/><circle cx="16" cy="18" r="1.7" fill="#ff8e9c"/><circle cx="22" cy="18" r="1.7" fill="#ffd28b"/><circle cx="28" cy="18" r="1.7" fill="#83dbc3"/><path d="M18 30L25 36L18 42" fill="none" stroke="#f6fbff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M32 42H43" stroke="#80e4ec" stroke-width="2.5" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="tile" x1=".1" y1="0" x2=".8" y2="1">
+      <stop stop-color="#344963"/><stop offset="1" stop-color="#111e34"/>
+    </linearGradient>
+    <linearGradient id="prompt" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#fbffff"/><stop offset="1" stop-color="#b6e8ef"/>
+    </linearGradient>
+  </defs>
+  <rect x="5" y="6" width="54" height="54" rx="14" fill="#111e34" opacity=".16"/>
+  <rect x="4" y="3" width="56" height="56" rx="14" fill="url(#tile)"/>
+  <rect x="4.4" y="3.4" width="55.2" height="55.2" rx="13.6" fill="none" stroke="#fff" stroke-opacity=".25" stroke-width=".8"/>
+  <path d="M5 20H59" stroke="#eef8ff" stroke-opacity=".11" stroke-width=".75"/>
+  <circle cx="14" cy="13.3" r="1.55" fill="#fb8c84"/>
+  <circle cx="20" cy="13.3" r="1.55" fill="#f4ce87"/>
+  <circle cx="26" cy="13.3" r="1.55" fill="#86d5b5"/>
+  <path d="M17 28L26 36L17 44" fill="none" stroke="url(#prompt)" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M33 44H47" stroke="#83e6d2" stroke-width="3" stroke-linecap="round"/>
 </svg>

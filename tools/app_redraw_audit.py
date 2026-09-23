@@ -30,9 +30,11 @@ def audit(name, blank, probe, hover=None):
                 changed += g.region(*probe) != baseline
     time.sleep(1)
     frames = [(int(a), int(b)) for a, b in re.findall(r'perf: frame (\d+)ms area (\d+)', g.log()[offset:])]
+    marker = {'Welcome': 'grove: painted', 'About': 'about: painted', 'Files': 'files: painted', 'Trash': 'files: painted'}.get(name)
     result = dict(app=name, blank_clicks=4, sampled_frames=samples,
                   transient_changed_samples=changed,
                   settled_pixels_restored=g.region(*probe) == baseline,
+                  client_repaints=g.log()[offset:].count(marker) if marker else None,
                   scene_frames=sum(area > 50000 for _, area in frames),
                   max_guest_frame_ms=max((ms for ms, _ in frames), default=0))
     if hover:
@@ -46,6 +48,11 @@ def audit(name, blank, probe, hover=None):
     g.screenshot(name.lower())
     results.append(result)
     print(json.dumps(result), flush=True)
+    assert result['settled_pixels_restored'], f'{name}: blank clicks changed settled pixels'
+    if marker:
+        assert result['client_repaints'] == 0, f'{name}: empty clicks caused client painting'
+    if hover:
+        assert result['hover_pixels_restored'], f'{name}: hover pixels did not restore'
 
 try:
     g.until(lambda: 'grove: painted' in g.log() and 'squeeze: window' in g.log(), 'desktop', 45)

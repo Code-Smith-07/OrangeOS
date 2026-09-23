@@ -8,7 +8,7 @@ const Surface = gfx.Surface;
 const pulp = @import("pulp");
 const overview = @import("overview.zig");
 
-pub const BAR_H = 36;
+pub const BAR_H = 28;
 pub const DOCK_H = 92;
 pub const Action = struct {
     pub const none: u16 = 0;
@@ -57,35 +57,44 @@ pub const State = struct {
     notice: []const u8 = "",
 };
 
-const WHITE = 0xF8F7FF;
-const INK = 0x292B49;
-const MUTED = 0xB4B7D3;
+const WHITE = 0xFFFFFF;
+const INK = ui.Color.ink;
+const MUTED = 0x69788D;
+const ACCENT = ui.Color.accent;
 const COLORS = [_]u32{ 0xFF9258, 0x7879F1, 0xFF5B86, 0x39CFC0, 0x63B5FF, 0xA895F3 };
 const LABELS = [_][]const u8{ "Files", "Welcome", "Terminal", "Clock", "About", "Windows", "Appearance", "Trash" };
 const DOCK_ACTIONS = [_]u16{ Action.files, Action.home, Action.terminal, Action.clock, Action.about, Action.overview, Action.settings, Action.trash };
 const DOCK_ICONS = [_]ui.Icon{ .files, .welcome, .terminal, .clock, .about, .windows, .appearance, .trash };
 const DOCK_APPS = [_]?usize{ 4, 0, 1, 2, 3, null, null, 5 };
 const PALETTES = [_][5]u32{
-    .{ 0x352D90, 0xA878DC, 0xF7B6CB, 0xFF6F50, 0xF8C878 },
-    .{ 0x09265E, 0x4876D2, 0x7BE5D7, 0x168BAE, 0x9CEFC2 },
-    .{ 0x311A63, 0x905DCF, 0xFDA8DB, 0xCE428A, 0xFA9C74 },
+    .{ 0x182E58, 0x667FB8, 0xCEB6D8, 0xEE9D91, 0xF1CCAA },
+    .{ 0x102E51, 0x357B9A, 0xAADCD6, 0x368EAE, 0x9CCDC9 },
+    .{ 0x2B2659, 0x7669A7, 0xD6BBDF, 0xA56CA2, 0xE7B8BA },
 };
 
-/// Smooth ribbons, in normalized coordinates. Integer math keeps the software
-/// renderer predictable; wallpaper is cached once per appearance change.
+/// Original "Silk" wallpaper: broad folds, luminous seams and a quiet sky.
+/// Integer smoothstep gradients are rendered at native backing resolution and
+/// cached once per appearance change; no image decoding in the frame loop.
 pub fn wallpaperPixel(x: i32, y: i32, width: i32, height: i32, palette: usize) u32 {
     const u = @divTrunc(x * 10000, @max(width, 1));
     const v = @divTrunc(y * 10000, @max(height, 1));
     const p = PALETTES[palette % PALETTES.len];
-    const a = u - 7200;
-    const ribbon = 1800 + @divTrunc(a * a, 11500) + @divTrunc(u, 4);
-    const b = u - 1900;
-    const lower = 6400 + @divTrunc(b * b, 24000) - @divTrunc(u, 6);
-    const top = gfx.lerp(p[0], p[1], fraction(v, ribbon));
-    const middle = gfx.lerp(p[2], p[3], fraction(v - ribbon, lower - ribbon));
-    const bottom = gfx.lerp(p[4], p[3], fraction(v - lower, 10000 - lower));
-    const first = gfx.lerp(top, middle, fraction(v - ribbon + 12, 24));
-    return gfx.lerp(first, bottom, fraction(v - lower + 12, 24));
+    const a = u - 3400;
+    const fold = 7100 - @divTrunc(u * 57, 100) + @divTrunc(a * a, 21000);
+    const lower = 8800 - @divTrunc(u * 30, 100) + @divTrunc((u - 7200) * (u - 7200), 41000);
+    const sky = gfx.lerp(p[0], p[1], smooth(v + @divTrunc(u, 4), 10500));
+    const face = gfx.lerp(p[2], p[3], smooth(v - fold + 300, 4400));
+    var color = gfx.lerp(sky, face, smooth(v - fold + 450, 900));
+    const foot = gfx.lerp(p[4], p[3], smooth(v - lower, 3500));
+    color = gfx.lerp(color, foot, smooth(v - lower + 180, 360));
+    // Subtle reflected light along the main fold, not a hard aliased edge.
+    const glow = @max(0, 260 - @as(i32, @intCast(@abs(v - fold + 180))));
+    return gfx.lerp(color, 0xF5F2FF, @intCast(@divTrunc(glow, 10)));
+}
+
+fn smooth(value: i32, total: i32) u8 {
+    const t: i32 = fraction(value, total);
+    return @intCast(@divTrunc(t * t * (765 - 2 * t), 65025));
 }
 
 fn fraction(value: i32, total: i32) u8 {
@@ -148,6 +157,7 @@ pub fn hit(s: *const Surface, state: *const State, x: i32, y: i32) u16 {
                 for (0..3) |i| if (paletteCard(s, i).contains(x, y)) return Action.wallpaper + @as(u16, @intCast(i));
                 if ((Rect{ .x = p.x + 20, .y = p.y + 210, .w = 320, .h = 40 }).contains(x, y)) return Action.desktop;
                 if (hardwareButton(s).contains(x, y)) return Action.hardware;
+                return Action.keep_popup;
             },
             .calendar => {
                 for ([_]u16{ Action.previous_month, Action.next_month, Action.today, Action.clock }) |action| {
@@ -203,7 +213,11 @@ fn glassMaterial(s: *const Surface, r: Rect, radius: i32, opacity: u8, cache: ?*
             s.rounded(.{ .x = r.x - spread, .y = r.y + 3, .w = r.w + spread * 2, .h = r.h + spread }, radius + spread, 0x17182F, 4);
         }
     }
-    if (cache) |material| material.paint(s, r, radius, 0x22243D, @min(opacity, 168)) else s.frost(r, radius, 0x22243D, @min(opacity, 168));
+    if (cache) |material| material.paint(s, r, radius, 0xF5F8FF, @min(opacity, 226)) else s.frost(r, radius, 0xF5F8FF, @min(opacity, 226));
+    glassRim(s, r, radius);
+}
+
+fn glassRim(s: *const Surface, r: Rect, radius: i32) void {
     // Fine luminous rim, without filling the interior a second time.
     const inner = Rect{ .x = r.x + 1, .y = r.y + 1, .w = r.w - 2, .h = r.h - 2 };
     var rim = s.*;
@@ -244,7 +258,7 @@ pub fn hoverDamage(s: *const Surface, state: *const State, old: u16, new: u16) R
         }
     }
     if (state.popup != .none and state.popup != .overview and (old >= Action.window or new >= Action.window or
-        old == Action.desktop or new == Action.desktop or state.popup == .menu))
+        old == Action.desktop or new == Action.desktop or old == Action.hardware or new == Action.hardware or state.popup == .menu))
         damage = Rect.unionWith(damage, popupRect(s, state.popup));
     return damage;
 }
@@ -266,7 +280,7 @@ pub fn calendarButton(s: *const Surface, action: u16) Rect {
 fn paintCalendar(s: *const Surface, state: *const State) void {
     const p = popupRect(s, .calendar);
     const seconds = state.seconds orelse {
-        text(s, "Hardware clock unavailable", p.x + 20, p.y + 30, WHITE);
+        text(s, "Hardware clock unavailable", p.x + 20, p.y + 30, INK);
         return;
     };
     const date = pulp.calendar.fromEpoch(seconds, pulp.timezone_minutes);
@@ -275,15 +289,15 @@ fn paintCalendar(s: *const Surface, state: *const State) void {
     const weekdays = [_][]const u8{ "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
     var buf: [64]u8 = undefined;
     // A tinted date tile inside the frosted panel, rather than fake weather.
-    s.rounded(.{ .x = p.x + 12, .y = p.y + 12, .w = 336, .h = 90 }, 15, 0xAD98F8, 40);
-    text(s, weekdays[date.weekday], p.x + 25, p.y + 27, 0xFFBCAC);
+    s.rounded(.{ .x = p.x + 12, .y = p.y + 12, .w = 336, .h = 90 }, 15, WHITE, 150);
+    text(s, weekdays[date.weekday], p.x + 25, p.y + 27, ACCENT);
     const day = @import("std").fmt.bufPrint(&buf, "{d}", .{date.day}) catch "";
-    font.drawText(s, day, p.x + 24, p.y + 48, 3, WHITE);
+    font.drawText(s, day, p.x + 24, p.y + 48, 3, INK);
     const time = @import("std").fmt.bufPrint(&buf, "{d}:{d:0>2} {s}", .{ if (date.hour % 12 == 0) @as(u8, 12) else date.hour % 12, date.minute, if (date.hour < 12) "AM" else "PM" }) catch "";
-    text(s, time, p.x + 96, p.y + 56, WHITE);
-    text(s, "LOCAL TIME", p.x + 96, p.y + 77, MUTED);
+    text(s, time, p.x + 96, p.y + 56, INK);
+    text(s, "Local time", p.x + 96, p.y + 77, MUTED);
     const title = @import("std").fmt.bufPrint(&buf, "{s} {d}", .{ months[month.month - 1], month.year }) catch "";
-    text(s, title, p.x + 24, p.y + 131, WHITE);
+    text(s, title, p.x + 24, p.y + 131, INK);
     const names = [_][]const u8{ "S", "M", "T", "W", "T", "F", "S" };
     for (names, 0..) |name, i| {
         centered(s, name, .{ .x = p.x + 23 + @as(i32, @intCast(i)) * 45, .y = p.y + 160, .w = 42, .h = 24 }, MUTED);
@@ -293,9 +307,9 @@ fn paintCalendar(s: *const Surface, state: *const State) void {
         const index: i32 = @as(i32, month.weekday) + d - 1;
         const r = Rect{ .x = p.x + 23 + @mod(index, 7) * 45, .y = p.y + 188 + @divTrunc(index, 7) * 30, .w = 42, .h = 28 };
         const today = month.year == date.year and month.month == date.month and d == date.day;
-        if (today) s.rounded(.{ .x = r.x + 7, .y = r.y, .w = 28, .h = 28 }, 14, 0xF2768E, 255);
+        if (today) s.rounded(.{ .x = r.x + 7, .y = r.y, .w = 28, .h = 28 }, 14, ACCENT, 255);
         const label = @import("std").fmt.bufPrint(&buf, "{d}", .{d}) catch "";
-        centered(s, label, r, WHITE);
+        centered(s, label, r, if (today) WHITE else INK);
     }
     for ([_]u16{ Action.previous_month, Action.next_month, Action.today, Action.clock }) |action| {
         const r = calendarButton(s, action);
@@ -303,8 +317,8 @@ fn paintCalendar(s: *const Surface, state: *const State) void {
             s.rounded(r, 9, WHITE, if (state.hover == action) 240 else 200);
             ui.icon(s, if (action == Action.previous_month) .chevron_left else .chevron_right, r.x + 6, r.y + 4, 20);
         } else {
-            s.rounded(r, 9, 0xC5B4FF, if (state.hover == action) 110 else 38);
-            centered(s, if (action == Action.today) "Today" else "Open Clock", r, WHITE);
+            s.rounded(r, 9, if (state.hover == action) 0xD7E5FB else WHITE, 210);
+            centered(s, if (action == Action.today) "Today" else "Open Clock", r, ACCENT);
         }
     }
 }
@@ -312,6 +326,9 @@ fn paintCalendar(s: *const Surface, state: *const State) void {
 // Two bounded caches consume 4.8 MB, preserving the exact frosted pixels.
 var bar_material: gfx.FrostCache(300_000) = .{};
 var dock_material: gfx.FrostCache(300_000) = .{};
+// One reusable bounded cache for the mutually exclusive shell panels. Unlike
+// snapshotting a finished UI, exact source comparison keeps live windows live.
+var panel_material: gfx.FrostCache(1_200_000) = .{};
 var overview_base: overview.Base = .{};
 var calendar_base: overview.Base = .{};
 var calendar_underlay: overview.Base = .{};
@@ -374,92 +391,99 @@ fn paintOverviewCards(s: *const Surface, state: *const State) void {
         const r = windowCard(s, i);
         if (!Rect.overlaps(r, s.clip)) continue;
         const item = state.items[i];
-        s.rounded(r, 12, if (state.hover == Action.window + i) 0xB4A5F7 else 0xE9E5FF, if (state.hover == Action.window + i) 90 else 28);
+        s.rounded(r, 12, if (state.hover == Action.window + i) 0xDAE8FD else WHITE, 195);
         s.rounded(.{ .x = r.x + 10, .y = r.y + 9, .w = 76, .h = 46 }, 5, COLORS[item.app % 6], 255);
         if (item.pixels) |pixels| previews[i].paint(s, pixels, item.id, item.revision, item.width, item.height, r.x + 12, r.y + 15);
-        text(s, item.title[0..@min(26, item.title.len)], r.x + 98, r.y + 17, WHITE);
-        text(s, if (item.hidden) "Minimized - restore" else "Open - switch here", r.x + 98, r.y + 40, MUTED);
+        text(s, item.title[0..@min(26, item.title.len)], r.x + 98, r.y + 17, INK);
+        text(s, if (item.hidden) "Minimized" else "Open window", r.x + 98, r.y + 40, MUTED);
     }
 }
 
 pub fn paint(s: *const Surface, state: *const State) void {
     // Translucent top strip with only real, actionable menus/status.
-    bar_material.paint(s, .{ .x = 0, .y = 0, .w = s.width, .h = BAR_H }, 0, 0xF4ECFF, 186);
-    ui.icon(s, .brand, 12, 6, 24);
-    text(s, "Orange OS", 42, 14, INK);
-    text(s, state.active[0..@min(state.active.len, 25)], 162, 14, 0x565270);
-    text(s, "Windows", 398, 14, INK);
-    text(s, "Desktop", 510, 14, INK);
-    if (state.popup == .calendar) s.rounded(.{ .x = s.width - 242, .y = 4, .w = 232, .h = 28 }, 9, WHITE, 100);
+    bar_material.paint(s, .{ .x = 0, .y = 0, .w = s.width, .h = BAR_H }, 0, 0xF7FAFF, 222);
+    ui.icon(s, .brand, 14, 4, 20);
+    text(s, "Orange OS", 42, 10, INK);
+    text(s, state.active[0..@min(state.active.len, 25)], 162, 10, INK);
+    text(s, "Windows", 398, 10, INK);
+    text(s, "Desktop", 510, 10, INK);
+    if (state.popup == .calendar) s.rounded(.{ .x = s.width - 242, .y = 3, .w = 232, .h = 22 }, 7, WHITE, 100);
     if (state.seconds) |seconds| {
         const date = pulp.calendar.fromEpoch(seconds, pulp.timezone_minutes);
         var date_buf: [32]u8 = undefined;
         var time_buf: [32]u8 = undefined;
         var bar_buf: [64]u8 = undefined;
         const label = @import("std").fmt.bufPrint(&bar_buf, "{s}  {s}", .{ pulp.calendar.dateText(&date_buf, date), pulp.calendar.clockText(&time_buf, date) }) catch "";
-        text(s, label, s.width - font.textWidth(label, 1) - 18, 14, INK);
-    } else text(s, "Clock unavailable", s.width - 180, 14, INK);
-    ui.icon(s, .controls, s.width - 280, 6, 24);
+        text(s, label, s.width - font.textWidth(label, 1) - 18, 10, INK);
+    } else text(s, "Clock unavailable", s.width - 180, 10, INK);
+    ui.icon(s, .controls, s.width - 278, 4, 20);
 
     const dock = dockRect(s);
     // A translucent pearl shelf with a fine rim and separate utility groups.
-    dock_material.paintShadowed(s, dock, 25, 0xEAEAFB, 104);
-    s.rounded(.{ .x = dock.x + 20, .y = dock.y, .w = dock.w - 40, .h = 1 }, 0, 0xFFFFFF, 185);
-    s.rounded(.{ .x = dock.x + 410, .y = dock.y + 20, .w = 1, .h = 49 }, 0, 0x686583, 70);
-    s.rounded(.{ .x = dock.x + 575, .y = dock.y + 20, .w = 1, .h = 49 }, 0, 0x686583, 70);
+    const shelf = Rect{ .x = dock.x, .y = dock.y + 7, .w = dock.w, .h = dock.h - 10 };
+    dock_material.paintShadowed(s, shelf, 20, 0xF5F9FF, 146);
+    s.rounded(.{ .x = shelf.x + 20, .y = shelf.y, .w = shelf.w - 40, .h = 1 }, 0, 0xFFFFFF, 185);
+    s.rounded(.{ .x = dock.x + 410, .y = dock.y + 24, .w = 1, .h = 41 }, 0, 0x778397, 60);
+    s.rounded(.{ .x = dock.x + 575, .y = dock.y + 24, .w = 1, .h = 41 }, 0, 0x778397, 60);
     var drawing = s.*;
     for (DOCK_ACTIONS, 0..) |action, i| {
         const r = dockItem(s, i);
         const hovered = state.hover == action;
-        if (hovered) s.rounded(.{ .x = r.x, .y = r.y - 2, .w = r.w, .h = r.h }, 19, WHITE, 42);
-        ui.icon(&drawing, DOCK_ICONS[i], r.x + (if (hovered) @as(i32, 3) else 6), r.y + (if (hovered) @as(i32, -4) else 0), if (hovered) 66 else 60);
+        if (hovered) s.rounded(.{ .x = r.x + 2, .y = r.y, .w = r.w - 4, .h = 65 }, 16, WHITE, 90);
+        // Fixed optical size avoids abrupt magnification jumps on pointer entry.
+        ui.icon(&drawing, DOCK_ICONS[i], r.x + 8, r.y + 3, 56);
         if (DOCK_APPS[i]) |app| if (state.running[app]) {
-            s.circle(r.x + 36, r.y + 70, 2, 0x4C5277);
+            s.circle(r.x + 36, r.y + 70, 2, INK);
         };
         if (hovered) {
             const tw = font.textWidth(LABELS[i], 1) + 24;
             const tag = Rect{ .x = r.x + @divTrunc(r.w - tw, 2), .y = dock.y - 40, .w = tw, .h = 28 };
             glass(s, tag, 8, 242);
-            centered(s, LABELS[i], tag, WHITE);
+            centered(s, LABELS[i], tag, INK);
         }
     }
 
     if (state.notice.len > 0) {
         const toast = Rect{ .x = @divTrunc(s.width - 400, 2), .y = dock.y - 88, .w = 400, .h = 36 };
         glass(s, toast, 12, 242);
-        centered(s, state.notice, toast, WHITE);
+        centered(s, state.notice, toast, INK);
     }
     if (state.popup == .none) return;
     const p = popupRect(s, state.popup);
     if (!Rect.overlaps(popupExtent(s, state.popup), s.clip)) return;
     const material_started = if (pulp.desktop_profile) pulp.uptimeMs() else 0;
-    if (state.popup == .calendar) glassMaterial(s, p, 18, 242, &calendar_material) else glass(s, p, 18, 242);
+    if (state.popup == .calendar) {
+        glassMaterial(s, p, 18, 242, &calendar_material);
+    } else {
+        panel_material.paintShadowed(s, p, 18, 0xF5F8FF, 226);
+        glassRim(s, p, 18);
+    }
     const material_finished = if (pulp.desktop_profile) pulp.uptimeMs() else 0;
     switch (state.popup) {
         .menu => {
-            text(s, "A little more possibility.", p.x + 18, p.y + 24, MUTED);
+            text(s, "Orange OS", p.x + 18, p.y + 24, MUTED);
             const labels = [_][]const u8{ "Welcome to Orange", "New terminal", "All windows", "About Orange OS" };
             const actions = [_]u16{ Action.home, Action.new_terminal, Action.overview, Action.about };
             for (labels, 0..) |label, i| {
                 const r = Rect{ .x = p.x + 12, .y = p.y + 56 + @as(i32, @intCast(i)) * 35, .w = p.w - 24, .h = 33 };
-                if (state.hover == actions[i]) s.rounded(r, 7, 0xA18CEF, 100);
-                text(s, label, r.x + 10, r.y + 12, WHITE);
+                if (state.hover == actions[i]) s.rounded(r, 7, 0xDAE8FD, 240);
+                text(s, label, r.x + 10, r.y + 12, INK);
             }
         },
         .overview => {
-            font.drawText(s, "Your workspace", p.x + 22, p.y + 24, 2, WHITE);
-            text(s, "Every open window. Click to switch or restore.", p.x + 22, p.y + 62, MUTED);
-            if (state.count == 0) text(s, "A fresh start. Open an app from the dock.", p.x + 22, p.y + 116, WHITE);
+            font.drawText(s, "Your workspace", p.x + 22, p.y + 24, 2, INK);
+            text(s, "All your open windows, together.", p.x + 22, p.y + 62, MUTED);
+            if (state.count == 0) text(s, "Open an app from the dock to get started.", p.x + 22, p.y + 116, INK);
             overview_base.capture(s, p);
             paintOverviewCards(s, state);
         },
         .settings => {
-            font.drawText(s, "Make it yours", p.x + 20, p.y + 25, 2, WHITE);
-            text(s, "DESKTOP WALLPAPER", p.x + 20, p.y + 78, MUTED);
+            font.drawText(s, "Appearance", p.x + 20, p.y + 25, 2, INK);
+            text(s, "A different atmosphere", p.x + 20, p.y + 78, MUTED);
             const names = [_][]const u8{ "Daybreak", "Lagoon", "Orchid" };
             for (0..3) |i| {
                 const r = paletteCard(s, i);
-                s.rounded(.{ .x = r.x - 3, .y = r.y - 3, .w = r.w + 6, .h = r.h + 6 }, 10, if (state.palette == i) WHITE else 0x656278, 255);
+                s.rounded(.{ .x = r.x - 3, .y = r.y - 3, .w = r.w + 6, .h = r.h + 6 }, 10, if (state.palette == i) ACCENT else 0xD2DAE5, 255);
                 var yy = r.y * s.scale;
                 while (yy < r.bottom() * s.scale) : (yy += 1) {
                     var xx = r.x * s.scale;
@@ -474,21 +498,22 @@ pub fn paint(s: *const Surface, state: *const State) void {
                         s.putPhysical(xx, yy, gfx.lerp(s.getPhysical(xx, yy), color, coverage));
                     }
                 }
-                centered(s, names[i], .{ .x = r.x, .y = r.bottom() + 10, .w = r.w, .h = 14 }, WHITE);
+                centered(s, names[i], .{ .x = r.x, .y = r.bottom() + 10, .w = r.w, .h = 14 }, INK);
             }
             const button = Rect{ .x = p.x + 20, .y = p.y + 210, .w = 320, .h = 40 };
-            s.rounded(button, 10, if (state.hover == Action.desktop) 0x8173CB else 0x555071, 255);
-            centered(s, "Show / restore desktop", button, WHITE);
-            text(s, "THIS SESSION", p.x + 20, p.y + 280, MUTED);
+            s.rounded(button, 10, if (state.hover == Action.desktop) 0xE0EAFE else WHITE, 220);
+            centered(s, "Show / restore desktop", button, ACCENT);
+            s.rounded(.{ .x = p.x + 20, .y = p.y + 269, .w = 320, .h = 1 }, 0, 0xD2DAE5, 180);
+            text(s, "Display & session", p.x + 20, p.y + 286, INK);
             var buffer: [64]u8 = undefined;
             const dimensions = @import("std").fmt.bufPrint(&buffer, "Display  {d} x {d}  /  {d}x UI", .{ s.width * s.scale, s.height * s.scale, s.scale }) catch "Display information unavailable";
-            text(s, dimensions, p.x + 20, p.y + 305, WHITE);
+            text(s, dimensions, p.x + 20, p.y + 311, MUTED);
             text(s, "Green button: zoom / restore", p.x + 20, p.y + 328, MUTED);
             text(s, "Wallpaper choice resets on reboot.", p.x + 20, p.y + 358, MUTED);
             const hardware = hardwareButton(s);
-            s.rounded(hardware, 10, if (state.hover == Action.hardware) 0x8173CB else 0x555071, 255);
+            s.rounded(hardware, 10, if (state.hover == Action.hardware) 0xE0EAFE else WHITE, 220);
             ui.icon(s, .controls, hardware.x + 10, hardware.y + 8, 24);
-            text(s, "Mac hardware status", hardware.x + 46, hardware.y + 14, WHITE);
+            text(s, "Mac hardware status", hardware.x + 46, hardware.y + 14, INK);
         },
         .calendar => {
             // Own a finished material layer before content. Hover/date updates

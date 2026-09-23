@@ -9,21 +9,25 @@ var json_memory: [32768]u8 = undefined;
 fn paint(win: *const libpeel.Window, state: model.Model) void {
     var s = ui.surface(win);
     s.pixels = &staging;
-    ui.gradient(&s, .{ .x = 0, .y = 0, .w = 480, .h = 330 }, 0, 0xF4EAFB, 0xD8E8FA);
-    ui.icon(&s, .controls, 22, 22, 34);
-    ui.label(&s, "Mac hardware", 72, 28, 2, 0x36354E);
-    ui.label(&s, "Live host readback / controls not enabled", 24, 67, 1, 0x625979);
+    ui.gradient(&s, .{ .x = 0, .y = 0, .w = 480, .h = 330 }, 0, 0xFCFDFE, 0xF1F5FA);
+    ui.icon(&s, .controls, 23, 23, 34);
+    ui.label(&s, "Mac hardware", 73, 28, 2, 0x253247);
+    // Never describe an expired or absent companion as connected.
+    ui.label(&s, if (state.connection == .fresh) "Connected to your Mac. Read-only, by design." else "Host readback / controls not enabled", 24, 68, 1, 0x778397);
     if (state.connection == .disconnected or state.connection == .invalid) {
-        ui.label(&s, if (state.connection == .invalid) "Host data unavailable / invalid snapshot" else "Companion disconnected or unavailable", 24, 125, 1, 0x7D5274);
-        ui.label(&s, if (state.connection == .invalid) "Waiting for a valid v1 host hardware snapshot." else "Start a bridge-enabled VM session to connect.", 24, 160, 1, 0x625979);
-        @memcpy(win.pixels[0..@intCast(win.stride * win.height * win.scale)], staging[0..@intCast(win.stride * win.height * win.scale)]);
-        win.commitAll();
+        s.rounded(.{ .x = 18, .y = 96, .w = 444, .h = 192 }, 14, 0xE1E7EF, 255);
+        s.rounded(.{ .x = 19, .y = 97, .w = 442, .h = 190 }, 13, 0xFFFFFF, 255);
+        ui.icon(&s, .controls, 215, 120, 48);
+        ui.label(&s, if (state.connection == .invalid) "Host data unavailable / invalid snapshot" else "Companion disconnected or unavailable", 42, 200, 1, 0x253247);
+        ui.label(&s, if (state.connection == .invalid) "Waiting for a valid v1 host hardware snapshot." else "Start a bridge-enabled VM session to connect.", 32, 231, 1, 0x778397);
+        ui.publishRegion(win, &staging, .{ .x = 0, .y = 0, .w = win.width, .h = win.height });
         return;
     }
     for (state.rows, [_][]const u8{ "Wi-Fi", "Bluetooth", "Brightness" }, 0..) |row, title, i| {
         const y: i32 = 96 + @as(i32, @intCast(i)) * 64;
-        s.rounded(.{ .x = 18, .y = y, .w = 444, .h = 56 }, 14, 0xFFFFFF, 150);
-        ui.label(&s, title, 32, y + 12, 1, 0x393C5C);
+        s.rounded(.{ .x = 18, .y = y, .w = 444, .h = 56 }, 11, 0xE1E7EF, 255);
+        s.rounded(.{ .x = 19, .y = y + 1, .w = 442, .h = 54 }, 10, 0xFFFFFF, 255);
+        ui.label(&s, title, 32, y + 13, 1, 0x253247);
         var buf: [80]u8 = undefined;
         const label: []const u8 = switch (row.reading) {
             .on => "On (Mac)",
@@ -41,12 +45,18 @@ fn paint(win: *const libpeel.Window, state: model.Model) void {
                 .stale => "Stale / awaiting host",
             },
         };
-        ui.label(&s, label, 190, y + 12, 1, 0x635783);
-        ui.label(&s, row.source.text(), 32, y + 33, 1, 0x82768E);
+        s.setClip(.{ .x = 190, .y = y + 4, .w = 256, .h = 25 });
+        ui.label(&s, label, 190, y + 13, 1, switch (row.reading) {
+            .on, .percent => 0x287D67,
+            .off => 0x556378,
+            .status => 0x778397,
+        });
+        s.setClip(.{ .x = 32, .y = y + 29, .w = 414, .h = 22 });
+        ui.label(&s, row.source.text(), 32, y + 35, 1, 0x8994A5);
+        s.resetClip();
     }
-    ui.label(&s, "No radio, pairing or brightness changes are made.", 24, 302, 1, 0x625979);
-    @memcpy(win.pixels[0..@intCast(win.stride * win.height * win.scale)], staging[0..@intCast(win.stride * win.height * win.scale)]);
-    win.commitAll();
+    ui.label(&s, "No radio, pairing or brightness changes are made.", 24, 306, 1, 0x778397);
+    ui.publishRegion(win, &staging, .{ .x = 0, .y = 0, .w = win.width, .h = win.height });
 }
 export fn _start() callconv(.c) noreturn {
     const win = libpeel.createWindow("Mac hardware", 480, 330, 390, 185) catch pulp.exit(1);
