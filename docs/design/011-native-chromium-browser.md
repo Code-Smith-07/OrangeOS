@@ -410,7 +410,8 @@ Local host audit: arm64 Mac with 16 GiB RAM, Xcode 26.3 (17C529), macOS SDK
 26.2 and QEMU 11.1.0. The external APFS project volume has about 268 GiB free
 at audit time, above our 100 GiB planning reserve. QEMU advertises only TCG
 for x86 execution and no accelerated virtio-GPU variant. This is not guest
-GPU/video qualification. `depot_tools` remains missing from the build environment.
+GPU/video qualification. `depot_tools` was missing at this audit; Phase 1b below
+installs pinned tools in the external workspace, not in the global shell PATH.
 
 Reproduce the verified profile/runtime and desktop checks:
 
@@ -452,8 +453,9 @@ Reproduce the real budget boot separately with
 `ORANGE_VM_PROFILE=browser ./scripts/budget.sh`; it rebuilds the development
 disk and USB image, so do not run it alongside a VM using those images.
 
-The last command currently exits 2 for missing `depot_tools`; that is an
-expected prerequisite failure, not a successful reference build. Runtime and
+The plain preflight command exits 2 if `depot_tools` is absent from PATH;
+`python3 tools/browser_reference.py preflight` uses the pinned workspace tools.
+Passing the preliminary check is not a successful reference build. Runtime and
 desktop qualification use disposable guest disk writes. For evidence on the
 external drive, create `build/tmp` and set `TMPDIR` to its absolute path before
 running the Python tests (keep Unix socket paths short).
@@ -466,6 +468,42 @@ browser sandbox is installed by this profile work.
 Build-layout checks follow the upstream [macOS build instructions](https://chromium.googlesource.com/chromium/src/+/main/docs/mac_build_instructions.md)
 (checked 2026-09-23). The 100 GiB threshold is our planning reserve, not a quoted
 macOS minimum. Pin-specific SDK/toolchain compatibility still needs a build.
+
+### 11.2 Phase 1b: pinned upstream source and external workspace
+
+Implemented and exercised on 2026-09-23:
+
+- `tools/browser/upstream.json` locks Chromium **154.0.8037.58** to
+  `a654841425914cbb703a2931e07b70a83aedbafd` and depot_tools to
+  `910f54316dac310fadee0c453c4d460c0c446189`. These are real downloaded Git
+  checkouts, not a version string attached to a mock browser.
+- `tools/browser_reference.py` creates a shallow checkout and exposes separate
+  tools/source/sync/hooks/generate/build steps. It checks origins, revisions,
+  tracked changes, configuration, stage order and the pinned source's SDK/Clang
+  declarations. A failed stage invalidates downstream success records.
+- Source, build output, tool downloads, CIPD/vpython/XDG caches and temporary
+  downloads live under the external project's ignored `build/browser` directory.
+  A disconnected drive, internal fallback, non-APFS filesystem, whitespace in
+  the path, insufficient free-space reserve or conflicting configuration stops
+  setup. No automatic cleanup, global shell edits or guest-image writes occur.
+- The pinned tools bootstrap and source checkout passed. Preliminary preflight
+  passes with these tools in the subprocess environment. The SDK minimum is
+  **15**, while upstream official builds use **26.5**; this Mac's **26.2** clears
+  the development minimum but does not establish official-toolchain parity.
+- The declared compiler package is `llvmorg-24-init-3796-g20e97c4b-27`.
+  The actual downloaded compiler and compiled target are separate later checks.
+  Host build settings use an arm64 component build, no debug symbols, local
+  execution and two compile jobs; guest memory remains the 4 GiB profile.
+- **34 unit tests passed** across setup/profile/preflight, including refusing
+  changed pins/configuration, numeric SDK comparison, external cache routing,
+  stage-order/failure recording and read-only status behavior. The source/tools
+  workspace occupies about **7.7 GiB** before dependency sync.
+
+Runbook: [pinned reference workspace](../../tools/browser/README.md).
+The source/tools milestone is complete, **not Phase 1 as a whole**. A complete
+dependency sync, successful reference compile/launch, embedding decision,
+dependency/patch inventory and native-port feasibility gate remain outstanding.
+No native guest browser, web compatibility or media performance is claimed.
 
 ## 12. Security updates and distribution
 
@@ -505,9 +543,10 @@ neither official Chrome availability nor protected 8K streaming is implied.
 - **Maintenance:** reducing toolbar features does not reduce the obligation to
   integrate security fixes. Keep a small platform patch set and avoid engine forks.
 
-No engine revision, graphics backend, shipping codec set, DRM provider or
-performance result is selected/claimed by writing this document. Phase 1 resolves
-the first decisions; subsequent phases supply evidence.
+Phase 1b selects an engine revision for reference-build qualification, not a
+shipping release. No graphics backend, shipping codec set, DRM provider or
+browser performance result is selected/claimed by writing this document.
+Subsequent phases must supply evidence.
 
 ## 14. Primary references
 

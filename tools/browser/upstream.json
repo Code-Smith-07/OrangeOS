@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "purpose": "macOS reference build only; not an OrangeOS browser binary",
+  "chromium": {
+    "url": "https://chromium.googlesource.com/chromium/src.git",
+    "version": "154.0.8037.58",
+    "revision": "a654841425914cbb703a2931e07b70a83aedbafd"
+  },
+  "depot_tools": {
+    "url": "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
+    "revision": "910f54316dac310fadee0c453c4d460c0c446189"
+  },
+  "toolchain": {
+    "clang_package": "llvmorg-24-init-3796-g20e97c4b-27",
+    "mac_sdk_minimum": "15",
+    "mac_sdk_official": "26.5",
+    "dependencies": "src/DEPS at the pinned Chromium revision; gclient resolves transitive DEPS/CIPD pins"
+  },
+  "gn_args": {
+    "is_debug": false,
+    "is_component_build": true,
+    "is_official_build": false,
+    "symbol_level": 0,
+    "target_cpu": "arm64",
+    "use_remoteexec": false
+  }
+}
