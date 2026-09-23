@@ -172,8 +172,11 @@ python3 tools/host_bridge_preview.py
 ```
 
 The preview now bundles the installed QEMU locally as **OrangeOS Preview**,
-with an explicit firmware path, Retina support, Cocoa full-screen and
-zoom-to-fit enabled. It is addressable as `org.orangeos.qemu-preview` for a real
+with an explicit firmware path, Retina support, Cocoa full-screen,
+zoom-to-fit and interpolation enabled. Interpolation smooths non-integer host
+resizing; it does not add guest pixels or replace native-resolution rendering.
+These display options were checked against the installed QEMU QMP schema.
+It is addressable as `org.orangeos.qemu-preview` for a real
 host-window check. Do not infer full-screen acceptance solely from launch flags:
 inspect the visible host window; the macOS green full-screen control is available
 when windowed. The bundle is local/ad-hoc signed and does not replace Homebrew QEMU.

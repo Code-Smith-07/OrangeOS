@@ -47,7 +47,7 @@ def main():
                 "-drive", f"id=disk0,file={ROOT / 'build/disk.img'},format=raw,if=none,snapshot=on",
                 "-device", "ahci,id=ahci", "-device", "ide-hd,drive=disk0,bus=ahci.0",
                 "-netdev", "user,id=n0", "-device", "e1000,netdev=n0",
-                "-display", "cocoa,show-cursor=off,zoom-to-fit=on,full-screen=on",
+                "-display", "cocoa,show-cursor=off,zoom-to-fit=on,zoom-interpolation=on,full-screen=on",
                 "-serial", f"file:{output / 'serial.log'}",
                 "-qmp", f"unix:{output / 'qmp.sock'},server=on,wait=off",
                 "-device", "virtio-serial-pci,id=orangebus,disable-modern=on,max_ports=2",
