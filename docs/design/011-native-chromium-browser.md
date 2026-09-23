@@ -639,6 +639,14 @@ objects were retained and macOS reported zero swap usage at restart. No source
 or guest resource-profile change was needed. Totals can change during resumed
 graph evaluation; these counters are not a stable estimate of remaining time.
 
+The owner subsequently requested five workers. The four-worker invocation was
+interrupted gracefully at 6,737 completed actions, zero failed and 14,098
+remaining. The incremental `build --jobs 5` run is active with Siso
+`-local_jobs=5`; no output directory was cleaned. Before switching, macOS
+reported 70% system-wide memory free, 513 MiB swap in use and 226 GiB free on
+the external build volume. These are host-build observations, not guest browser
+performance results or a completed reference-build gate.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,
