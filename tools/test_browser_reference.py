@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import argparse
 import fcntl
 from pathlib import Path
 import subprocess
@@ -7,12 +8,32 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from browser_reference import (ReferenceBuild, ensure_text, environment, fingerprint,
+from browser_reference import (ReferenceBuild, build_jobs, ensure_text, environment, fingerprint,
                                gclient_config, guard_workspace, load_manifest,
                                live_status, main, sdk_supported, source_audit, verify_repo)
 
 
 class ReferenceTests(unittest.TestCase):
+    def test_build_jobs_validated(self):
+        self.assertEqual(build_jobs("3"), 3)
+        for value in ("0", "-1", "9", "1.5", "auto", True):
+            with self.subTest(value=value), self.assertRaises(argparse.ArgumentTypeError):
+                build_jobs(value)
+
+    def test_requested_build_parallelism_reaches_autoninja(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = load_manifest()
+            (root / "checkout").mkdir()
+            (root / "checkout/.gclient").write_text(gclient_config(manifest))
+            with (root / "log").open("w") as log:
+                build = ReferenceBuild(root, manifest, log, jobs=3)
+                with patch("browser_reference.verify_repo"), patch("browser_reference.source_audit"), \
+                     patch.object(build, "ensure_tool_runtime"), patch.object(build, "run") as run:
+                    build.execute("build")
+                self.assertEqual(run.call_args.args[0],
+                                 [build.depot / "autoninja", "-C", "out/OrangeReference", "-j", "3", "content_shell"])
+
     def test_checked_in_manifest_is_pinned(self):
         manifest = load_manifest()
         self.assertEqual(len(manifest["chromium"]["revision"]), 40)

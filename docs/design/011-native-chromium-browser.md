@@ -617,6 +617,20 @@ flags. Separate normal-mode testing remains mandatory.
 the first Chromium compilation is still in progress at this checkpoint. Do not
 promote harness unit-test results into native browser or reference launch success.
 
+### 11.7 Reference build parallelism adjustment
+
+At the owner's request to accelerate compilation, the host build was gracefully
+interrupted and resumed with **three local CPU workers** instead of two. GPUs
+are not used by these compiler jobs. Guest VM CPU/RAM profiles are unchanged.
+The original invocation stopped at 13,126 completed actions with zero failed
+actions and 35,700 remaining; its nonzero exit reflects the intentional signal,
+not a compiler error. Existing objects remain in `out/OrangeReference`.
+
+`build --jobs N` now validates 1–8 workers, passes the count to autoninja and
+records it in the build state. The default remains two. **45 tests pass**,
+including argument validation and the actual command construction for three
+workers. This adjustment is not a completed compilation or a measured speedup.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,

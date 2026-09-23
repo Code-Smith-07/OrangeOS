@@ -27,6 +27,12 @@ WORK = ROOT / "build/browser"
 STAGES = ("tools", "source", "sync", "hooks", "generate", "build")
 
 
+def build_jobs(value):
+    if not re.fullmatch(r"[1-9][0-9]*", str(value)) or not 1 <= int(value) <= 8:
+        raise argparse.ArgumentTypeError("Build jobs must be an integer from 1 to 8")
+    return int(value)
+
+
 def load_manifest(path=MANIFEST):
     manifest = json.loads(path.read_text())
     if manifest["schema_version"] != 1:
@@ -178,8 +184,9 @@ def guard_workspace(work, manifest):
 
 
 class ReferenceBuild:
-    def __init__(self, work, manifest, log):
+    def __init__(self, work, manifest, log, jobs=2):
         self.work, self.manifest, self.log = work, manifest, log
+        self.jobs = build_jobs(jobs)
         self.env = environment(work)
         self.depot = work / "depot_tools"
         self.checkout = work / "checkout"
@@ -267,7 +274,7 @@ class ReferenceBuild:
             ensure_text(output / "args.gn", args)
             self.run([self.depot / "gn", "gen", "out/OrangeReference"], self.src)
         elif stage == "build":
-            self.run([self.depot / "autoninja", "-C", "out/OrangeReference", "-j", "2", "content_shell"], self.src)
+            self.run([self.depot / "autoninja", "-C", "out/OrangeReference", "-j", str(self.jobs), "content_shell"], self.src)
         verify_repo(self.src, self.manifest["chromium"])
         verify_repo(self.depot, self.manifest["depot_tools"])
 
@@ -275,7 +282,11 @@ class ReferenceBuild:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("stage", nargs="?", default="status", choices=("status", "preflight", *STAGES))
+    parser.add_argument("--jobs", type=build_jobs, default=None,
+                        help="Local CPU build workers (1–8, default 2); build stage only")
     args = parser.parse_args()
+    if args.jobs is not None and args.stage != "build":
+        parser.error("--jobs applies only to the build stage")
     manifest = load_manifest()
     state_path = WORK / "state.json"
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
@@ -311,12 +322,14 @@ def main():
         state = {k: v for k, v in state.items() if k in previous}
         logfile = work / "logs" / f"{time.time_ns()}-{args.stage}.log"
         record = {"result": "running", "manifest_sha256": fingerprint(manifest), "log": str(logfile)}
+        if args.stage == "build":
+            record["local_jobs"] = args.jobs or 2
         state[args.stage] = record
         state_path.write_text(json.dumps(state, indent=2) + "\n")
         print(f"Log: {logfile}", flush=True)
         try:
             with logfile.open("x") as log:
-                ReferenceBuild(work, manifest, log).execute(args.stage)
+                ReferenceBuild(work, manifest, log, jobs=args.jobs or 2).execute(args.stage)
             record["result"] = "passed"
         except BaseException:
             record["result"] = "failed/interrupted"

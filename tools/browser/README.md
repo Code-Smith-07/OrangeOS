@@ -38,6 +38,14 @@ build still needs launch/render verification. No step automatically launches a
 host browser, changes shell configuration, touches guest images, installs Xcode
 or makes a Git commit in the OrangeOS repository.
 
+For additional CPU parallelism, use `python3 tools/browser_reference.py build --jobs 3`.
+The runner validates 1–8 workers and records the requested count. This affects
+host compilation only, not guest CPU limits. Stop an active build gracefully
+and wait for its runner lock to release before changing the worker count;
+the same output directory retains completed objects for incremental resume.
+Do not run two builders against it. GPU resources do not accelerate these
+C/C++/Rust compiler jobs.
+
 The separate `browser_smoke.py` command **does launch** the built Mac Content
 Shell after requiring a successful build record at the current manifest pins.
 It holds the workspace lock, uses a local file fixture only, saves stdout/stderr
