@@ -1,8 +1,7 @@
 //! User process creation.
 //!
-//! A process is an address space plus a thread running in ring 3. Phase 4b
-//! creates one directly from an embedded ELF image; Phase 5 will load them
-//! from a filesystem and Phase 6 adds fork/exec.
+//! A process is an address space plus a thread running in ring 3. The ELF
+//! loader reads segments from CitrusFS into owned user pages on demand.
 
 const std = @import("std");
 const vmm = @import("../mm/vmm.zig");
@@ -24,14 +23,13 @@ pub const Error = error{OutOfMemory} || elf.Error;
 const USER_STACK_TOP: u64 = 0x0000_7FFF_FFFF_F000;
 const USER_STACK_PAGES: usize = 16;
 
-/// Build an address space from an ELF image and drop into ring 3.
+/// Build an address space from a filesystem node and drop into ring 3.
 /// Runs as the body of a kernel thread; never returns.
-pub fn execImage(image: []u8) Error!noreturn {
-    errdefer heap.free(image.ptr);
+pub fn execNode(node: *const vfs.Node) Error!noreturn {
     const pml4 = try vmm.createAddressSpace();
     errdefer vmm.destroyAddressSpace(pml4);
 
-    const loaded = try elf.load(pml4, image);
+    const loaded = try elf.loadFromNode(pml4, node);
 
     // User stack, mapped writable and non-executable.
     var i: usize = 0;
@@ -74,16 +72,12 @@ pub fn execImage(image: []u8) Error!noreturn {
     // unmapped upper guard page. Zero is a deliberate terminal-frame sentinel.
     const entry_stack = USER_STACK_TOP - @sizeOf(u64);
     @as(*u64, @ptrFromInt(entry_stack)).* = 0;
-    // The executable was copied into owned pages; do not retain its file image
-    // for the lifetime of the process (successful exec never unwinds defers).
-    heap.free(image.ptr);
     user.enter(loaded.entry, entry_stack);
 }
 
-/// A pending program: the image is read in the spawning process's context and
-/// handed to the new thread, which loads and enters it.
+/// A pending program holds an immutable filesystem node, not the ELF contents.
 pub const SpawnRequest = struct {
-    image: []u8,
+    node: vfs.Node,
     host_bridge: bool,
     host_controls: bool,
 };
@@ -93,7 +87,7 @@ pub fn spawnPathWithPty(path: []const u8, pty: *@import("../ipc/object.zig").Obj
     return spawnPathInternal(path, pty);
 }
 
-/// Read a program off disk and start it as a new task. Returns its tid.
+/// Resolve a program on disk and start it as a new task. Returns its tid.
 /// The caller keeps running; use wait() to synchronise.
 pub fn spawnPath(path: []const u8) !u32 {
     const inherited = if (sched.currentTask()) |parent| parent.pty else null;
@@ -104,19 +98,12 @@ fn spawnPathInternal(path: []const u8, pty: ?*@import("../ipc/object.zig").Objec
     if (!vfs.isMounted()) return error.NotMounted;
 
     const node = vfs.resolve(path) catch return error.NotFound;
-    const size: usize = @intCast(node.size());
-    if (size == 0 or size > 8 * 1024 * 1024) return error.BadImage;
-
-    const buf = heap.alloc(size) catch return error.OutOfMemory;
-    errdefer heap.free(buf);
-
-    const n = vfs.readAt(&node, 0, buf[0..size]) catch return error.IoError;
-    if (n != size) return error.IoError;
+    if (node.isDir() or node.size() == 0) return error.BadImage;
 
     const req = heap.create(SpawnRequest) catch return error.OutOfMemory;
     errdefer heap.destroy(req);
     const parent = sched.currentTask();
-    req.* = .{ .image = buf[0..size], .host_controls = std.mem.eql(u8, path, "/bin/hardware"), .host_bridge = if (parent) |p|
+    req.* = .{ .node = node, .host_controls = std.mem.eql(u8, path, "/bin/hardware"), .host_bridge = if (parent) |p|
         p.service_manager and std.mem.eql(u8, path, "/bin/host-agent")
     else
         false };
@@ -133,12 +120,12 @@ fn spawnPathInternal(path: []const u8, pty: ?*@import("../ipc/object.zig").Objec
 /// Thread body for a spawned program.
 fn spawnThread(arg: ?*anyopaque) void {
     const req: *SpawnRequest = @ptrCast(@alignCast(arg.?));
-    const image = req.image;
+    const node = req.node;
     sched.currentTask().?.host_bridge = req.host_bridge;
     sched.currentTask().?.host_controls = req.host_controls;
     heap.destroy(req);
 
-    execImage(image) catch |e| {
+    execNode(&node) catch |e| {
         console.err("exec failed: {s}", .{@errorName(e)});
         sched.exit(1);
     };
@@ -165,31 +152,13 @@ pub fn initThread(arg: ?*anyopaque) void {
         sched.exit(1);
     };
 
-    const size: usize = @intCast(node.size());
-    if (size == 0 or size > 8 * 1024 * 1024) {
-        console.err("{s} has an implausible size: {d} bytes", .{ path, size });
+    if (node.isDir() or node.size() == 0) {
+        console.err("{s} is not a nonempty executable file", .{path});
         sched.exit(1);
     }
+    console.print("[ ok ] loading {s} from disk ({d} bytes)\n", .{ path, node.size() });
 
-    const buf = heap.alloc(size) catch {
-        console.err("out of memory loading {s} ({d} bytes)", .{ path, size });
-        sched.exit(1);
-    };
-
-    const n = vfs.readAt(&node, 0, buf[0..size]) catch |e| {
-        heap.free(buf);
-        console.err("read {s} failed: {s}", .{ path, @errorName(e) });
-        sched.exit(1);
-    };
-    if (n != size) {
-        heap.free(buf);
-        console.err("short read on {s}: {d} of {d} bytes", .{ path, n, size });
-        sched.exit(1);
-    }
-
-    console.print("[ ok ] loaded {s} from disk ({d} bytes)\n", .{ path, n });
-
-    execImage(buf[0..size]) catch |e| {
+    execNode(&node) catch |e| {
         console.err("failed to exec {s}: {s}", .{ path, @errorName(e) });
         sched.exit(1);
     };

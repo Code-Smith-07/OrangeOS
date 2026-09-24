@@ -8,6 +8,7 @@
 const std = @import("std");
 const vmm = @import("../mm/vmm.zig");
 const pmm = @import("../mm/pmm.zig");
+const vfs = @import("../fs/vfs/vfs.zig");
 
 pub const Error = error{
     NotElf,
@@ -17,6 +18,7 @@ pub const Error = error{
     NotExecutable,
     BadProgramHeader,
     SegmentOutOfRange,
+    IoError,
 } || vmm.Error;
 
 const ELF_MAGIC = [4]u8{ 0x7F, 'E', 'L', 'F' };
@@ -75,28 +77,45 @@ fn validate(hdr: *align(1) const Header) Error!void {
     if (hdr.type != ET_EXEC) return Error.NotExecutable;
 }
 
-/// Load `image` into the address space rooted at `pml4_phys`.
-pub fn load(pml4_phys: u64, image: []const u8) Error!Loaded {
-    if (image.len < @sizeOf(Header)) return Error.NotElf;
-    const hdr: *align(1) const Header = @ptrCast(image.ptr);
-    try validate(hdr);
-
-    if (hdr.phoff + @as(u64, hdr.phnum) * hdr.phentsize > image.len) {
-        return Error.BadProgramHeader;
+fn readExact(node: *const vfs.Node, offset: u64, dest: []u8) Error!void {
+    var done: usize = 0;
+    while (done < dest.len) {
+        const pos = std.math.add(u64, offset, done) catch return Error.BadProgramHeader;
+        const got = vfs.readAt(node, pos, dest[done..]) catch return Error.IoError;
+        if (got == 0) return Error.IoError;
+        done += got;
     }
+}
+
+/// Load directly from a filesystem node, using only ELF metadata and one
+/// destination page at a time. Large files no longer require a kernel heap
+/// buffer holding their entire contents.
+pub fn loadFromNode(pml4_phys: u64, node: *const vfs.Node) Error!Loaded {
+    if (node.size() < @sizeOf(Header)) return Error.NotElf;
+    var hdr: Header = undefined;
+    try readExact(node, 0, std.mem.asBytes(&hdr));
+    try validate(&hdr);
+
+    if (hdr.phentsize < @sizeOf(ProgramHeader)) return Error.BadProgramHeader;
+    const table_size = std.math.mul(u64, hdr.phnum, hdr.phentsize) catch return Error.BadProgramHeader;
+    const table_end = std.math.add(u64, hdr.phoff, table_size) catch return Error.BadProgramHeader;
+    if (table_end > node.size()) return Error.BadProgramHeader;
 
     var brk: u64 = 0;
 
     var i: usize = 0;
     while (i < hdr.phnum) : (i += 1) {
-        const ph: *align(1) const ProgramHeader =
-            @ptrCast(image.ptr + hdr.phoff + i * hdr.phentsize);
+        var ph: ProgramHeader = undefined;
+        const ph_offset = hdr.phoff + i * @as(u64, hdr.phentsize);
+        try readExact(node, ph_offset, std.mem.asBytes(&ph));
         if (ph.type != PT_LOAD or ph.memsz == 0) continue;
 
-        if (ph.vaddr >= USER_MAX or ph.vaddr + ph.memsz > USER_MAX) {
+        const memory_end = std.math.add(u64, ph.vaddr, ph.memsz) catch return Error.SegmentOutOfRange;
+        if (ph.vaddr >= USER_MAX or memory_end > USER_MAX or ph.filesz > ph.memsz) {
             return Error.SegmentOutOfRange;
         }
-        if (ph.offset + ph.filesz > image.len) return Error.BadProgramHeader;
+        const file_limit = std.math.add(u64, ph.offset, ph.filesz) catch return Error.BadProgramHeader;
+        if (file_limit > node.size()) return Error.BadProgramHeader;
 
         // Permissions come from the segment, so .text lands read-execute and
         // .data read-write — the same W^X discipline the kernel uses.
@@ -105,7 +124,7 @@ pub fn load(pml4_phys: u64, image: []const u8) Error!Loaded {
         if (ph.flags & PF_X == 0) flags |= vmm.NO_EXECUTE;
 
         const start = std.mem.alignBackward(u64, ph.vaddr, vmm.PAGE_SIZE);
-        const end = std.mem.alignForward(u64, ph.vaddr + ph.memsz, vmm.PAGE_SIZE);
+        const end = std.mem.alignForward(u64, memory_end, vmm.PAGE_SIZE);
 
         var page = start;
         while (page < end) : (page += vmm.PAGE_SIZE) {
@@ -125,10 +144,7 @@ pub fn load(pml4_phys: u64, image: []const u8) Error!Loaded {
                 const dst_off = copy_from - page_start;
                 const src_off = ph.offset + (copy_from - ph.vaddr);
                 const n = copy_to - copy_from;
-                @memcpy(
-                    dest[dst_off .. dst_off + n],
-                    image[src_off .. src_off + n],
-                );
+                try readExact(node, src_off, dest[dst_off .. dst_off + n]);
             }
         }
 

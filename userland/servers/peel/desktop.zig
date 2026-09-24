@@ -106,7 +106,7 @@ const DOCK_ACTIONS = [_]u16{ Action.files, Action.home, Action.terminal, Action.
 const DOCK_ICONS = [_]ui.Icon{ .dock_files, .dock_welcome, .dock_terminal, .dock_clock, .dock_about, .dock_windows, .dock_appearance, .dock_trash };
 const DOCK_APPS = [_]?usize{ 4, 0, 1, 2, 3, null, null, 5 };
 // Clean assets derived from the three approved concepts. The BMP resources
-// live on CitrusFS, not inside Peel's ELF (the kernel has an 8 MiB exec cap).
+// live on CitrusFS, not inside Peel's ELF (keeping the app binary lean).
 // Peel loads each once into bounded SHM and installs a read-only slice here.
 const bitmap_width: i32 = 1280;
 const bitmap_height: i32 = 800;

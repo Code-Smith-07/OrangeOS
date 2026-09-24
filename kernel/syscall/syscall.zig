@@ -471,7 +471,6 @@ fn sysSpawn(path_ptr: u64, path_len: u64) i64 {
             error.NotFound, error.NotMounted => ENOENT,
             error.OutOfMemory => -12,
             error.BadImage => ENOEXEC,
-            else => EIO,
         };
     };
     return @intCast(tid);
@@ -875,7 +874,6 @@ fn sysSpawnPty(path_ptr: u64, path_len: u64, h: u64) i64 {
             error.NotFound, error.NotMounted => ENOENT,
             error.OutOfMemory => -12,
             error.BadImage => ENOEXEC,
-            else => EIO,
         };
     };
     return @intCast(tid);

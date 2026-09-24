@@ -981,8 +981,27 @@ allocation, then boots the browser-capacity disk in QEMU and waits for the
 desktop. This proves the guest can mount the larger volume. It **does not**
 install Chromium or qualify writable browser profiles, executable loading,
 graphics, TLS or web compatibility. In particular, the current executable
-loader still buffers whole ELF files and rejects files above 8 MiB. That
-loader limitation is the next direct installation blocker.
+loader still buffered whole ELF files and rejected files above 8 MiB when
+this storage milestone landed; section 11.24 records its subsequent removal.
+
+### 11.24 Streaming native ELF loading
+
+The kernel now resolves an immutable CitrusFS node and reads ELF headers,
+program headers and loadable segment bytes directly into owned user pages.
+It no longer allocates a whole-file kernel heap buffer or imposes the old
+8 MiB executable-size cap. Header-table offsets, segment file ranges,
+virtual-address bounds and `filesz <= memsz` are checked before mapping.
+The node is carried by value to the spawned task, so the parent does not
+retain or transfer an executable-sized allocation.
+
+`python3 tools/large_elf_smoke.py` boots a deliberately 9 MiB `/sbin/init`
+ELF fixture and reaches the graphical desktop. The 3 GiB/two-vCPU runtime
+regression passed after this change, including concurrent process launches,
+fault isolation and file-descriptor cleanup. The browser-capacity disk also
+still boots. This is a prerequisite for staging larger native executables,
+**not** evidence that Chromium itself runs: the guest still lacks the
+required libc/C++ runtime, shared user threads, graphics integration and
+browser networking/security services.
 
 ## 12. Security updates and distribution
 
