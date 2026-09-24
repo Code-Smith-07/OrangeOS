@@ -14,7 +14,7 @@ def main():
         objdump = subprocess.check_output(["xcrun", "--find", "llvm-objdump"], text=True).strip()
     if not objdump:
         raise SystemExit("Install LLVM's llvm-objdump or Xcode command-line tools")
-    for binary in ("kernel.elf", "c-abi-probe", "peel"):
+    for binary in ("kernel.elf", "c-abi-probe", "cxx-abi-probe", "peel"):
         assembly = subprocess.check_output([objdump, "-d", str(ROOT / "zig-out/bin" / binary)], text=True)
         lanes = re.findall(r"\b[xyz]?mm\d+\b", assembly)
         if binary == "kernel.elf":

@@ -1,6 +1,6 @@
 # OrangeOS native Chromium browser architecture
 
-Status: **Phase 1 preparation in progress; no browser engine is installed or qualified**.
+Status: **Phase 1 preparation and Phase 2 runtime work in progress; no browser engine is installed or qualified**.
 Created: 2026-09-23. Owner requirement: a smooth, full-featured browser running
 entirely inside OrangeOS, within a 4 GiB desktop profile, with excellent video
 playback and hardware-dependent 8K support.
@@ -1002,6 +1002,26 @@ still boots. This is a prerequisite for staging larger native executables,
 **not** evidence that Chromium itself runs: the guest still lacks the
 required libc/C++ runtime, shared user threads, graphics integration and
 browser networking/security services.
+
+### 11.25 Native freestanding C++ ABI probe
+
+The guest build now compiles and links a real C++20 translation unit alongside
+Zig userland code. The shared `userland/libs/cxx-abi/runtime.cpp` supplies
+the language's scalar/array `new` and `delete` entry points through a guest
+page-mapped allocator; the user linker script retains `.init_array`, and the
+test entry invokes global constructors before using C++ objects. Four
+concurrent `/bin/cxx-abi-probe` tasks exercise constructor execution, virtual
+dispatch/destruction, array allocation and mixed floating-point/integer
+C++/Zig calls. The guest CPU-codegen audit confirms native SSE without AVX.
+
+The C++ probe and full runtime suite passed in repeated 3 GiB/two-vCPU runs
+and the 4 GiB browser profile. One earlier 3 GiB run did hit an intermittent
+kernel bounds panic later in the orphan-process stress test; it did not
+reproduce in three subsequent runs, and its cause is not yet established.
+This milestone therefore proves only the tested **freestanding language ABI**.
+It is not libc++, exception handling, RTTI, thread-safe static initialization,
+pthread support, a production allocator, or a Chromium cross-build. Those
+remain required before installing the engine in OrangeOS.
 
 ## 12. Security updates and distribution
 

@@ -64,6 +64,9 @@ def main():
         guest.until(lambda: "runtime: PASS freestanding C floating-point ABI" in guest.log(),
                     "four concurrent compiler-generated C/Zig floating-point probes", 90)
         assert guest.log().count("c-abi-probe: PASS") == 4
+        guest.until(lambda: "runtime: PASS freestanding C++ language ABI" in guest.log(),
+                    "four concurrent native C++ ABI probes", 90)
+        assert guest.log().count("cxx-abi-probe: PASS") == 4
         guest.until(lambda: "runtime: PASS 96 child reaps, slot reuse and wait ownership" in guest.log(),
                     "96 child reaps, slot reuse and wait ownership", 90)
         guest.until(lambda: "runtime: PASS full task table rejects spawn and recovers after reaping" in guest.log(),

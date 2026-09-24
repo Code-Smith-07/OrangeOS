@@ -13,6 +13,12 @@ SECTIONS
     . = ALIGN(0x1000);
     .rodata : { *(.rodata .rodata.*) }
     . = ALIGN(0x1000);
+    .init_array : {
+        PROVIDE(__init_array_start = .);
+        KEEP(*(.init_array .init_array.*))
+        PROVIDE(__init_array_end = .);
+    }
+    . = ALIGN(0x1000);
     .data : { *(.data .data.*) }
     .bss  : { *(.bss .bss.*) *(COMMON) }
 

@@ -186,6 +186,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "vm-probe", .path = "userland/bin/vm-probe/main.zig" },
         .{ .name = "simd-probe", .path = "userland/bin/simd-probe/main.zig" },
         .{ .name = "c-abi-probe", .path = "userland/bin/c-abi-probe/main.zig" },
+        .{ .name = "cxx-abi-probe", .path = "userland/bin/cxx-abi-probe/main.zig" },
         .{ .name = "reap-probe", .path = "userland/bin/reap-probe/main.zig" },
         .{ .name = "orphan-probe", .path = "userland/bin/orphan-probe/main.zig" },
         .{ .name = "orphan-slow", .path = "userland/bin/orphan-slow/main.zig" },
@@ -244,6 +245,14 @@ pub fn build(b: *std.Build) void {
             .file = b.path("userland/bin/c-abi-probe/probe.c"),
             .flags = &.{ "-std=c11", "-ffreestanding", "-fno-stack-protector", "-mno-red-zone", "-mno-avx", "-Wall", "-Wextra", "-Werror" },
         });
+        if (std.mem.eql(u8, prog.name, "cxx-abi-probe")) {
+            for ([_][]const u8{ "userland/libs/cxx-abi/runtime.cpp", "userland/bin/cxx-abi-probe/probe.cpp" }) |source| {
+                mod.addCSourceFile(.{
+                    .file = b.path(source),
+                    .flags = &.{ "-std=c++20", "-ffreestanding", "-fno-exceptions", "-fno-rtti", "-fno-stack-protector", "-mno-red-zone", "-mno-avx", "-Wall", "-Wextra", "-Werror" },
+                });
+            }
+        }
 
         const exe = b.addExecutable(.{
             .name = prog.name,

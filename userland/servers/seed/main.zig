@@ -177,6 +177,12 @@ export fn _start() callconv(.c) noreturn {
             if (code != 0) pulp.exit(101);
         }
         pulp.puts("runtime: PASS freestanding C floating-point ABI\n");
+        var cxx_probes: [4]i64 = undefined;
+        for (&cxx_probes) |*pid| pid.* = pulp.spawn("/bin/cxx-abi-probe") catch pulp.exit(148);
+        for (cxx_probes) |pid| {
+            if ((pulp.wait(pid) catch pulp.exit(149)) != 0) pulp.exit(150);
+        }
+        pulp.puts("runtime: PASS freestanding C++ language ABI\n");
         // More than the registry's 64 concurrent slots must be possible over
         // the machine's lifetime once each child has been waited/reaped.
         for (0..96) |_| {
