@@ -966,6 +966,24 @@ CPU/address-space residency tracking (including migration and CR3-switch
 races), and an interruptible targeted-shootdown/teardown protocol. Targeted
 delivery alone does not qualify a browser thread runtime.
 
+### 11.23 Browser-capacity guest disk (storage prerequisite)
+
+`ORANGE_DISK_PROFILE=browser ./scripts/mkdisk.sh` now stages a separate,
+sparse 2 GiB CitrusFS image in a 2112 MiB GPT disk at
+`build/browser-disk.img`. It does not replace the default 32 MiB desktop
+filesystem or `build/disk.img`. The image builder streams application files
+instead of reading entire binaries into host RAM, and the larger profile
+reserves 16,384 inodes. GPT construction writes only metadata and occupied
+filesystem blocks; it no longer creates a disk-sized in-memory byte array.
+
+`python3 tools/browser_disk_smoke.py` checks GPT, CitrusFS capacity and sparse
+allocation, then boots the browser-capacity disk in QEMU and waits for the
+desktop. This proves the guest can mount the larger volume. It **does not**
+install Chromium or qualify writable browser profiles, executable loading,
+graphics, TLS or web compatibility. In particular, the current executable
+loader still buffers whole ELF files and rejects files above 8 MiB. That
+loader limitation is the next direct installation blocker.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,

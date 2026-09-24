@@ -277,6 +277,8 @@ Then fetch the bootloader, create a disk, and build:
 | `zig build` | Compile and assemble `build/orange.iso` |
 | `./scripts/run-desktop.sh` | Run the built desktop; full screen with one guest cursor on macOS |
 | `./scripts/run-browser-profile.sh` | Full-screen existing desktop with the 4 GiB browser capacity profile; not a browser engine |
+| `ORANGE_DISK_PROFILE=browser ./scripts/mkdisk.sh` | Build a separate sparse 2 GiB guest filesystem for future browser installation; no browser executable yet |
+| `python3 tools/browser_disk_smoke.py` | Verify and boot the browser-capacity disk in QEMU |
 | `ORANGE_VM_PROFILE=browser zig build run` | Boot the 4 GiB profile through the normal build target |
 | `ORANGE_VM_PROFILE=browser python3 tools/browser_preflight.py` | Read-only Chromium reference-build and QEMU capability checks; exit 2 lists missing prerequisites |
 | `python3 tools/desktop_smoke.py` | Headless QEMU desktop interaction checks and screenshots |

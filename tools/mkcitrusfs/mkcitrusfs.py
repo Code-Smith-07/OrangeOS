@@ -7,8 +7,10 @@ change both.
 """
 
 import os
+import mmap
 import struct
 import sys
+import tempfile
 import time
 import uuid
 import zlib
@@ -32,10 +34,10 @@ def align_up(v, a):
 
 
 class Builder:
-    def __init__(self, total_blocks, inode_count):
+    def __init__(self, total_blocks, inode_count, storage=None):
         self.total_blocks = total_blocks
         self.inode_count = inode_count
-        self.blocks = bytearray(total_blocks * BLOCK_SIZE)
+        self.blocks = storage if storage is not None else bytearray(total_blocks * BLOCK_SIZE)
 
         bitmap_blocks = align_up(total_blocks, BLOCK_SIZE * 8) // (BLOCK_SIZE * 8)
         ibitmap_blocks = align_up(inode_count, BLOCK_SIZE * 8) // (BLOCK_SIZE * 8)
@@ -112,6 +114,26 @@ class Builder:
         off = start * BLOCK_SIZE
         self.blocks[off : off + len(data)] = data
         self.write_inode(ino, MODE_REG | 0o644, len(data), [(start, nblocks)])
+        return ino
+
+    def add_file_path(self, path):
+        """Stage large application binaries without reading them into RAM."""
+        size = os.path.getsize(path)
+        ino = self.alloc_inode()
+        if not size:
+            self.write_inode(ino, MODE_REG | 0o644, 0, [])
+            return ino
+        nblocks = align_up(size, BLOCK_SIZE) // BLOCK_SIZE
+        start = self.alloc_blocks(nblocks)
+        with open(path, "rb") as source:
+            offset = start * BLOCK_SIZE
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                self.blocks[offset : offset + len(chunk)] = chunk
+                offset += len(chunk)
+        self.write_inode(ino, MODE_REG | 0o644, size, [(start, nblocks)])
         return ino
 
     @staticmethod
@@ -212,8 +234,7 @@ def build_tree(builder, host_dir, parent=None):
             child = build_tree(builder, path, parent=dir_ino)
             entries.append((name, child, DT_DIR))
         elif os.path.isfile(path):
-            with open(path, "rb") as f:
-                ino = builder.add_file(f.read())
+            ino = builder.add_file_path(path)
             entries.append((name, ino, DT_REG))
 
     builder.add_dir(entries, ino=dir_ino, parent=parent)
@@ -225,16 +246,32 @@ def main():
         sys.exit("usage: mkcitrusfs.py <out.img> <source-dir> [size-mib]")
     out, src = sys.argv[1], sys.argv[2]
     size_mib = int(sys.argv[3]) if len(sys.argv) > 3 else 32
+    if not 32 <= size_mib <= 4096:
+        sys.exit("mkcitrusfs: size must be 32..4096 MiB")
 
     total_blocks = size_mib * 1024 * 1024 // BLOCK_SIZE
-    b = Builder(total_blocks, inode_count=1024)
-
-    root = build_tree(b, src)
-    assert root == ROOT_INODE, f"root inode is {root}, expected {ROOT_INODE}"
-
-    b.finish()
-    with open(out, "wb") as f:
-        f.write(bytes(b.blocks))
+    # A 2 GiB browser image must not consume 2 GiB of host RAM or physical
+    # disk merely to hold empty blocks. mmap touches only metadata and files.
+    parent_dir = os.path.dirname(os.path.abspath(out))
+    with tempfile.NamedTemporaryFile(prefix=".citrus-", dir=parent_dir, delete=False) as image:
+        temp_path = image.name
+        try:
+            image.truncate(total_blocks * BLOCK_SIZE)
+            with mmap.mmap(image.fileno(), total_blocks * BLOCK_SIZE, access=mmap.ACCESS_WRITE) as blocks:
+                inode_count = 16384 if size_mib > 32 else 1024
+                b = Builder(total_blocks, inode_count=inode_count, storage=blocks)
+                root = build_tree(b, src)
+                assert root == ROOT_INODE, f"root inode is {root}, expected {ROOT_INODE}"
+                b.finish()
+                blocks.flush()
+        except BaseException:
+            os.unlink(temp_path)
+            raise
+    try:
+        os.replace(temp_path, out)
+    except BaseException:
+        os.unlink(temp_path)
+        raise
 
     used = b.used_blocks * BLOCK_SIZE
     print(

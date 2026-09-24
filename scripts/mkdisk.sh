@@ -9,10 +9,26 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-DISK=build/disk.img
-FSIMG=build/citrus.img
-ROOTFS=build/rootfs
-DATA_LBA=22528          # matches tools/mkdisk/mkdisk.py
+case "${ORANGE_DISK_PROFILE:-desktop}" in
+    desktop)
+        DISK=build/disk.img
+        FSIMG=build/citrus.img
+        ROOTFS=build/rootfs
+        FS_MIB=32
+        DISK_MIB=64
+        ;;
+    browser)
+        DISK=build/browser-disk.img
+        FSIMG=build/browser-citrus.img
+        ROOTFS=build/browser-rootfs
+        FS_MIB=2048
+        DISK_MIB=2112
+        ;;
+    *)
+        echo "mkdisk: unknown ORANGE_DISK_PROFILE (expected desktop or browser)" >&2
+        exit 1
+        ;;
+esac
 
 mkdir -p build
 
@@ -57,9 +73,5 @@ done
 echo "mkdisk: staged /sbin/init and $(ls "$ROOTFS/bin" | tr '\n' ' ')"
 
 # ── Build the filesystem and the partitioned disk ────────────────────────────
-python3 tools/mkcitrusfs/mkcitrusfs.py "$FSIMG" "$ROOTFS" 32
-python3 tools/mkdisk/mkdisk.py "$DISK"
-
-# ── Splice the filesystem into the data partition ────────────────────────────
-dd if="$FSIMG" of="$DISK" bs=512 seek="$DATA_LBA" conv=notrunc status=none
-echo "mkdisk: CitrusFS written at LBA $DATA_LBA"
+python3 tools/mkcitrusfs/mkcitrusfs.py "$FSIMG" "$ROOTFS" "$FS_MIB"
+python3 tools/mkdisk/mkdisk.py "$DISK" "$DISK_MIB" "$FSIMG"
