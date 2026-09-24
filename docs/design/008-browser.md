@@ -134,6 +134,17 @@ on three later runs; all three VM probes passed in each run. That runtime
 reliability gate remains open. This is still a single-threaded, anonymous,
 non-executable VM API—not a browser engine or a full POSIX mapping layer.
 
+On 24 September 2026, the next reliability slice identified the main apparent
+SMP stress timeout: while the 2560×1600 boot framebuffer console was still
+active, each new line scrolled millions of pixels one volatile byte at a time,
+holding its console lock with interrupts disabled. Failure-only QEMU register
+capture placed the CPU inside `fbcon.scroll`. It now copies non-overlapping
+scanline blocks in bulk. The blocking `wait` syscall also now uses an atomic
+child-exit wakeup instead of polling a one-millisecond sleep. After both
+changes, the two-vCPU `tools/runtime_smoke.py` passed six consecutive runs,
+including all VM, SIMD, C ABI and desktop gates. This resolves the observed
+timeout in those runs, not all future scheduler or browser stress risks.
+
 This removes the first allocation blocker; it is not a completed engine port,
 C library, thread API, SIMD implementation or browser.
 

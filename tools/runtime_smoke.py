@@ -49,6 +49,13 @@ def main():
         guest.until(lambda: '"Welcome"' in guest.log() and "squeeze: window" in guest.log(),
                     "desktop starts after runtime stress", 60)
         guest.screenshot("runtime-desktop")
+    except AssertionError:
+        try:
+            print(f"QEMU CPUs at failure:\n{guest.monitor('info cpus')}", flush=True)
+            print(f"QEMU selected CPU registers:\n{guest.monitor('info registers')[:1200]}", flush=True)
+        except (OSError, RuntimeError) as error:
+            print(f"QEMU CPU state unavailable: {error}", flush=True)
+        raise
     finally:
         guest.close()
 

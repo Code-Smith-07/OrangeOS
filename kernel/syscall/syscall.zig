@@ -441,8 +441,7 @@ fn sysWait(pid: u64, flags: u64) i64 {
     const t = sched.findByTid(tid) orelse return ECHILD;
 
     if (flags & WNOHANG != 0) {
-        if (t.state != .zombie) return EAGAIN;
-        return t.exit_code;
+        return if (sched.taskExitCode(t)) |code| code else EAGAIN;
     }
 
     // We arrive with IF clear, and the child needs timer interrupts to be
@@ -450,12 +449,17 @@ fn sysWait(pid: u64, flags: u64) i64 {
     io.sti();
     defer io.cli();
 
-    while (t.state != .zombie) {
-        // A spinning yield leaves the waiter runnable at a higher MLFQ level
-        // than CPU-bound children. Block briefly so the child can finish.
-        sched.sleepMs(1);
+    while (true) {
+        // Join the wait queue before checking the result. If exit wins between
+        // this check and commitWait, its wake removes us from the queue and
+        // commitWait returns without sleeping.
+        sched.prepareWait(@intFromPtr(t));
+        if (sched.taskExitCode(t)) |code| {
+            sched.cancelWait();
+            return code;
+        }
+        sched.commitWait();
     }
-    return t.exit_code;
 }
 
 /// Sleep for `ms` milliseconds. Yields rather than spinning, so other work

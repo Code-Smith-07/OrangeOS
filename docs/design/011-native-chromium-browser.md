@@ -766,6 +766,22 @@ W^X/JIT transition, file/shared backing, concurrent address-space locking or
 cross-CPU TLB shootdown; libc/libc++, threads, TLS, process lifecycle and secure
 networking are also incomplete. No browser engine has been installed in the guest.
 
+### 11.12 Runtime stress and console-scroll reliability
+
+The apparent concurrent-process timeout was traced through failure-time QEMU
+registers to the boot framebuffer console's bytewise scroll at 2560×1600.
+Scrolling happened while the console lock masked interrupts, delaying process
+exit and C ABI probe progress. `fbcon.scroll` now copies non-overlapping
+scanline blocks in bulk. Separately, blocking `wait` now registers for a
+child-exit notification before checking the exit state, avoiding polling and
+lost wakeups; exit results are published and read under the scheduler lock.
+
+Qualification on 2026-09-24: the 3 GiB/two-vCPU full
+`tools/runtime_smoke.py` passed six consecutive runs after the changes. That
+includes 18 ring-3 VM probes, 72 SIMD probes across two concurrent waves per
+run, 24 C ABI probes and six desktop starts. This is a repeatability improvement
+for the defined test, not a general multi-threaded runtime qualification.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,

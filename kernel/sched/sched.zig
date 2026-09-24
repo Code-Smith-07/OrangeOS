@@ -127,6 +127,8 @@ pub fn taskAt(i: usize) ?*Task {
 }
 
 pub fn findByTid(tid: u32) ?*Task {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
     var i: usize = 0;
     while (i < all_count) : (i += 1) {
         if (all_tasks[i]) |t| {
@@ -134,6 +136,13 @@ pub fn findByTid(tid: u32) ?*Task {
         }
     }
     return null;
+}
+
+/// Read the exit result under the same lock that publishes `.zombie`.
+pub fn taskExitCode(t: *Task) ?i32 {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    return if (t.state == .zombie) t.exit_code else null;
 }
 
 /// Where a freshly created thread begins. It calls the thread's entry point
@@ -406,6 +415,7 @@ pub fn exit(code: i32) noreturn {
     t.exit_code = code;
     t.state = .zombie;
     task_count -= 1;
+    wakeChannelLocked(@intFromPtr(t));
 
     const next = pickNext(c);
     next.state = .running;
@@ -713,6 +723,12 @@ pub fn wakeChannel(chan: usize) void {
     const state = spinlock.acquireIrqSave(&lock);
     defer spinlock.releaseIrqRestore(&lock, state);
 
+    wakeChannelLocked(chan);
+}
+
+/// Caller must hold `lock`; process exit uses this to publish completion and
+/// wake waiters atomically, without recursively acquiring the scheduler lock.
+fn wakeChannelLocked(chan: usize) void {
     var cur = waiters;
     var prev_link: ?*Task = null;
     while (cur) |w| {

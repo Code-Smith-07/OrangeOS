@@ -88,10 +88,17 @@ fn scroll(f: *const framebuffer.Fb) void {
     const line_bytes = f.pitch * CELL_H;
     const visible_bytes = f.pitch * (rows * CELL_H);
 
-    // Move every row up by one cell height.
-    var i: usize = 0;
-    while (i < visible_bytes - line_bytes) : (i += 1) {
-        f.base[top * f.pitch + i] = f.base[top * f.pitch + i + line_bytes];
+    // The framebuffer is mapped memory, not a device register block. A
+    // volatile byte-by-byte loop takes seconds per scroll under QEMU at high
+    // resolutions, holding the console lock with interrupts masked. Adjacent
+    // scanline-sized blocks do not overlap, so copy each with a bulk operation.
+    // Individual pixel stores elsewhere remain volatile.
+    const pixels: [*]u8 = @volatileCast(f.base);
+    const start = top * f.pitch;
+    const copy_len = visible_bytes - line_bytes;
+    var off: usize = 0;
+    while (off < copy_len) : (off += line_bytes) {
+        @memcpy(pixels[start + off ..][0..line_bytes], pixels[start + off + line_bytes ..][0..line_bytes]);
     }
     // Clear the freed bottom row.
     f.fillRect(0, top + (rows - 1) * CELL_H, f.width, CELL_H, color_bg);
