@@ -493,6 +493,8 @@ pub fn exit(code: i32) noreturn {
     io.cli();
     if (currentTask()) |t| {
         t.files.clear();
+        @import("../net/net.zig").socketCloseOwnedBy(t.tid);
+        @import("../net/tcp.zig").abortOwnedBy(t.tid);
         @import("../mm/user_vm.zig").releaseAll(&t.anonymous_vm, t.address_space);
         if (t.address_space != 0 and t.address_space != vmm.kernelPml4()) {
             const old_space = t.address_space;

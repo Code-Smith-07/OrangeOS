@@ -72,7 +72,7 @@ Baseline checked against the repository on 2026-09-24:
 |---|---|---|
 | CPU/runtime | Static freestanding Zig/C ELF; x87/SSE2 isolation; C ABI probes | libc/libc++, user threads, TLS, synchronization, upstream library tests |
 | Virtual memory | 8 GiB arena; anonymous sparse reserve/commit/decommit with 4 GiB reservations, 64 MiB commit calls and page-aligned subranges in `kernel/mm/user_vm.zig` | File/shared mappings, executable W^X/JIT transitions, concurrent VM and cross-CPU TLB correctness |
-| Process lifecycle | Fault containment, private page reclamation, waited-child and orphan task/stack reaping; 64 concurrent registry slots; per-task read-only file descriptor tables | Socket/IPC ownership, quotas, descriptor inheritance semantics and larger concurrent process stress |
+| Process lifecycle | Fault containment, private page reclamation, waited-child and orphan task/stack reaping; 64 concurrent registry slots; per-task read-only file descriptors; task-tagged UDP/TCP socket slots | IPC ownership, quotas, descriptor inheritance, synchronized network readiness and larger concurrent process stress |
 | Networking | DNS and blocking TCP | Precise EOF/error semantics, async readiness, cancellation, entropy, authenticated TLS and trust updates |
 | Storage | Existing CitrusFS and read-only user file interfaces | Durable writable profiles, transactions/locking, larger installation image and cache quotas |
 | Graphics | CPU framebuffer and Peel compositor | Chromium Ozone adapter; atomic buffer ownership; presentation feedback; accelerated device/backend |
@@ -832,6 +832,20 @@ file open and checks that its offset is unchanged afterward. Invalid 64-bit
 descriptor arguments return `EBADF` rather than overflowing a kernel cast.
 This is read-only file isolation, not POSIX fork/exec inheritance, shared open
 descriptions, writable files, or process-owned sockets/IPC.
+
+### 11.16 Task-owned socket slots
+
+User-created UDP and TCP slots are tagged with their creator's task ID.
+Network syscalls reject socket IDs owned by another process, and process exit
+returns its UDP slots and aborts its TCP slots without blocking on graceful
+close. Kernel DNS and DHCP UDP sockets use a distinct owner ID. The ring-3
+socket probe checks that a child cannot close or receive on Seed's UDP slot,
+cannot close an unowned TCP slot, can use the remaining seven UDP slots, sees
+clean exhaustion at the eighth, and can reuse a closed slot. Seed holds its
+socket while 48 children leave all their sockets open and exit, then verifies
+its own slot remains usable. This proves the tested UDP ownership and exit
+reclamation path, not an established-TCP cleanup test. The network stack still
+lacks browser-grade concurrent readiness, locking, TLS and cancellation.
 
 ## 12. Security updates and distribution
 

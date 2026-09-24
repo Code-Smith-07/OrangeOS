@@ -214,6 +214,19 @@ export fn _start() callconv(.c) noreturn {
             !std.mem.eql(u8, &text, "ome ")) pulp.exit(127);
         pulp.close(parent_fd);
         pulp.puts("runtime: PASS private file descriptors and 96 exit cleanups\n");
+        const parent_udp = pulp.udpOpen(0) catch pulp.exit(128);
+        if (parent_udp != 0) pulp.exit(129);
+        for (0..48) |_| {
+            const child = pulp.spawn("/bin/socket-probe") catch pulp.exit(130);
+            if ((pulp.wait(child) catch pulp.exit(131)) != 0) pulp.exit(132);
+        }
+        var datagram: [1]u8 = undefined;
+        if (pulp.syscall3(pulp.NR.udp_recv, @bitCast(parent_udp), @intFromPtr(&datagram), 1) != -11) pulp.exit(133);
+        pulp.udpClose(parent_udp);
+        const reopened_udp = pulp.udpOpen(0) catch pulp.exit(134);
+        if (reopened_udp != 0) pulp.exit(135);
+        pulp.udpClose(reopened_udp);
+        pulp.puts("runtime: PASS private UDP sockets and 48 exit cleanups\n");
     }
     loadConfig();
 

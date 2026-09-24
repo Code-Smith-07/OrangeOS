@@ -59,6 +59,7 @@ pub const State = enum(u8) {
 
 const Tcb = struct {
     used: bool = false,
+    owner_tid: u32 = 0,
     state: State = .closed,
 
     local_port: u16 = 0,
@@ -293,10 +294,10 @@ pub fn input(segment: []const u8, src_ip: net.Ipv4Addr) void {
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-fn allocate() ?*Tcb {
+fn allocate(owner_tid: u32) ?*Tcb {
     for (&conns) |*c| {
         if (c.used) continue;
-        c.* = .{ .used = true };
+        c.* = .{ .used = true, .owner_tid = owner_tid };
         return c;
     }
     return null;
@@ -311,9 +312,26 @@ fn get(index: usize) ?*Tcb {
     return &conns[index];
 }
 
+pub fn ownedBy(index: usize, owner_tid: u32) bool {
+    const c = get(index) orelse return false;
+    return c.owner_tid == owner_tid;
+}
+
+/// Exit cannot spend 500 ms per connection on graceful FIN handshakes.
+/// Stop retransmissions and release every connection owned by this task.
+pub fn abortOwnedBy(owner_tid: u32) void {
+    if (owner_tid == 0) return;
+    for (&conns) |*c| {
+        if (c.used and c.owner_tid == owner_tid) {
+            c.used = false;
+            c.state = .closed;
+        }
+    }
+}
+
 /// Active open. Blocks until the handshake completes or times out.
-pub fn connect(dst_ip: net.Ipv4Addr, dst_port: u16, timeout_ms: u64) Error!usize {
-    const c = allocate() orelse return Error.NoSockets;
+pub fn connect(dst_ip: net.Ipv4Addr, dst_port: u16, timeout_ms: u64, owner_tid: u32) Error!usize {
+    const c = allocate(owner_tid) orelse return Error.NoSockets;
     errdefer c.used = false;
 
     c.local_port = next_port;

@@ -300,6 +300,7 @@ const MAX_SOCKETS = 8;
 
 const Socket = struct {
     used: bool = false,
+    owner_tid: u32 = 0,
     port: u16 = 0,
     /// One-deep receive queue. A datagram arriving while one is pending
     /// replaces it: for the request/response traffic this serves, the newest
@@ -312,6 +313,11 @@ var sockets: [MAX_SOCKETS]Socket = [_]Socket{.{}} ** MAX_SOCKETS;
 var ephemeral_next: u16 = 49152;
 
 pub fn socketOpen(port: u16) ?usize {
+    return socketOpenOwned(port, 0);
+}
+
+/// A nonzero owner is a user task; zero is reserved for kernel DNS/DHCP.
+pub fn socketOpenOwned(port: u16, owner_tid: u32) ?usize {
     var chosen = port;
     if (chosen == 0) {
         chosen = ephemeral_next;
@@ -321,7 +327,7 @@ pub fn socketOpen(port: u16) ?usize {
 
     for (&sockets, 0..) |*s, i| {
         if (s.used) continue;
-        s.* = .{ .used = true, .port = chosen };
+        s.* = .{ .used = true, .owner_tid = owner_tid, .port = chosen };
         return i;
     }
     return null;
@@ -330,6 +336,17 @@ pub fn socketOpen(port: u16) ?usize {
 pub fn socketClose(index: usize) void {
     if (index >= MAX_SOCKETS) return;
     sockets[index].used = false;
+}
+
+pub fn socketOwnedBy(index: usize, owner_tid: u32) bool {
+    return index < MAX_SOCKETS and sockets[index].used and sockets[index].owner_tid == owner_tid;
+}
+
+pub fn socketCloseOwnedBy(owner_tid: u32) void {
+    if (owner_tid == 0) return;
+    for (&sockets) |*s| {
+        if (s.used and s.owner_tid == owner_tid) s.used = false;
+    }
 }
 
 pub fn socketPort(index: usize) u16 {

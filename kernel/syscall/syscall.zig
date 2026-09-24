@@ -897,11 +897,15 @@ fn sysNetResolve(name_ptr: u64, name_len: u64) i64 {
 
 fn sysUdpOpen(port: u64) i64 {
     if (!net.isUp()) return -19;
-    const idx = net.socketOpen(@truncate(port)) orelse return EMFILE;
+    if (port > std.math.maxInt(u16)) return EINVAL;
+    const task = sched.currentTask() orelse return EIO;
+    const idx = net.socketOpenOwned(@intCast(port), task.tid) orelse return EMFILE;
     return @intCast(idx);
 }
 
 fn sysUdpSend(sock: u64, dst: u64, port: u64, buf_and_len: u64) i64 {
+    const task = sched.currentTask() orelse return EIO;
+    if (!net.socketOwnedBy(@intCast(sock), task.tid)) return EBADF;
     // Pointer in the low 48 bits, length in the top 16. Six arguments is one
     // more than the syscall ABI has registers to spare here.
     const ptr = buf_and_len & 0x0000_FFFF_FFFF_FFFF;
@@ -920,6 +924,8 @@ fn sysUdpSend(sock: u64, dst: u64, port: u64, buf_and_len: u64) i64 {
 }
 
 fn sysUdpRecv(sock: u64, buf: u64, len: u64) i64 {
+    const task = sched.currentTask() orelse return EIO;
+    if (!net.socketOwnedBy(@intCast(sock), task.tid)) return EBADF;
     net.poll();
     const d = net.recvFrom(@intCast(sock)) orelse return EAGAIN;
 
@@ -930,6 +936,8 @@ fn sysUdpRecv(sock: u64, buf: u64, len: u64) i64 {
 }
 
 fn sysUdpClose(sock: u64) i64 {
+    const task = sched.currentTask() orelse return EIO;
+    if (!net.socketOwnedBy(@intCast(sock), task.tid)) return EBADF;
     net.socketClose(@intCast(sock));
     return 0;
 }
@@ -949,16 +957,20 @@ fn tcpErrno(e: tcp.Error) i64 {
 
 fn sysTcpConnect(addr: u64, port: u64, timeout_ms: u64) i64 {
     if (!net.isUp()) return -19;
+    if (port > std.math.maxInt(u16)) return EINVAL;
+    const task = sched.currentTask() orelse return EIO;
     const ip = [4]u8{
         @truncate(addr), @truncate(addr >> 8), @truncate(addr >> 16), @truncate(addr >> 24),
     };
-    const idx = tcp.connect(ip, @truncate(port), @min(timeout_ms, 10_000)) catch |e| {
+    const idx = tcp.connect(ip, @intCast(port), @min(timeout_ms, 10_000), task.tid) catch |e| {
         return tcpErrno(e);
     };
     return @intCast(idx);
 }
 
 fn sysTcpSend(sock: u64, buf: u64, len: u64) i64 {
+    const task = sched.currentTask() orelse return EIO;
+    if (!tcp.ownedBy(@intCast(sock), task.tid)) return EBADF;
     if (len == 0) return 0;
     if (len > 1400) return EMSGSIZE;
 
@@ -971,6 +983,8 @@ fn sysTcpSend(sock: u64, buf: u64, len: u64) i64 {
 }
 
 fn sysTcpRecv(sock: u64, buf: u64, len: u64, timeout_ms: u64) i64 {
+    const task = sched.currentTask() orelse return EIO;
+    if (!tcp.ownedBy(@intCast(sock), task.tid)) return EBADF;
     if (len == 0) return 0;
 
     var kbuf: [2048]u8 = undefined;
@@ -986,6 +1000,8 @@ fn sysTcpRecv(sock: u64, buf: u64, len: u64, timeout_ms: u64) i64 {
 }
 
 fn sysTcpClose(sock: u64) i64 {
+    const task = sched.currentTask() orelse return EIO;
+    if (!tcp.ownedBy(@intCast(sock), task.tid)) return EBADF;
     tcp.close(@intCast(sock));
     return 0;
 }

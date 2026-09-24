@@ -183,6 +183,17 @@ open file across 96 child lifetimes and verifies its offset is unchanged.
 This isolates the current read-only file API, but does not yet implement
 fork/exec inheritance, shared open descriptions or writable file semantics.
 
+The socket-lifecycle slice tags user-created UDP and TCP slots with the
+creating task ID. UDP/TCP syscalls reject another task's slot; exit returns
+UDP slots and aborts owned TCP slots without waiting through a 500 ms FIN
+handshake per connection. Kernel DNS/DHCP UDP sockets retain a separate owner
+identity. A ring-3 probe leaves seven UDP sockets open in each of 48 child
+processes while Seed holds the eighth; it checks ownership, table exhaustion,
+slot reuse and exit recovery. TCP ownership guards compile and pass the
+desktop/runtime suites, but this test does not exercise an established TCP
+connection or qualify concurrent socket operations. Asynchronous network
+readiness, robust cross-CPU synchronization, and secure TLS remain open.
+
 ## Runtime milestone: process fault containment (23 September 2026)
 
 Synchronous ring-3 faults (including null access, writing read-only memory,
