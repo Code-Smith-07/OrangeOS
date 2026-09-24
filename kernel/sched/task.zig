@@ -66,6 +66,8 @@ var next_tid: u32 = 1;
 
 pub const Task = struct {
     tid: u32,
+    /// The task that may collect our exit status and release this record.
+    parent_tid: u32 = 0,
     name: [NAME_LEN]u8,
     name_len: usize,
 
@@ -156,7 +158,7 @@ pub fn create(
     const stack_base = pmm.physToVirt(stack_phys);
 
     task.* = .{
-        .tid = next_tid,
+        .tid = @atomicRmw(u32, &next_tid, .Add, 1, .monotonic),
         .name = undefined,
         .name_len = @min(name.len, NAME_LEN),
         .state = .ready,
@@ -169,8 +171,6 @@ pub fn create(
         .arg = arg,
         .address_space = vmm.kernelPml4(),
     };
-    next_tid += 1;
-
     @memcpy(task.name[0..task.name_len], name[0..task.name_len]);
 
     const canary: *u64 = @ptrFromInt(stack_base);

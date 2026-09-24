@@ -46,6 +46,10 @@ def main():
         guest.until(lambda: "runtime: PASS freestanding C floating-point ABI" in guest.log(),
                     "four concurrent compiler-generated C/Zig floating-point probes", 90)
         assert guest.log().count("c-abi-probe: PASS") == 4
+        guest.until(lambda: "runtime: PASS 96 child reaps, slot reuse and wait ownership" in guest.log(),
+                    "96 child reaps, slot reuse and wait ownership", 90)
+        guest.until(lambda: "runtime: PASS full task table rejects spawn and recovers after reaping" in guest.log(),
+                    "full task table rejects spawn and recovers after reaping", 90)
         guest.until(lambda: '"Welcome"' in guest.log() and "squeeze: window" in guest.log(),
                     "desktop starts after runtime stress", 60)
         guest.screenshot("runtime-desktop")

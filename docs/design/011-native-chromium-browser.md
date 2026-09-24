@@ -72,7 +72,7 @@ Baseline checked against the repository on 2026-09-24:
 |---|---|---|
 | CPU/runtime | Static freestanding Zig/C ELF; x87/SSE2 isolation; C ABI probes | libc/libc++, user threads, TLS, synchronization, upstream library tests |
 | Virtual memory | 8 GiB arena; anonymous sparse reserve/commit/decommit with 4 GiB reservations, 64 MiB commit calls and page-aligned subranges in `kernel/mm/user_vm.zig` | File/shared mappings, executable W^X/JIT transitions, concurrent VM and cross-CPU TLB correctness |
-| Process lifecycle | Fault containment and private page reclamation | Complete task/descriptor/socket/IPC reaping; quota accounting; stress beyond scheduler's current 64 task slots |
+| Process lifecycle | Fault containment, private page reclamation and parent-waited child task/stack reaping; 64 concurrent registry slots | Orphan collection, descriptor/socket/IPC ownership, quota accounting and larger concurrent process stress |
 | Networking | DNS and blocking TCP | Precise EOF/error semantics, async readiness, cancellation, entropy, authenticated TLS and trust updates |
 | Storage | Existing CitrusFS and read-only user file interfaces | Durable writable profiles, transactions/locking, larger installation image and cache quotas |
 | Graphics | CPU framebuffer and Peel compositor | Chromium Ozone adapter; atomic buffer ownership; presentation feedback; accelerated device/backend |
@@ -781,6 +781,25 @@ Qualification on 2026-09-24: the 3 GiB/two-vCPU full
 includes 18 ring-3 VM probes, 72 SIMD probes across two concurrent waves per
 run, 24 C ABI probes and six desktop starts. This is a repeatability improvement
 for the defined test, not a general multi-threaded runtime qualification.
+
+### 11.13 Child process reaping foundation
+
+The scheduler now reuses a task registry slot after a parent waits for its
+exited child, and releases that task's 32 KiB kernel stack and task record.
+The 64-slot registry is an explicit concurrent cap; `spawn` fails if full
+instead of silently losing the task from lookup. Task IDs use an atomic
+cross-CPU increment. `wait` verifies parent ownership and consumes exit status
+once; its existing exit-wakeup path remains. The resource-budget reporter now
+copies task samples under the scheduler lock rather than holding pointers to
+records that may be freed concurrently.
+
+The ring-3 runtime test launches and reaps a quiet child 96 times, checking
+slot reuse, double-wait rejection and non-child rejection. It also fills the
+registry with uncollected children, verifies a clean full-table rejection and
+then verifies a new child can launch after that wave is reaped, before the
+desktop starts. This is not complete browser process lifecycle: orphaned children are
+not yet collected automatically, and process-owned file/socket/IPC objects and
+larger concurrent process counts still need separate reclamation and quotas.
 
 ## 12. Security updates and distribution
 

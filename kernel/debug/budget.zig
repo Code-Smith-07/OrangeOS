@@ -153,12 +153,13 @@ pub fn benchContextSwitch() void {
 /// difference across a window rather than as a lifetime average, because a
 /// lifetime average is dominated by boot - when the machine is legitimately
 /// busy - and would flatter any amount of steady-state spinning.
-var task_before: [64]u64 = @splat(0);
+const TaskBefore = struct { tid: u32 = 0, ticks: u64 = 0 };
+var task_before: [sched.MAX_TASKS]TaskBefore = @splat(.{});
 
 pub fn benchIdleCpu(cpu_count: usize, window_ms: u64) void {
     var tb: usize = 0;
     while (tb < sched.taskSlotCount() and tb < task_before.len) : (tb += 1) {
-        task_before[tb] = if (sched.taskAt(tb)) |t| t.ticks_used else 0;
+        task_before[tb] = if (sched.taskSample(tb)) |t| .{ .tid = t.tid, .ticks = t.ticks_used } else .{};
     }
 
     var before: [percpu.MAX_CPUS]struct { idle: u64, busy: u64 } = undefined;
@@ -196,8 +197,9 @@ pub fn benchIdleCpu(cpu_count: usize, window_ms: u64) void {
     // awake; this says who woke it.
     var n: usize = 0;
     while (n < sched.taskSlotCount() and n < task_before.len) : (n += 1) {
-        const t = sched.taskAt(n) orelse continue;
-        const used = t.ticks_used - task_before[n];
+        const t = sched.taskSample(n) orelse continue;
+        const prior_task = task_before[n];
+        const used = if (prior_task.tid == t.tid and t.ticks_used >= prior_task.ticks) t.ticks_used - prior_task.ticks else t.ticks_used;
         if (used == 0) continue;
         console.print("[budget] task.{s} {d}\n", .{ t.nameSlice(), used });
     }

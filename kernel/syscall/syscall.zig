@@ -438,10 +438,11 @@ pub const WNOHANG: u64 = 1;
 
 fn sysWait(pid: u64, flags: u64) i64 {
     const tid: u32 = @truncate(pid);
-    const t = sched.findByTid(tid) orelse return ECHILD;
+    const parent = sched.currentTask() orelse return ECHILD;
+    const t = sched.findChild(tid, parent.tid) orelse return ECHILD;
 
     if (flags & WNOHANG != 0) {
-        return if (sched.taskExitCode(t)) |code| code else EAGAIN;
+        return if (sched.reapChild(t, parent.tid)) |code| code else EAGAIN;
     }
 
     // We arrive with IF clear, and the child needs timer interrupts to be
@@ -454,9 +455,9 @@ fn sysWait(pid: u64, flags: u64) i64 {
         // this check and commitWait, its wake removes us from the queue and
         // commitWait returns without sleeping.
         sched.prepareWait(@intFromPtr(t));
-        if (sched.taskExitCode(t)) |code| {
+        if (sched.taskExitCode(t) != null) {
             sched.cancelWait();
-            return code;
+            return sched.reapChild(t, parent.tid) orelse ECHILD;
         }
         sched.commitWait();
     }

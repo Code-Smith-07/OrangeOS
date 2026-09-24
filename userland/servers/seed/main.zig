@@ -155,6 +155,32 @@ export fn _start() callconv(.c) noreturn {
             if (code != 0) pulp.exit(101);
         }
         pulp.puts("runtime: PASS freestanding C floating-point ABI\n");
+        // More than the registry's 64 concurrent slots must be possible over
+        // the machine's lifetime once each child has been waited/reaped.
+        for (0..96) |_| {
+            const child = pulp.spawn("/bin/reap-probe") catch pulp.exit(102);
+            if ((pulp.wait(child) catch pulp.exit(103)) != 0) pulp.exit(104);
+            if (pulp.syscall2(pulp.NR.wait, @bitCast(child), 1) != -10) pulp.exit(105);
+        }
+        if (pulp.syscall2(pulp.NR.wait, 1, 1) != -10) pulp.exit(106);
+        pulp.puts("runtime: PASS 96 child reaps, slot reuse and wait ownership\n");
+        var children: [64]i64 = undefined;
+        var child_count: usize = 0;
+        while (child_count < children.len) {
+            const child = pulp.spawn("/bin/reap-probe") catch |err| {
+                if (err != error.NoMemory) pulp.exit(107);
+                break;
+            };
+            children[child_count] = child;
+            child_count += 1;
+        }
+        if (child_count < 32 or child_count == children.len) pulp.exit(108);
+        for (children[0..child_count]) |child| {
+            if ((pulp.wait(child) catch pulp.exit(109)) != 0) pulp.exit(110);
+        }
+        const reused = pulp.spawn("/bin/reap-probe") catch pulp.exit(111);
+        if ((pulp.wait(reused) catch pulp.exit(112)) != 0) pulp.exit(113);
+        pulp.puts("runtime: PASS full task table rejects spawn and recovers after reaping\n");
     }
     loadConfig();
 

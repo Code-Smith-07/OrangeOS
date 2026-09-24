@@ -102,28 +102,53 @@ inline fn idleOf(c: *percpu.PerCpu) ?*Task {
 
 var total_switches: u64 = 0;
 
-/// Every task ever created, so a pid can be looked up after it exits.
-/// A real system reaps and recycles these; Phase 6 keeps them.
-const MAX_TASKS = 64;
+/// Live tasks and children awaiting collection. Slots return to the pool when
+/// a parent waits, so the limit is concurrent records, not lifetime launches.
+pub const MAX_TASKS = 64;
 var all_tasks: [MAX_TASKS]?*Task = [_]?*Task{null} ** MAX_TASKS;
 var all_count: usize = 0;
 
-fn registerTask(t: *Task) void {
-    if (all_count >= MAX_TASKS) return;
-    all_tasks[all_count] = t;
-    all_count += 1;
+/// Caller holds the scheduler lock.
+fn registerTask(t: *Task) bool {
+    for (&all_tasks, 0..) |*slot, i| {
+        if (slot.* != null) continue;
+        slot.* = t;
+        all_count = @max(all_count, i + 1);
+        return true;
+    }
+    return false;
 }
 
-/// Iterate every task ever registered. Used by the budget reporter to
+/// Iterate the live/reapable task registry. Used by the budget reporter to
 /// attribute CPU time: knowing the machine is busy is useless without knowing
 /// which thread is making it busy.
 pub fn taskSlotCount() usize {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
     return all_count;
 }
 
-pub fn taskAt(i: usize) ?*Task {
+pub const TaskSample = struct {
+    tid: u32,
+    ticks_used: u64,
+    name: [task_mod.NAME_LEN]u8,
+    name_len: usize,
+
+    pub fn nameSlice(self: *const TaskSample) []const u8 {
+        return self.name[0..self.name_len];
+    }
+};
+
+/// Copy accounting data under the registry lock; a reaped Task cannot be
+/// returned as a pointer to a concurrent budget reporter.
+pub fn taskSample(i: usize) ?TaskSample {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
     if (i >= all_count) return null;
-    return all_tasks[i];
+    const t = all_tasks[i] orelse return null;
+    var sample: TaskSample = .{ .tid = t.tid, .ticks_used = t.ticks_used, .name = undefined, .name_len = t.name_len };
+    @memcpy(sample.name[0..t.name_len], t.nameSlice());
+    return sample;
 }
 
 pub fn findByTid(tid: u32) ?*Task {
@@ -136,6 +161,41 @@ pub fn findByTid(tid: u32) ?*Task {
         }
     }
     return null;
+}
+
+/// Only the spawning task may wait for a child. This also means a returned
+/// pointer stays alive while our single-threaded parent performs wait/reap.
+pub fn findChild(tid: u32, parent_tid: u32) ?*Task {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    for (all_tasks[0..all_count]) |candidate| {
+        const t = candidate orelse continue;
+        if (t.tid == tid and t.parent_tid == parent_tid) return t;
+    }
+    return null;
+}
+
+/// Consume one exited child's status and recycle its registry slot and stack.
+/// The caller is its only waiter; user threads must add a shared wait owner.
+pub fn reapChild(t: *Task, parent_tid: u32) ?i32 {
+    const state = spinlock.acquireIrqSave(&lock);
+    if (t.parent_tid != parent_tid or t.state != .zombie) {
+        spinlock.releaseIrqRestore(&lock, state);
+        return null;
+    }
+    var found = false;
+    for (&all_tasks) |*slot| {
+        if (slot.* == t) {
+            slot.* = null;
+            found = true;
+            break;
+        }
+    }
+    const code = t.exit_code;
+    spinlock.releaseIrqRestore(&lock, state);
+    if (!found) return null;
+    task_mod.destroy(t);
+    return code;
 }
 
 /// Read the exit result under the same lock that publishes `.zombie`.
@@ -187,13 +247,17 @@ pub fn spawn(
     priority: Priority,
 ) !*Task {
     const t = try task_mod.create(name, entry, arg, priority, @intFromPtr(&threadTrampoline));
+    t.parent_tid = if (currentTask()) |parent| parent.tid else 0;
 
     const state = spinlock.acquireIrqSave(&lock);
-    defer spinlock.releaseIrqRestore(&lock, state);
-
+    if (!registerTask(t)) {
+        spinlock.releaseIrqRestore(&lock, state);
+        task_mod.destroy(t);
+        return error.OutOfMemory;
+    }
     queues[@intFromEnum(priority)].push(t);
-    registerTask(t);
     task_count += 1;
+    spinlock.releaseIrqRestore(&lock, state);
     return t;
 }
 

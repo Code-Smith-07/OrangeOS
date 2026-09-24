@@ -145,6 +145,19 @@ changes, the two-vCPU `tools/runtime_smoke.py` passed six consecutive runs,
 including all VM, SIMD, C ABI and desktop gates. This resolves the observed
 timeout in those runs, not all future scheduler or browser stress risks.
 
+The next process-lifecycle slice recycles a child task's registry slot and
+32 KiB kernel stack when its parent consumes the exit status. The 64-record
+limit now bounds concurrent records, not lifetime process launches; a full
+registry rejects a spawn instead of silently creating an unfindable task.
+Task IDs are assigned atomically across CPUs, and `wait` accepts only children
+of the calling task. Budget reporting copies task accounting data under the
+scheduler lock so it cannot inspect a record being reaped. A quiet ring-3
+probe is launched and waited 96 times before desktop startup, checking slot
+reuse, second-wait rejection and non-child rejection. A separate wave fills
+the registry with uncollected children, checks a clean spawn rejection, then
+reaps the wave and starts another child. This does not yet reap
+orphaned children automatically or reclaim globally owned sockets/descriptors.
+
 This removes the first allocation blocker; it is not a completed engine port,
 C library, thread API, SIMD implementation or browser.
 
