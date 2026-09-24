@@ -185,6 +185,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "simd-probe", .path = "userland/bin/simd-probe/main.zig" },
         .{ .name = "c-abi-probe", .path = "userland/bin/c-abi-probe/main.zig" },
         .{ .name = "reap-probe", .path = "userland/bin/reap-probe/main.zig" },
+        .{ .name = "orphan-probe", .path = "userland/bin/orphan-probe/main.zig" },
+        .{ .name = "orphan-slow", .path = "userland/bin/orphan-slow/main.zig" },
         .{ .name = "fault-null", .path = "userland/bin/fault-null/main.zig" },
         .{ .name = "fault-ro", .path = "userland/bin/fault-ro/main.zig" },
         .{ .name = "fault-nx", .path = "userland/bin/fault-nx/main.zig" },

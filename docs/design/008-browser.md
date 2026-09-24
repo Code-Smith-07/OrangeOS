@@ -161,6 +161,19 @@ orphaned children automatically or reclaim globally owned sockets/descriptors.
 This removes the first allocation blocker; it is not a completed engine port,
 C library, thread API, SIMD implementation or browser.
 
+The following orphan-cleanup slice adds a low-priority kernel reaper. When a
+parent exits, its live and already-exited children become unowned; after each
+child exits, the reaper releases its task record and 32 KiB stack. A ring-3
+stress probe launches 96 parents in eight waves; each parent leaves a fast and
+a delayed child, then exits without waiting. A post-wave spawn checks that the
+registry remains reusable. This stress also exposed unsynchronized concurrent
+reads through the AHCI/NVMe drivers' single command slot and DMA bounce buffer:
+some real binaries falsely resolved as missing. The common block-device
+boundary now serializes reads and writes across partition aliases until the
+drivers implement independently owned request queues. This is a correctness
+gate, not an asynchronous storage or browser I/O implementation. Global
+descriptor, socket and IPC object ownership remains incomplete.
+
 ## Runtime milestone: process fault containment (23 September 2026)
 
 Synchronous ring-3 faults (including null access, writing read-only memory,

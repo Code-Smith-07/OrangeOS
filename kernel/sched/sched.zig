@@ -198,6 +198,40 @@ pub fn reapChild(t: *Task, parent_tid: u32) ?i32 {
     return code;
 }
 
+/// A parent may exit without waiting. Detach its children while publishing
+/// that exit; the reaper will collect each child after it becomes a zombie.
+/// Caller holds the scheduler lock.
+fn orphanChildrenLocked(parent_tid: u32) void {
+    for (all_tasks[0..all_count]) |candidate| {
+        const child = candidate orelse continue;
+        if (child.parent_tid == parent_tid) child.parent_tid = 0;
+    }
+}
+
+/// Remove one unowned zombie under the scheduler lock. The task's former CPU
+/// has already switched stacks before releasing that lock, so it is safe to
+/// destroy the record after the lock is released.
+fn takeOrphanZombie() ?*Task {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    for (&all_tasks) |*slot| {
+        const t = slot.* orelse continue;
+        if (t.parent_tid != 0 or t.state != .zombie) continue;
+        slot.* = null;
+        return t;
+    }
+    return null;
+}
+
+/// Long-lived kernel worker. This does not make other global resources
+/// process-owned; sockets and descriptors still need their own cleanup paths.
+pub fn orphanReaper(_: ?*anyopaque) void {
+    while (true) {
+        while (takeOrphanZombie()) |t| task_mod.destroy(t);
+        sleepMs(50);
+    }
+}
+
 /// Read the exit result under the same lock that publishes `.zombie`.
 pub fn taskExitCode(t: *Task) ?i32 {
     const state = spinlock.acquireIrqSave(&lock);
@@ -478,6 +512,7 @@ pub fn exit(code: i32) noreturn {
     const t = currentOf(c) orelse unreachable;
     t.exit_code = code;
     t.state = .zombie;
+    orphanChildrenLocked(t.tid);
     task_count -= 1;
     wakeChannelLocked(@intFromPtr(t));
 

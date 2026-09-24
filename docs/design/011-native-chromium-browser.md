@@ -72,7 +72,7 @@ Baseline checked against the repository on 2026-09-24:
 |---|---|---|
 | CPU/runtime | Static freestanding Zig/C ELF; x87/SSE2 isolation; C ABI probes | libc/libc++, user threads, TLS, synchronization, upstream library tests |
 | Virtual memory | 8 GiB arena; anonymous sparse reserve/commit/decommit with 4 GiB reservations, 64 MiB commit calls and page-aligned subranges in `kernel/mm/user_vm.zig` | File/shared mappings, executable W^X/JIT transitions, concurrent VM and cross-CPU TLB correctness |
-| Process lifecycle | Fault containment, private page reclamation and parent-waited child task/stack reaping; 64 concurrent registry slots | Orphan collection, descriptor/socket/IPC ownership, quota accounting and larger concurrent process stress |
+| Process lifecycle | Fault containment, private page reclamation, waited-child and orphan task/stack reaping; 64 concurrent registry slots | Descriptor/socket/IPC ownership, quota accounting and larger concurrent process stress |
 | Networking | DNS and blocking TCP | Precise EOF/error semantics, async readiness, cancellation, entropy, authenticated TLS and trust updates |
 | Storage | Existing CitrusFS and read-only user file interfaces | Durable writable profiles, transactions/locking, larger installation image and cache quotas |
 | Graphics | CPU framebuffer and Peel compositor | Chromium Ozone adapter; atomic buffer ownership; presentation feedback; accelerated device/backend |
@@ -800,6 +800,25 @@ then verifies a new child can launch after that wave is reaped, before the
 desktop starts. This is not complete browser process lifecycle: orphaned children are
 not yet collected automatically, and process-owned file/socket/IPC objects and
 larger concurrent process counts still need separate reclamation and quotas.
+
+### 11.14 Orphan collection and concurrent disk-read correctness
+
+A low-priority kernel reaper now collects a zombie with no living parent only
+after its CPU has switched away from the dying stack. Parent exit detaches
+children under the scheduler lock, whether they are already zombies or still
+running. The runtime probe runs 96 short-lived parents in eight waves. Each
+abandons one fast child and one delayed child; after the waves, a new process
+must still launch and exit. This bounds the test to the existing 64 concurrent
+task slots while exercising more than 64 parent lifetimes.
+
+Initial concurrent waves exposed a separate storage race: AHCI/NVMe drivers
+use one command slot and DMA bounce buffer per controller, but their block
+operations had no cross-CPU serialization. Parallel executable reads could
+corrupt directory or ELF data, producing false `NotFound` and user faults.
+The common block-device boundary now serializes complete reads and writes,
+including partition aliases. The longer-term browser path still requires
+asynchronous, independently owned storage requests. Global file descriptors,
+sockets and IPC objects are not yet fully process-owned or reclaimed.
 
 ## 12. Security updates and distribution
 

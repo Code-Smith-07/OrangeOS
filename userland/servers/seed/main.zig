@@ -181,6 +181,26 @@ export fn _start() callconv(.c) noreturn {
         const reused = pulp.spawn("/bin/reap-probe") catch pulp.exit(111);
         if ((pulp.wait(reused) catch pulp.exit(112)) != 0) pulp.exit(113);
         pulp.puts("runtime: PASS full task table rejects spawn and recovers after reaping\n");
+        // Eight waves exceed the registry's lifetime capacity. Each parent
+        // abandons two children, one short-lived and one still running.
+        for (0..8) |_| {
+            var parents: [12]i64 = undefined;
+            for (&parents) |*pid| pid.* = pulp.spawn("/bin/orphan-probe") catch |err| {
+                pulp.print("runtime: orphan spawn failed {s}\n", .{@errorName(err)});
+                pulp.exit(114);
+            };
+            for (parents) |pid| {
+                const code = pulp.wait(pid) catch pulp.exit(115);
+                if (code != 0) {
+                    pulp.print("runtime: orphan parent {d} exit {d}\n", .{ pid, code });
+                    pulp.exit(116);
+                }
+            }
+            pulp.sleepMs(250);
+        }
+        const after_orphans = pulp.spawn("/bin/reap-probe") catch pulp.exit(117);
+        if ((pulp.wait(after_orphans) catch pulp.exit(118)) != 0) pulp.exit(119);
+        pulp.puts("runtime: PASS orphan children are collected across 96 parent exits\n");
     }
     loadConfig();
 

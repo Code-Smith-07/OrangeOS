@@ -146,6 +146,12 @@ export fn kmain() callconv(.c) noreturn {
 
     if (build_options.sched_test) sched_test.spawnAll();
 
+    _ = sched.spawn("orphan-reaper", sched.orphanReaper, null, .batch) catch |e| {
+        fbcon.reclaim();
+        console.err("could not spawn orphan reaper: {s}", .{@errorName(e)});
+        io.hang();
+    };
+
     // A short-lived reporter, so the per-CPU switch counts are visible without
     // needing a userland tool for it.
     _ = sched.spawn("cpu-report", cpuReport, null, .batch) catch {};

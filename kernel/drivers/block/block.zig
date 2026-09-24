@@ -5,6 +5,12 @@
 //! SATA, NVMe, or virtio.
 
 const std = @import("std");
+const spinlock = @import("../../sync/spinlock.zig");
+
+// AHCI and NVMe currently each use one command slot and one DMA bounce buffer.
+// Partition devices share their parent controller, so serialize at this common
+// boundary until the drivers grow independent queues and request ownership.
+var io_lock: spinlock.SpinLock = .{};
 
 pub const SECTOR_SIZE: usize = 512;
 
@@ -38,11 +44,15 @@ pub const Device = struct {
 
     pub fn read(self: *const Device, lba: u64, count: u32, buf: [*]u8) Error!void {
         if (lba + count > self.sectors) return Error.OutOfRange;
+        const state = spinlock.acquireIrqSave(&io_lock);
+        defer spinlock.releaseIrqRestore(&io_lock, state);
         return self.ops.read(self.ctx, self.lba_offset + lba, count, buf);
     }
 
     pub fn write(self: *const Device, lba: u64, count: u32, buf: [*]const u8) Error!void {
         if (lba + count > self.sectors) return Error.OutOfRange;
+        const state = spinlock.acquireIrqSave(&io_lock);
+        defer spinlock.releaseIrqRestore(&io_lock, state);
         return self.ops.write(self.ctx, self.lba_offset + lba, count, buf);
     }
 

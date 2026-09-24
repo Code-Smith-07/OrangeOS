@@ -50,6 +50,8 @@ def main():
                     "96 child reaps, slot reuse and wait ownership", 90)
         guest.until(lambda: "runtime: PASS full task table rejects spawn and recovers after reaping" in guest.log(),
                     "full task table rejects spawn and recovers after reaping", 90)
+        guest.until(lambda: "runtime: PASS orphan children are collected across 96 parent exits" in guest.log(),
+                    "orphan cleanup across 96 exiting parents", 90)
         guest.until(lambda: '"Welcome"' in guest.log() and "squeeze: window" in guest.log(),
                     "desktop starts after runtime stress", 60)
         guest.screenshot("runtime-desktop")
