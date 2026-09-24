@@ -670,8 +670,52 @@ class and an in-memory LevelDB directory; Content Shell also opened its usual
 ephemeral loopback DevTools endpoint. The fixture does not exercise durable
 profile writes, certificate rejection, sandbox escapes, public websites,
 video, sustained rendering or guest execution. The smoke passed twice, but
-**Phase 1 remains open**: embedding choice, full dependency/patch map, guest
-storage plan, GPU capability audit and a documented go/no-go decision remain.
+**Phase 1 remains open** for the remaining work identified below.
+
+### 11.9 Embedding decision and native-port feasibility checkpoint
+
+**Decision for the first guest engine milestone:** keep the pinned upstream
+Chromium `content` layer and implement a small OrangeOS embedder around its
+public browser interfaces. Use `content_shell` as an **upstream test/bring-up
+reference only**; its `content/shell/BUILD.gn` marks `content_shell_lib`
+`testonly = true`, and its macOS window delegate is not a Peel integration.
+The eventual Orange Browser shell must supply its own navigation, profiles,
+permissions, downloads, recovery and UI on top of the engine. Do not ship the
+test shell as a browser.
+
+This chooses one upstream engine/platform port before adding another framework.
+CEF's own [architecture](https://chromiumembedded.github.io/cef/architecture.html)
+describes CEF3 as a wrapper over Chromium's content or Chrome layers; it would
+not make Zest's process, memory, graphics or security primitives appear.
+Reconsider CEF only if an OrangeOS-capable CEF port measurably reduces the
+long-term adapter and update burden. Retaining Chrome's entire browser/UI layer
+would import more platform and UI assumptions than the first guest milestone
+needs. This is an embedding direction, **not proof** that the public Content API
+is sufficient for every desired shipping feature. Record feature gaps as the
+native shell develops; no Chrome extension compatibility is promised.
+
+Read-only host/guest capability audit on 2026-09-24:
+
+| Gate | Observed fact | Consequence |
+|---|---|---|
+| Guest virtual memory | `kernel/mm/user_vm.zig` caps the arena at 256 MiB and one mapping at 64 MiB, permits only whole-allocation unmap/protect, and forbids executable anonymous pages | A 4 GiB QEMU setting does not give V8 the sparse reservation and W^X/JIT transitions it needs. Add a concurrent reserve/commit/protect/unmap model and tests before engine linkage. |
+| Guest storage | `scripts/mkdisk.sh` creates a 32 MiB CitrusFS image inside a 64 MiB GPT disk; the built files measured exactly 33,554,432 and 67,108,864 bytes | No browser binary, cache or durable profile belongs in this development image. Design a larger versioned install/profile volume, quota and recovery path without overwriting user data. |
+| Current VM graphics | QEMU 11.1.0 advertises `virtio-gpu-pci`/`virtio-vga` but no `virtio-gpu-gl` or `virtio-vga-gl`; its display list is `none`, `curses`, `cocoa`, `dbus`; the guest has a Limine linear framebuffer, not a GPU driver | Software output through Peel is the first port target. No accelerated GPU or hardware-video claim is valid. A future backend requires guest driver, buffer/fence protocol and named-host qualification. |
+| Current VM CPU | This Apple Silicon host's x86-64 QEMU binary lists only TCG acceleration | Functional bring-up is possible, but smooth media/8K performance cannot be inferred from host CPU/GPU capability. An AArch64 OrangeOS port is a separate project. |
+| Runtime and services | The source inventory in section 11.3 still lacks guest libc/libc++, threads/TLS/waits, process/handle semantics, async network/TLS, writable profiles and continuous PCM | Port these as reusable OS foundations; do not fill Chromium platform calls with success-returning stubs. |
+
+**Go/no-go:** GO for Phase 2 foundation probes and a software-output guest
+bring-up prototype. NO-GO for claiming a native installed browser, real-site
+support, 4 GiB smoothness, hardware video decode or a shippable sandbox. Phase 1
+is not closed: the complete transitive dependency/patch inventory, clean
+reproduction of the pinned host build and install/profile-volume migration
+design remain separate gates. The capability audit records that GPU acceleration
+is unavailable in the current VM; actual backend qualification belongs to the
+later graphics phase. The next code milestone is
+guest virtual-memory primitives with correctness/stress tests, followed by
+threads/TLS and process/IPC cleanup; only then should the Chromium guest target
+be linked. Chromium's [Ozone integration guide](https://chromium.googlesource.com/chromium/src/+/main/docs/ozone_overview.md)
+is the upstream reference for the eventual Peel platform adapter.
 
 ## 12. Security updates and distribution
 
