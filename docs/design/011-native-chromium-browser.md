@@ -592,10 +592,12 @@ The runner writes the final result when the build exits. Regression tests now
 total **39 passing**, including live lock detection, stale-state reporting,
 bounded log reads and rejecting log paths outside the workspace.
 
-The compile remains a Mac reference experiment. Native OrangeOS execution,
-sandboxing, GPU/video capability and websites remain unqualified. Consult
-`python3 tools/browser_reference.py status` for the current local result rather
-than treating this early-progress record as a completed build.
+On 2026-09-24, the pinned `content_shell` Mac reference build **succeeded**.
+The final five-worker incremental pass reported `Build Succeeded: 13053 steps`
+after 3h14m52s; prior interrupted passes retained their compiled objects. The
+runner recorded `build: passed` at the manifest fingerprint. This is one
+successful host build, not a clean-room reproducibility result. Native OrangeOS
+execution, sandboxing, GPU/video capability and websites remain unqualified.
 
 ### 11.6 Prepared local engine smoke gate
 
@@ -613,9 +615,15 @@ adds `ignore-certificate-errors` in web-test mode. Consequently this harness is
 HTTPS/sandbox/site qualification. It does not add `--no-sandbox` or single-process
 flags. Separate normal-mode testing remains mandatory.
 
-**43 setup/harness tests passed. The real engine fixture has not run yet**:
-the first Chromium compilation is still in progress at this checkpoint. Do not
-promote harness unit-test results into native browser or reference launch success.
+The first real launch returned zero but the harness correctly rejected its
+output: `document.body.textContent` caused the web-test text dump to collapse
+the five passing markers onto one line. The fixture now writes them to its
+existing `<pre>` element. A repeat launch **passed all five checks**, emitted
+one completion marker, returned zero and did not time out. The captured stderr
+also contains macOS duplicate Objective-C class and XPC warnings; the smoke
+result does not qualify graphics stability. **50 local tool tests pass.**
+This is a local engine sanity check only, not native browser, HTTPS, sandbox,
+real-site or media qualification.
 
 ### 11.7 Reference build parallelism adjustment
 
@@ -641,7 +649,7 @@ graph evaluation; these counters are not a stable estimate of remaining time.
 
 The owner subsequently requested five workers. The four-worker invocation was
 interrupted gracefully at 6,737 completed actions, zero failed and 14,098
-remaining. The incremental `build --jobs 5` run is active with Siso
+remaining. The incremental `build --jobs 5` run completed with Siso
 `-local_jobs=5`; no output directory was cleaned. Before switching, macOS
 reported 70% system-wide memory free, 513 MiB swap in use and 226 GiB free on
 the external build volume. These are host-build observations, not guest browser

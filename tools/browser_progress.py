@@ -67,8 +67,8 @@ def snapshot(work=WORK):
               "current": current, "prior_done": prior_done}
     if current:
         _, done, total, action = current
-        remaining = total - done
-        estimated_done = prior_done + done
+        remaining = 0 if result == "passed" else total - done
+        estimated_done = prior_done + (total if result == "passed" else done)
         estimated_total = prior_done + total
         report.update({"pass_done": done, "pass_total": total, "remaining": remaining,
                        "estimated_done": estimated_done, "estimated_total": estimated_total,
@@ -92,11 +92,14 @@ def render(report, columns=80):
         lines.append(f"Estimated remaining: {100 - percent:.1f}%")
     lines.append(f"State: {report['result'].upper()}    Workers: {report.get('workers') or '-'}")
     if report.get("current"):
-        lines.append(f"Current pass: {report['pass_done']:,} / {report['pass_total']:,} actions")
-        lines.append(f"Across {report['attempts']} passes: ~{report['estimated_done']:,} done, "
-                     f"~{report['remaining']:,} left")
-        action = report["action"]
-        lines.append("Latest: " + (action[:max(12, columns - 8)]))
+        if report["result"] == "passed":
+            lines.append("Build completed successfully; no actions remain.")
+        else:
+            lines.append(f"Current pass: {report['pass_done']:,} / {report['pass_total']:,} actions")
+            lines.append(f"Across {report['attempts']} passes: ~{report['estimated_done']:,} done, "
+                         f"~{report['remaining']:,} left")
+            action = report["action"]
+            lines.append("Latest: " + (action[:max(12, columns - 8)]))
     if report.get("error"):
         lines.append("Warning: " + report["error"])
     lines.extend(["", "Estimate can shift as Chromium changes its action graph.",

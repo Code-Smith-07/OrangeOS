@@ -59,10 +59,15 @@ class ProgressTests(unittest.TestCase):
             logs = work / "logs"
             logs.mkdir()
             log = logs / "1-build.log"
-            log.write_text("[10/10] final\n")
+            # Siso can finish successfully without a final [total/total] line.
+            log.write_text("[9/10] final\n")
             state = work / "state.json"
             state.write_text(json.dumps({"build": {"result": "passed", "log": str(log)}}))
-            self.assertEqual(snapshot(work)["percent"], 100)
+            completed = snapshot(work)
+            self.assertEqual(completed["percent"], 100)
+            self.assertEqual(completed["remaining"], 0)
+            self.assertIn("no actions remain", render(completed))
+            self.assertNotIn("9 / 10", render(completed))
             state.write_text(json.dumps({"build": {"result": "running", "log": "/etc/hosts"}}))
             self.assertEqual(snapshot(work)["result"], "invalid log path")
 

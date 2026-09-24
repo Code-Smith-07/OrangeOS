@@ -33,9 +33,9 @@ if (window.testRunner) {
     const pixel = context.getImageData(0, 0, 1, 1).data;
     check("canvas", pixel[0] === 18 && pixel[1] === 52 && pixel[2] === 86 && pixel[3] === 255);
     check("async", await new Promise(resolve => setTimeout(() => resolve(42), 0)) === 42);
-    document.body.textContent = checks.join("\n") + "\nORANGE_REFERENCE_ENGINE_PASS\n";
+    document.querySelector("#result").textContent = checks.join("\n") + "\nORANGE_REFERENCE_ENGINE_PASS\n";
   } catch (error) {
-    document.body.textContent = "ORANGE_REFERENCE_ENGINE_FAIL " + error.message;
+    document.querySelector("#result").textContent = "ORANGE_REFERENCE_ENGINE_FAIL " + error.message;
   } finally {
     if (window.testRunner) testRunner.notifyDone();
   }
