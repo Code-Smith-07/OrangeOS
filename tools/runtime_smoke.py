@@ -14,8 +14,10 @@ def main():
         guest.until(lambda: "runtime: PASS repeated VM processes" in guest.log(),
                     "three complete ring-3 VM probes", 90)
         log = guest.log()
-        guest.until(lambda: "[pass] TLB IPI: 32 remaps acknowledged across 2 CPUs" in guest.log(),
+        guest.until(lambda: f"[pass] TLB IPI: 32 remaps acknowledged across {guest.profile.cpus} CPUs" in guest.log(),
                     "remote TLB shootdown and remap readback", 30)
+        guest.until(lambda: "[pass] TLB targeted IPI: CPU " in guest.log(),
+                    "one selected CPU receives the IPI", 30)
         assert log.count("vm-probe: PASS mapping, subranges, sparse reservation, protection, reuse and capacity") == 3
         assert "[FAIL]" not in log and "vm-probe: FAIL" not in log
         for marker in (

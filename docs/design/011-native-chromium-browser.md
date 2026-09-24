@@ -948,6 +948,24 @@ that may retain the address space, and test concurrent map/protect/unmap
 against migration and exit. A lock in today's per-task State is not itself a
 thread-safe shared address space. The browser remains absent.
 
+### 11.22 Explicit CPU-targeted shootdown transport
+
+The SMP layer now publishes a CPU-index mask after each AP has finished
+initialization, preserving gaps if an AP fails to start. The TLB request path
+accepts an explicit mask and sends fixed-vector IPIs only to those CPU/APIC
+destinations. A runtime probe snapshots the per-CPU vector-delivery counters,
+targets one remote CPU, checks its readback and acknowledgement, and confirms
+the other CPUs received no TLB vector. The full runtime suite passed on 2 and
+4 vCPUs; the 4-vCPU run exercised two excluded remote CPUs.
+
+The mask is supplied by the caller; the scheduler does **not** yet publish a
+race-safe set of CPUs that could retain a particular user address space.
+Consequently user VM stays on its exclusive local-invalidation path. Before
+enabling shared-address-space threads, add process-owned VM state, safe
+CPU/address-space residency tracking (including migration and CR3-switch
+races), and an interruptible targeted-shootdown/teardown protocol. Targeted
+delivery alone does not qualify a browser thread runtime.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,

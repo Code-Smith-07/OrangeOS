@@ -1781,6 +1781,13 @@ deadlock against another masked CPU. Remote shootdown requires an
 interrupt-enabled caller. Shared user threads still require process-owned VM
 state, an IRQ-safe mutation protocol and targeted cross-CPU testing.
 
+**Targeted IPI transport (24 September 2026):** SMP publishes an online CPU
+mask and can send a fixed-vector IPI to one selected CPU. A four-vCPU QEMU
+probe confirmed one target receives the TLB vector while the other remote
+CPUs do not. The caller must supply that mask; no scheduler-owned user
+address-space residency mask exists yet, so shared user-VM shootdown remains
+unavailable until migration and CR3-switch races are addressed.
+
 ```
    ┌─────────────────────────────────────────────────────────────────┐
    │  Terminal 1                     Terminal 2                      │

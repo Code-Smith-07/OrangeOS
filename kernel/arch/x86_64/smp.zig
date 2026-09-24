@@ -36,10 +36,17 @@ const DELIVERY_PENDING: u32 = 1 << 12;
 const AP_STACK_PAGES: usize = 4; // 16 KiB per core
 
 var online: usize = 1; // the boot processor
+var online_mask: u64 = 1;
 var started: usize = 0;
 
 pub fn cpusOnline() usize {
     return @atomicLoad(usize, &online, .acquire);
+}
+
+/// Stable CPU-index bits, including the boot processor. Failed AP bring-up
+/// can leave gaps in the indices, so a count is not an IPI destination map.
+pub fn onlineMask() u64 {
+    return @atomicLoad(u64, &online_mask, .acquire);
 }
 
 fn params() *volatile tramp.Params {
@@ -92,6 +99,7 @@ export fn apEntry(index: u64) callconv(.c) noreturn {
     };
 
     params().ready = 1;
+    _ = @atomicRmw(u64, &online_mask, .Or, @as(u64, 1) << @intCast(i), .acq_rel);
     _ = @atomicRmw(usize, &online, .Add, 1, .seq_cst);
 
     // Signal that this core is ready, then wait until the boot processor has
@@ -115,11 +123,12 @@ pub const VECTOR_PANIC_HALT: u8 = 0xF0;
 /// Destination shorthand 0b11: every CPU except the one sending.
 const SHORTHAND_ALL_BUT_SELF: u32 = 3 << 18;
 
-/// Send a fixed-vector interrupt to every other online CPU. The caller must
-/// install its handler first and arrange its own acknowledgement protocol.
-pub fn broadcastFixed(vector: u8) void {
-    if (@atomicLoad(usize, &online, .acquire) <= 1) return;
-    sendIpi(0, SHORTHAND_ALL_BUT_SELF | LEVEL_ASSERT | vector);
+/// Send one fixed-vector IPI by CPU index, using the APIC ID published before
+/// the corresponding online bit. The caller owns the acknowledgement policy.
+pub fn sendFixedToCpu(index: usize, vector: u8) void {
+    std.debug.assert(index < percpu.MAX_CPUS);
+    std.debug.assert(onlineMask() & (@as(u64, 1) << @intCast(index)) != 0);
+    sendIpi(@intCast(percpu.block(index).apic_id), LEVEL_ASSERT | vector);
 }
 
 var halt_handler_installed: bool = false;
@@ -186,6 +195,8 @@ fn prepareTrampoline() !void {
 }
 
 pub fn init() !void {
+    const boot_id = apic.id();
+    percpu.block(0).apic_id = boot_id;
     const total = madt.cpuCount();
     if (total <= 1) {
         console.info("SMP: single processor, nothing to start", .{});
@@ -198,12 +209,16 @@ pub fn init() !void {
     p.pml4 = vmm.kernelPml4();
     p.entry = @intFromPtr(&apEntry);
 
-    const boot_id = apic.id();
-
-    var i: usize = 0;
-    while (i < total and i < percpu.MAX_CPUS) : (i += 1) {
-        const target = madt.cpuApicId(i) orelse continue;
+    var slot: usize = 1;
+    var madt_index: usize = 0;
+    while (madt_index < total and slot < percpu.MAX_CPUS) : (madt_index += 1) {
+        const target = madt.cpuApicId(madt_index) orelse continue;
         if (target == boot_id) continue;
+        // CPU index zero belongs to the BSP even if firmware lists its APIC
+        // ID later in the MADT. Keep attempted AP slots distinct: a late AP
+        // must never collide with another core after a startup timeout.
+        const i = slot;
+        slot += 1;
 
         // Reserve this core's kernel and IST stacks here, on the boot
         // processor, while a failure is still recoverable by simply not

@@ -222,6 +222,12 @@ cleanup. The remote-shootdown entry now rejects IRQ-masked callers. User
 threads require shared process-level VM ownership, a safe interruptible
 mutation/teardown protocol and targeted remote invalidation tests.
 
+The shootdown transport now accepts an explicit CPU mask. A two- and four-vCPU
+QEMU probe confirmed that only the chosen CPU receives the vector and
+acknowledges a remap readback. The scheduler still lacks race-safe address-
+space residency tracking; user VM operations therefore remain exclusive and
+local-only. This is transport groundwork, not user-thread support.
+
 ## Runtime milestone: process fault containment (23 September 2026)
 
 Synchronous ring-3 faults (including null access, writing read-only memory,

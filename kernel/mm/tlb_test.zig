@@ -42,6 +42,21 @@ pub fn run(_: ?*anyopaque) void {
         if (ptr.* != second or !samplesMatch(r2, second)) ok = false;
         if (!ok) break;
     }
+    const online = smp.onlineMask();
+    const eligible = online & ~(@as(u64, 1) << @intCast(percpu.cpuIndex()));
+    if (ok and eligible != 0) {
+        const target: usize = @intCast(@ctz(eligible));
+        var before: [percpu.MAX_CPUS]u64 = undefined;
+        for (0..percpu.MAX_CPUS) |cpu| before[cpu] = tlb.deliveryCount(cpu);
+        const targeted = tlb.sampleKernelCpu(TEST_VA, target);
+        if (targeted.remote_mask != (@as(u64, 1) << @intCast(target)) or
+            targeted.samples[target] != (0x516c_00b0_0000_0000 | @as(u64, 31))) ok = false;
+        for (0..percpu.MAX_CPUS) |cpu| {
+            const expected = before[cpu] + @as(u64, if (cpu == target) 1 else 0);
+            if (tlb.deliveryCount(cpu) != expected) ok = false;
+        }
+        if (ok) console.print("[pass] TLB targeted IPI: CPU {d} only\n", .{target});
+    }
     if (vmm.translate(vmm.kernelPml4(), TEST_VA) != null) {
         _ = vmm.clearKernelPage(TEST_VA) orelse unreachable;
         tlb.invalidate(0, TEST_VA);
@@ -58,7 +73,7 @@ pub fn run(_: ?*anyopaque) void {
 fn samplesMatch(result: tlb.Result, expected: u64) bool {
     if (@popCount(result.remote_mask) != smp.cpusOnline() - 1) return false;
     if (result.remote_mask & (@as(u64, 1) << @intCast(percpu.cpuIndex())) != 0) return false;
-    for (0..smp.cpusOnline()) |cpu| {
+    for (0..percpu.MAX_CPUS) |cpu| {
         if (result.remote_mask & (@as(u64, 1) << @intCast(cpu)) != 0 and
             result.samples[cpu] != expected) return false;
     }
