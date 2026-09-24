@@ -542,7 +542,7 @@ pub fn exit(code: i32) noreturn {
     t.state = .zombie;
     orphanChildrenLocked(t.tid);
     task_count -= 1;
-    wakeChannelLocked(@intFromPtr(t));
+    _ = wakeChannelLocked(@intFromPtr(t), std.math.maxInt(usize));
 
     const next = pickNext(c);
     next.state = .running;
@@ -685,7 +685,10 @@ fn wakeExpired(now_ns: u64) void {
             t.sleep_next = null;
             t.wake_at_ns = 0;
             // A timed wait that expired is still linked as a waiter.
-            if (t.on_wait_list) unlinkWaiter(t);
+            if (t.on_wait_list) {
+                t.wait_timed_out = true;
+                unlinkWaiter(t);
+            }
             if (t.state == .blocked) {
                 t.state = .ready;
                 queues[@intFromEnum(t.priority)].push(t);
@@ -726,6 +729,7 @@ pub fn prepareWait(chan: usize) void {
 
     const t = currentOf(cpu()) orelse return;
     if (t.on_wait_list) unlinkWaiter(t);
+    t.wait_timed_out = false;
     t.wait_channel = chan;
     t.wait_next = waiters;
     t.on_wait_list = true;
@@ -741,6 +745,12 @@ pub fn cancelWait() void {
 
     const t = currentOf(cpu()) orelse return;
     if (t.on_wait_list) unlinkWaiter(t);
+}
+
+/// Valid for the current task immediately after commitWaitTimeout returns.
+pub fn waitTimedOut() bool {
+    const t = currentTask() orelse return false;
+    return t.wait_timed_out;
 }
 
 /// Phase 2 with a bound. `timeout_ms` of 0 waits indefinitely.
@@ -853,17 +863,28 @@ pub fn wakeChannel(chan: usize) void {
     const state = spinlock.acquireIrqSave(&lock);
     defer spinlock.releaseIrqRestore(&lock, state);
 
-    wakeChannelLocked(chan);
+    _ = wakeChannelLocked(chan, std.math.maxInt(usize));
+}
+
+/// Wake at most `count` waiters, including those registered but not yet asleep.
+pub fn wakeChannelN(chan: usize, count: usize) usize {
+    if (!started or count == 0) return 0;
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    return wakeChannelLocked(chan, count);
 }
 
 /// Caller must hold `lock`; process exit uses this to publish completion and
 /// wake waiters atomically, without recursively acquiring the scheduler lock.
-fn wakeChannelLocked(chan: usize) void {
+fn wakeChannelLocked(chan: usize, limit: usize) usize {
     var cur = waiters;
     var prev_link: ?*Task = null;
+    var woken: usize = 0;
     while (cur) |w| {
+        if (woken == limit) break;
         const next = w.wait_next;
         if (w.wait_channel == chan) {
+            woken += 1;
             if (prev_link) |p| p.wait_next = next else waiters = next;
             w.wait_next = null;
             w.on_wait_list = false;
@@ -891,6 +912,7 @@ fn wakeChannelLocked(chan: usize) void {
         }
         cur = next;
     }
+    return woken;
 }
 
 /// Block the current thread until something wakes it.

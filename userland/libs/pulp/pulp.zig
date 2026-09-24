@@ -27,6 +27,8 @@ pub const NR = struct {
     pub const vm_decommit: u64 = 15;
     pub const tls_set_base: u64 = 16;
     pub const tls_get_base: u64 = 17;
+    pub const user_wait: u64 = 18;
+    pub const user_wake: u64 = 19;
     pub const sleep_ms: u64 = 61;
     pub const open: u64 = 20;
     pub const close: u64 = 21;
@@ -130,6 +132,7 @@ pub const Error = error{
     ConnectionReset,
     NotConnected,
     TimedOut,
+    WouldBlock,
     ConnectionRefused,
     NotFound,
     IoError,
@@ -151,6 +154,7 @@ fn errno(v: i64) Error {
         107 => Error.NotConnected,
         110 => Error.TimedOut,
         111 => Error.ConnectionRefused,
+        11 => Error.WouldBlock,
         2 => Error.NotFound,
         5 => Error.IoError,
         9 => Error.BadFd,
@@ -659,6 +663,20 @@ pub fn setTlsBase(base: u64) Error!void {
 pub fn getTlsBase() u64 {
     const result = syscall0(NR.tls_get_base);
     return if (result < 0) 0 else @intCast(result);
+}
+
+/// Wait while a shared or private aligned word equals `expected`. Callers
+/// must always recheck their condition after waking; wakes may be spurious.
+/// A zero timeout waits without a deadline.
+pub fn waitWord(word: *const u32, expected: u32, timeout_ms: u64) Error!void {
+    const result = syscall3(NR.user_wait, @intFromPtr(word), expected, timeout_ms);
+    if (result < 0) return errno(result);
+}
+
+pub fn wakeWord(word: *const u32, count: u32) Error!usize {
+    const result = syscall2(NR.user_wake, @intFromPtr(word), count);
+    if (result < 0) return errno(result);
+    return @intCast(result);
 }
 
 // ── Legacy scratch arena ────────────────────────────────────────────────────

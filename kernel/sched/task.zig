@@ -104,6 +104,8 @@ pub const Task = struct {
     wait_channel: usize = 0,
     wait_next: ?*Task = null,
     on_wait_list: bool = false,
+    /// Set only when a timed wait expired, not when its channel was signalled.
+    wait_timed_out: bool = false,
 
     /// When set, fd 0/1/2 route to this PTY's slave end instead of the serial
     /// console. Inherited by anything this task spawns, so a shell started in

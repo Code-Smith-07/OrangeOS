@@ -1356,6 +1356,8 @@ table entries remain design targets where absent from `kernel/syscall/syscall.zi
 | 15 | `vm_decommit` | `(addr, len) → !void` | P4 |
 | 16 | `tls_set_base` | `(user_fs_base) → !void`; 0 clears it | P4 runtime |
 | 17 | `tls_get_base` | `() → user_fs_base` | P4 runtime |
+| 18 | `user_wait` | `(aligned_u32_ptr, expected, timeout_ms) → !void`; 0 timeout means indefinite | P4 runtime |
+| 19 | `user_wake` | `(aligned_u32_ptr, max_count) → woken` | P4 runtime |
 | | **── File I/O ──** | | |
 | 20 | `open` | `(path, flags, mode) → fd` | P5 |
 | 21 | `close` | `(fd) → !void` | P5 |

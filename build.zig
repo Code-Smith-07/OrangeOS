@@ -191,6 +191,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "socket-probe", .path = "userland/bin/socket-probe/main.zig" },
         .{ .name = "ipc-probe", .path = "userland/bin/ipc-probe/main.zig" },
         .{ .name = "tls-probe", .path = "userland/bin/tls-probe/main.zig" },
+        .{ .name = "futex-probe", .path = "userland/bin/futex-probe/main.zig" },
+        .{ .name = "futex-waiter", .path = "userland/bin/futex-waiter/main.zig" },
         .{ .name = "fault-null", .path = "userland/bin/fault-null/main.zig" },
         .{ .name = "fault-ro", .path = "userland/bin/fault-ro/main.zig" },
         .{ .name = "fault-nx", .path = "userland/bin/fault-nx/main.zig" },

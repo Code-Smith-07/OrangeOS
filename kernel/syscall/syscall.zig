@@ -66,6 +66,8 @@ pub const Nr = enum(u64) {
     vm_decommit = 15,
     tls_set_base = 16,
     tls_get_base = 17,
+    user_wait = 18,
+    user_wake = 19,
     sleep_ms = 61,
     open = 20,
     close = 21,
@@ -144,6 +146,8 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .vm_decommit => sysVmDecommit(frame.rdi, frame.rsi),
         .tls_set_base => sysTlsSetBase(frame.rdi),
         .tls_get_base => sysTlsGetBase(),
+        .user_wait => sysUserWait(frame.rdi, frame.rsi, frame.rdx),
+        .user_wake => sysUserWake(frame.rdi, frame.rsi),
         .sleep_ms => sysSleepMs(frame.rdi),
         // Fourth argument is in r10, not rcx: the syscall instruction
         // clobbers rcx with the return address.
@@ -240,6 +244,29 @@ fn sysTlsSetBase(base: u64) i64 {
 fn sysTlsGetBase() i64 {
     const t = sched.currentTask() orelse return EIO;
     return @intCast(t.fs_base);
+}
+
+const user_wait = @import("../sync/user_wait.zig");
+fn waitErrno(e: user_wait.Error) i64 {
+    return switch (e) {
+        error.Invalid => -22,
+        error.BadAddress => EFAULT,
+        error.WouldBlock => -11,
+        error.Timeout => -110,
+    };
+}
+
+fn sysUserWait(address: u64, expected: u64, timeout_ms: u64) i64 {
+    if (expected > std.math.maxInt(u32) or timeout_ms > 60_000) return -22;
+    const t = sched.currentTask() orelse return EIO;
+    user_wait.wait(t.address_space, address, @intCast(expected), timeout_ms) catch |e| return waitErrno(e);
+    return 0;
+}
+
+fn sysUserWake(address: u64, max_wake: u64) i64 {
+    if (max_wake > 64) return -22;
+    const t = sched.currentTask() orelse return EIO;
+    return @intCast(user_wait.wake(t.address_space, address, @intCast(max_wake)) catch |e| return waitErrno(e));
 }
 
 var snapshot_lock: snapshot_sync.SpinLock = .{};

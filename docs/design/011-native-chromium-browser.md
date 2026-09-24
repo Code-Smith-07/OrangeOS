@@ -887,6 +887,25 @@ processes, **not** shared-address-space user threads, pthreads, a general
 libc TLS layout, mutexes, futexes or cross-CPU page-table coherence. Those
 remain Phase 2 gates before native Chromium linkage.
 
+### 11.19 Shared-word wait/wake foundation
+
+Syscalls 18 and 19 provide a bounded futex-like wait and wake on aligned
+user-accessible 32-bit words. The wait channel is derived from the word's
+physical address, so two processes mapping the same shared-memory frame can
+signal one another despite different virtual addresses. A waiter registers
+before loading the word, avoiding the lost-wakeup window; a bounded wake
+counts registered tasks, including a task not yet asleep. A value mismatch
+returns `EAGAIN`, expiry returns `ETIMEDOUT`, and malformed or unmapped words
+are rejected. A zero timeout waits indefinitely; a nonzero timeout is capped
+at 60 seconds. Wakes can be spurious, so userspace must recheck its condition.
+
+The runtime test launches a controller and two separate waiter processes for
+24 cycles. It checks wake-one behavior, child completion, no stale waiters,
+timeout cleanup, bad addresses, alignment, and wake-count validation. This
+passed on the 3 GiB/two-CPU QEMU profile. The primitive is a synchronization
+building block, not pthread mutexes/condition variables, cancellation,
+priority inheritance, shared-address-space threads or cross-CPU VM coherence.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,

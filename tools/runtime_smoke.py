@@ -54,6 +54,9 @@ def main():
         if cores > 1:
             assert any(mask.bit_count() > 1 for mask in tls_masks), f"TLS probes did not migrate: {tls_masks}"
         print(f"PASS FS-base isolation, invalid-address rejection and migration; CPU masks={tls_masks}", flush=True)
+        guest.until(lambda: "runtime: PASS 24 shared-word wait/wake process cycles" in guest.log(),
+                    "shared-frame wait/wake lifecycle stress", 90)
+        assert guest.log().count("futex-probe: PASS shared-frame wake-one, timeout and validation") == 24
         guest.until(lambda: "runtime: PASS freestanding C floating-point ABI" in guest.log(),
                     "four concurrent compiler-generated C/Zig floating-point probes", 90)
         assert guest.log().count("c-abi-probe: PASS") == 4

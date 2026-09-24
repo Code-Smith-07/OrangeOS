@@ -161,6 +161,15 @@ export fn _start() callconv(.c) noreturn {
             }
         }
         pulp.puts("runtime: PASS per-task FS TLS across two CPUs\n");
+        for (0..24) |_| {
+            const probe = pulp.spawn("/bin/futex-probe") catch pulp.exit(142);
+            const code = pulp.wait(probe) catch pulp.exit(143);
+            if (code != 0) {
+                pulp.print("runtime: FAIL shared-word probe exit {d}\n", .{code});
+                pulp.exit(144);
+            }
+        }
+        pulp.puts("runtime: PASS 24 shared-word wait/wake process cycles\n");
         var c_probes: [4]i64 = undefined;
         for (&c_probes) |*pid| pid.* = pulp.spawn("/bin/c-abi-probe") catch pulp.exit(99);
         for (c_probes) |pid| {

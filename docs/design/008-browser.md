@@ -202,6 +202,12 @@ FS-relative data across 256 yield/sleep cycles, including both QEMU CPUs, in
 or an upstream-compatible libc TLS layout; shared-address-space threads still
 require VM locking and remote TLB invalidation.
 
+The following shared-word wait/wake slice adds a futex-like primitive keyed
+by the physical address of an aligned user word. Two processes can signal
+through a shared-memory mapping; a 24-cycle ring-3 QEMU probe covers wake-one,
+timeout, invalid addresses, and process exit. It is not a pthread API or a
+replacement for shared-address-space threads and cross-CPU VM coherence.
+
 ## Runtime milestone: process fault containment (23 September 2026)
 
 Synchronous ring-3 faults (including null access, writing read-only memory,
