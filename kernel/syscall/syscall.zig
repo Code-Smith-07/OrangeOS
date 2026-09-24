@@ -324,18 +324,22 @@ fn sysOpen(path_ptr: u64, path_len: u64) i64 {
     var path: [vfs.MAX_PATH]u8 = undefined;
     validate.copyFromUser(pml4, &path, path_ptr, @intCast(path_len)) catch return EFAULT;
 
-    const fd = vfs.open(path[0..@intCast(path_len)]) catch |e| return vfsErrno(e);
+    const task = sched.currentTask() orelse return EIO;
+    const fd = vfs.open(&task.files, path[0..@intCast(path_len)]) catch |e| return vfsErrno(e);
     return fd;
 }
 
 fn sysClose(fd: u64) i64 {
-    vfs.close(@intCast(@as(i64, @bitCast(fd)))) catch |e| return vfsErrno(e);
+    if (fd > std.math.maxInt(i32)) return EBADF;
+    const task = sched.currentTask() orelse return EIO;
+    vfs.close(&task.files, @intCast(fd)) catch |e| return vfsErrno(e);
     return 0;
 }
 
 fn sysRead(fd: u64, buf: u64, len: u64) i64 {
     if (len == 0) return 0;
     if (len > 4096) return EFAULT;
+    if (fd > std.math.maxInt(i32)) return EBADF;
 
     const pml4 = vmm.currentCr3();
 
@@ -399,7 +403,8 @@ fn sysRead(fd: u64, buf: u64, len: u64) i64 {
     // user buffer would mean the filesystem writing through an unvalidated
     // pointer.
     var kbuf: [4096]u8 = undefined;
-    const n = vfs.read(@intCast(@as(i64, @bitCast(fd))), kbuf[0..@intCast(len)]) catch |e| {
+    const task = sched.currentTask() orelse return EIO;
+    const n = vfs.read(&task.files, @intCast(fd), kbuf[0..@intCast(len)]) catch |e| {
         return vfsErrno(e);
     };
 

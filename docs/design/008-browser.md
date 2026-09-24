@@ -174,6 +174,15 @@ drivers implement independently owned request queues. This is a correctness
 gate, not an asynchronous storage or browser I/O implementation. Global
 descriptor, socket and IPC object ownership remains incomplete.
 
+The next file-descriptor slice removes the global VFS open-file table. Every
+task owns 32 descriptor slots and file offsets; ordinary spawn begins with an
+empty table, and exit clears any files left open. A ring-3 probe checks that a
+child cannot read the parent's descriptor, can fill and reuse its own table,
+and cannot turn a malformed 64-bit descriptor into a kernel trap. Seed holds an
+open file across 96 child lifetimes and verifies its offset is unchanged.
+This isolates the current read-only file API, but does not yet implement
+fork/exec inheritance, shared open descriptions or writable file semantics.
+
 ## Runtime milestone: process fault containment (23 September 2026)
 
 Synchronous ring-3 faults (including null access, writing read-only memory,

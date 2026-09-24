@@ -46,7 +46,15 @@ pub const OpenFile = struct {
     offset: u64 = 0,
 };
 
-var open_files: [MAX_OPEN]OpenFile = [_]OpenFile{.{}} ** MAX_OPEN;
+/// Descriptors are owned by one task. The VFS only supplies immutable nodes;
+/// offsets and open slots must not be visible to unrelated processes.
+pub const FileTable = struct {
+    entries: [MAX_OPEN]OpenFile = [_]OpenFile{.{}} ** MAX_OPEN,
+
+    pub fn clear(self: *FileTable) void {
+        for (&self.entries) |*entry| entry.used = false;
+    }
+};
 
 pub fn mountRoot(dev: *block.Device) !void {
     try citrusfs.mount(dev, &root_fs);
@@ -96,8 +104,8 @@ pub fn readAt(node: *const Node, offset: u64, buf: []u8) Error!usize {
 }
 
 // ── File descriptors ─────────────────────────────────────────────────────────
-// A single global table for now. It becomes per-process in Phase 6b, when fork
-// has to decide what a child inherits.
+// The table is per task. A future fork/exec ABI must decide inheritance and
+// shared offsets explicitly; the current spawn starts with an empty table.
 //
 // Descriptors start at 3. 0, 1 and 2 belong to stdin, stdout and stderr, and
 // handing a file descriptor 0 makes read() route to the console instead of the
@@ -106,47 +114,47 @@ pub fn readAt(node: *const Node, offset: u64, buf: []u8) Error!usize {
 /// First descriptor available for files.
 pub const FD_BASE: i32 = 3;
 
-pub fn open(path: []const u8) Error!i32 {
+pub fn open(table: *FileTable, path: []const u8) Error!i32 {
     const node = try resolve(path);
 
     var i: usize = 0;
     while (i < MAX_OPEN) : (i += 1) {
-        if (open_files[i].used) continue;
-        open_files[i] = .{ .used = true, .node = node, .offset = 0 };
+        if (table.entries[i].used) continue;
+        table.entries[i] = .{ .used = true, .node = node, .offset = 0 };
         return @as(i32, @intCast(i)) + FD_BASE;
     }
     return Error.TooManyOpen;
 }
 
-pub fn close(fd: i32) Error!void {
-    const i = try checkFd(fd);
-    open_files[i].used = false;
+pub fn close(table: *FileTable, fd: i32) Error!void {
+    const i = try checkFd(table, fd);
+    table.entries[i].used = false;
 }
 
-pub fn read(fd: i32, buf: []u8) Error!usize {
-    const i = try checkFd(fd);
-    const f = &open_files[i];
+pub fn read(table: *FileTable, fd: i32, buf: []u8) Error!usize {
+    const i = try checkFd(table, fd);
+    const f = &table.entries[i];
     const n = try readAt(&f.node, f.offset, buf);
     f.offset += n;
     return n;
 }
 
-pub fn seek(fd: i32, offset: u64) Error!void {
-    const i = try checkFd(fd);
-    open_files[i].offset = offset;
+pub fn seek(table: *FileTable, fd: i32, offset: u64) Error!void {
+    const i = try checkFd(table, fd);
+    table.entries[i].offset = offset;
 }
 
-pub fn statSize(fd: i32) Error!u64 {
-    const i = try checkFd(fd);
-    return open_files[i].node.size();
+pub fn statSize(table: *FileTable, fd: i32) Error!u64 {
+    const i = try checkFd(table, fd);
+    return table.entries[i].node.size();
 }
 
-fn checkFd(fd: i32) Error!usize {
+fn checkFd(table: *const FileTable, fd: i32) Error!usize {
     if (fd < FD_BASE) return Error.BadFd; // 0/1/2 are the standard streams
     const i: i32 = fd - FD_BASE;
     if (i >= MAX_OPEN) return Error.BadFd;
     const idx: usize = @intCast(i);
-    if (!open_files[idx].used) return Error.BadFd;
+    if (!table.entries[idx].used) return Error.BadFd;
     return idx;
 }
 

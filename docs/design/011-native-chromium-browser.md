@@ -72,7 +72,7 @@ Baseline checked against the repository on 2026-09-24:
 |---|---|---|
 | CPU/runtime | Static freestanding Zig/C ELF; x87/SSE2 isolation; C ABI probes | libc/libc++, user threads, TLS, synchronization, upstream library tests |
 | Virtual memory | 8 GiB arena; anonymous sparse reserve/commit/decommit with 4 GiB reservations, 64 MiB commit calls and page-aligned subranges in `kernel/mm/user_vm.zig` | File/shared mappings, executable W^X/JIT transitions, concurrent VM and cross-CPU TLB correctness |
-| Process lifecycle | Fault containment, private page reclamation, waited-child and orphan task/stack reaping; 64 concurrent registry slots | Descriptor/socket/IPC ownership, quota accounting and larger concurrent process stress |
+| Process lifecycle | Fault containment, private page reclamation, waited-child and orphan task/stack reaping; 64 concurrent registry slots; per-task read-only file descriptor tables | Socket/IPC ownership, quotas, descriptor inheritance semantics and larger concurrent process stress |
 | Networking | DNS and blocking TCP | Precise EOF/error semantics, async readiness, cancellation, entropy, authenticated TLS and trust updates |
 | Storage | Existing CitrusFS and read-only user file interfaces | Durable writable profiles, transactions/locking, larger installation image and cache quotas |
 | Graphics | CPU framebuffer and Peel compositor | Chromium Ozone adapter; atomic buffer ownership; presentation feedback; accelerated device/backend |
@@ -819,6 +819,19 @@ The common block-device boundary now serializes complete reads and writes,
 including partition aliases. The longer-term browser path still requires
 asynchronous, independently owned storage requests. Global file descriptors,
 sockets and IPC objects are not yet fully process-owned or reclaimed.
+
+### 11.15 Per-task file descriptors
+
+The VFS no longer keeps one global 32-entry open-file table. Each task owns
+its own 32 slots, immutable file nodes and read offsets. Spawn creates an
+empty descriptor table; exit clears any entries the process did not close.
+The ring-3 `fd-probe` checks that its parent's live descriptor is inaccessible,
+that it can fill all 32 slots, that a 33rd open fails cleanly, and that a closed
+slot can be reused. Seed repeats this probe 96 times while holding its own
+file open and checks that its offset is unchanged afterward. Invalid 64-bit
+descriptor arguments return `EBADF` rather than overflowing a kernel cast.
+This is read-only file isolation, not POSIX fork/exec inheritance, shared open
+descriptions, writable files, or process-owned sockets/IPC.
 
 ## 12. Security updates and distribution
 

@@ -57,8 +57,7 @@ pub fn run() void {
 
     // A multi-line file, to prove offsets past the first read work.
     if (vfs.readFileInto("/etc/os-release", &buf)) |n| {
-        check("read /etc/os-release contains its version string",
-            std.mem.indexOf(u8, buf[0..n], "0.1.0") != null);
+        check("read /etc/os-release contains its version string", std.mem.indexOf(u8, buf[0..n], "0.1.0") != null);
     } else |_| check("read /etc/os-release", false);
 
     // A missing path must be an error, not an empty success.
@@ -72,22 +71,22 @@ pub fn run() void {
     } else |_| {}
 
     // The file descriptor path.
-    if (vfs.open("/etc/motd")) |fd| {
-        const size = vfs.statSize(fd) catch 0;
+    var files: vfs.FileTable = .{};
+    if (vfs.open(&files, "/etc/motd")) |fd| {
+        const size = vfs.statSize(&files, fd) catch 0;
         var small: [8]u8 = undefined;
-        const n1 = vfs.read(fd, &small) catch 0;
-        const n2 = vfs.read(fd, &small) catch 0;
+        const n1 = vfs.read(&files, fd, &small) catch 0;
+        const n2 = vfs.read(&files, fd, &small) catch 0;
         check("open/read advances the file offset", n1 == 8 and n2 > 0 and size > 8);
-        vfs.close(fd) catch {};
-        check("close then use of a stale fd is refused", vfs.read(fd, &small) == vfs.Error.BadFd);
+        vfs.close(&files, fd) catch {};
+        check("close then use of a stale fd is refused", vfs.read(&files, fd, &small) == vfs.Error.BadFd);
     } else |_| check("open /etc/motd", false);
 
     // The init binary must be present and look like an ELF.
     var head: [4]u8 = undefined;
     if (vfs.resolve("/sbin/init")) |node| {
         const n = vfs.readAt(&node, 0, &head) catch 0;
-        check("/sbin/init exists and starts with the ELF magic",
-            n == 4 and std.mem.eql(u8, &head, "\x7fELF"));
+        check("/sbin/init exists and starts with the ELF magic", n == 4 and std.mem.eql(u8, &head, "\x7fELF"));
     } else |_| check("/sbin/init exists", false);
 
     console.print("\n[{s}] filesystem: {d} passed, {d} failed\n", .{

@@ -11,6 +11,7 @@
 //! where policy is `respawn` (restart forever), `once` (start and forget), or
 //! `essential` (restart, and treat repeated failure as fatal).
 
+const std = @import("std");
 const pulp = @import("pulp");
 
 const CONF = "/etc/seed.conf";
@@ -201,6 +202,18 @@ export fn _start() callconv(.c) noreturn {
         const after_orphans = pulp.spawn("/bin/reap-probe") catch pulp.exit(117);
         if ((pulp.wait(after_orphans) catch pulp.exit(118)) != 0) pulp.exit(119);
         pulp.puts("runtime: PASS orphan children are collected across 96 parent exits\n");
+        const parent_fd = pulp.open("/etc/motd") catch pulp.exit(120);
+        var text: [4]u8 = undefined;
+        if ((pulp.read(@intCast(parent_fd), &text) catch pulp.exit(121)) != 4 or
+            !std.mem.eql(u8, &text, "Welc")) pulp.exit(122);
+        for (0..96) |_| {
+            const child = pulp.spawn("/bin/fd-probe") catch pulp.exit(123);
+            if ((pulp.wait(child) catch pulp.exit(124)) != 0) pulp.exit(125);
+        }
+        if ((pulp.read(@intCast(parent_fd), &text) catch pulp.exit(126)) != 4 or
+            !std.mem.eql(u8, &text, "ome ")) pulp.exit(127);
+        pulp.close(parent_fd);
+        pulp.puts("runtime: PASS private file descriptors and 96 exit cleanups\n");
     }
     loadConfig();
 

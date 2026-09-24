@@ -9,6 +9,7 @@ const pmm = @import("../mm/pmm.zig");
 const context = @import("../arch/x86_64/context.zig");
 const vmm = @import("../mm/vmm.zig");
 const handle = @import("../ipc/handle.zig");
+const vfs = @import("../fs/vfs/vfs.zig");
 
 /// 32 KiB. The syscall and filesystem paths put several 4 KiB buffers on the
 /// kernel stack (a block buffer, an IPC payload), and interrupts nest on top
@@ -109,6 +110,8 @@ pub const Task = struct {
     /// Capabilities this task holds. Empty at creation: a process starts with
     /// no authority and receives handles explicitly.
     handles: handle.Table = .{},
+    /// Files opened by this process. Ordinary spawn does not inherit them.
+    files: vfs.FileTable = .{},
     // Boot-issued authority, never inherited by ordinary spawned programs.
     service_manager: bool = false,
     host_bridge: bool = false,
