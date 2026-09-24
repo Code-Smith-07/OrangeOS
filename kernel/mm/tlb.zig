@@ -12,6 +12,7 @@ const smp = @import("../arch/x86_64/smp.zig");
 const percpu = @import("../arch/x86_64/percpu.zig");
 const tsc = @import("../time/tsc.zig");
 const vmm = @import("vmm.zig");
+const preempt = @import("../sched/preempt.zig");
 
 pub const VECTOR: u8 = 0xF1;
 pub const Result = struct {
@@ -20,6 +21,7 @@ pub const Result = struct {
 };
 
 var request_lock: spinlock.SpinLock = .{};
+var contentions: u64 = 0;
 var ready: bool = false;
 var generation: u64 = 0;
 var next_generation: u64 = 0; // sender only, protected by request_lock
@@ -37,7 +39,8 @@ pub fn init() void {
     isr.register(VECTOR, handler);
 }
 
-/// Called after the APs have been released into the scheduler.
+/// Called immediately before releasing APs into the scheduler, so no runnable
+/// requester can observe disabled shootdowns on an otherwise live SMP system.
 pub fn enable() void {
     @atomicStore(bool, &ready, true, .release);
 }
@@ -64,6 +67,8 @@ fn handler(_: *isr.TrapFrame) void {
 }
 
 fn request(cr3: u64, address: u64, sample: bool, requested_mask: u64) Result {
+    const pin = preempt.acquire();
+    defer pin.release();
     std.debug.assert(address % vmm.PAGE_SIZE == 0);
     const self_bit = @as(u64, 1) << @intCast(percpu.cpuIndex());
     std.debug.assert(requested_mask & self_bit == 0);
@@ -73,7 +78,10 @@ fn request(cr3: u64, address: u64, sample: bool, requested_mask: u64) Result {
     // for this lock. Acquiring it with IRQs masked deadlocks two requesters.
     if (targets != 0 and
         !spinlock.interruptsEnabled()) @panic("remote TLB shootdown requires interrupts enabled");
-    request_lock.acquire();
+    if (!request_lock.tryAcquire()) {
+        _ = @atomicRmw(u64, &contentions, .Add, 1, .monotonic);
+        request_lock.acquire();
+    }
     defer request_lock.release();
 
     if (cr3 == 0 or vmm.currentCr3() == cr3) vmm.invalidatePage(address);
@@ -105,8 +113,17 @@ fn request(cr3: u64, address: u64, sample: bool, requested_mask: u64) Result {
 /// Invalidate `address` on this CPU and every CPU currently executing `cr3`.
 /// Pass cr3=0 for a kernel mapping shared by all address spaces.
 pub fn invalidate(cr3: u64, address: u64) void {
+    const pin = preempt.acquire();
+    defer pin.release();
     const self_bit = @as(u64, 1) << @intCast(percpu.cpuIndex());
     _ = request(cr3, address, false, smp.onlineMask() & ~self_bit);
+}
+
+/// Snapshot-based targeted invalidation. Caller must remain CPU-pinned from
+/// selection of requested_mask through this call (and exclude its own CPU).
+pub fn invalidateMask(cr3: u64, address: u64, requested_mask: u64) Result {
+    std.debug.assert(percpu.this().preempt_depth != 0);
+    return request(cr3, address, false, requested_mask);
 }
 
 /// Current user processes have exactly one task per address space. They need
@@ -121,6 +138,8 @@ pub fn invalidateExclusiveRange(cr3: u64, address: u64, pages: usize) void {
 
 /// Test-only readback after remote invalidation, for a mapped kernel page.
 pub fn sampleKernelPage(address: u64) Result {
+    const pin = preempt.acquire();
+    defer pin.release();
     const self_bit = @as(u64, 1) << @intCast(percpu.cpuIndex());
     return request(0, address, true, smp.onlineMask() & ~self_bit);
 }
@@ -136,4 +155,8 @@ pub fn sampleKernelCpu(address: u64, cpu: usize) Result {
 pub fn deliveryCount(cpu: usize) u64 {
     std.debug.assert(cpu < percpu.MAX_CPUS);
     return @atomicLoad(u64, &deliveries[cpu], .acquire);
+}
+
+pub fn contentionCount() u64 {
+    return @atomicLoad(u64, &contentions, .acquire);
 }

@@ -25,6 +25,16 @@ def main():
                     "remote TLB shootdown and remap readback", 30)
         guest.until(lambda: "[pass] TLB targeted IPI: CPU " in guest.log(),
                     "one selected CPU receives the IPI", 30)
+        guest.until(lambda: "[pass] preemption guard: nested pinning keeps timer interrupts live" in guest.log(),
+                    "CPU pinning defers scheduling but keeps interrupts live", 30)
+        if guest.profile.cpus > 1:
+            guest.until(lambda: "[pass] pinned residency: 64 remaps without a reader CR3 reload" in guest.log(),
+                        "remote translations refresh without scheduler CR3 flushes", 60)
+        guest.until(lambda: "[pass] address-space residency: 8 workers, 64 remaps" in guest.log(),
+                    "shared-PML4 scheduling, contending shootdowns and final CPU detach", 60)
+        guest.until(lambda: "[pass] TLB contention: 512 worker requests" in guest.log(),
+                    "simultaneous shootdown senders accept each other's IPIs", 30)
+        log = guest.log()
         assert log.count("vm-probe: PASS mapping, subranges, sparse reservation, protection, reuse and capacity") == 3
         assert "[FAIL]" not in log and "vm-probe: FAIL" not in log
         for marker in (

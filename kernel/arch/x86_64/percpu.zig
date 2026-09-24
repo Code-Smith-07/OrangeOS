@@ -31,6 +31,8 @@ pub const PerCpu = extern struct {
     idle: ?*anyopaque = null,
     /// Set by the timer tick, acted on where switching is safe.
     need_resched: bool = false,
+    /// Short non-sleeping sections defer scheduling, not interrupts/IPIs.
+    preempt_depth: u32 = 0,
     switches: u64 = 0,
     /// Timer ticks sampled with this core's idle task running, and with
     /// anything else running. The ratio is what 16.2 budgets as "idle CPU".

@@ -9,6 +9,17 @@ const console = @import("../console.zig");
 const TEST_VA: u64 = 0xffff_ffff_4000_0000;
 
 pub fn run(_: ?*anyopaque) void {
+    @import("residency_test.zig").testPreemptGuard();
+    legacyProbe();
+    @import("residency_test.zig").run() catch |err| {
+        console.print("[FAIL] address-space residency: {s}\n", .{@errorName(err)});
+    };
+}
+
+fn legacyProbe() void {
+    // CPU selection and delivery-count comparisons must not migrate halfway.
+    const pin = @import("../sched/preempt.zig").acquire();
+    defer pin.release();
     if (vmm.translate(vmm.kernelPml4(), TEST_VA) != null) {
         console.err("TLB probe address is already mapped", .{});
         return;

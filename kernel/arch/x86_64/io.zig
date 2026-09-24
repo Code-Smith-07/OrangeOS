@@ -59,11 +59,11 @@ pub inline fn halt() void {
 }
 
 pub inline fn cli() void {
-    asm volatile ("cli");
+    asm volatile ("cli" ::: "memory");
 }
 
 pub inline fn sti() void {
-    asm volatile ("sti");
+    asm volatile ("sti" ::: "memory");
 }
 
 /// Park the CPU permanently. Interrupts disabled, so nothing can wake it.

@@ -1067,6 +1067,52 @@ residency tracking, interruptible remote shootdowns, user-copy/wait-word pinning
 shared process resources and a tested thread ABI remain required before
 enabling shared-address-space user threads. Chromium is still not installed.
 
+### 11.28 CPU residency and interruptible shootdown coordination
+
+Each `AddressSpace` now tracks a conservative atomic CPU-residency mask.
+Scheduler switches, initial CPU dispatch, executable entry and task exit use
+one transition function: publish the new CPU bit **before** loading CR3, then
+clear the old bit **after** the CR3 flush. Same-space task switches preserve
+residency. Final release asserts that no CPU remains resident. This relies on
+ordinary flushing CR3 loads; introducing PCID/no-flush switching requires a new
+coherence design. AP dispatch also installs the selected task's kernel stack.
+
+`AddressSpace.invalidate` snapshots residents and sends acknowledged IPIs to
+those remote CPUs. New nested preemption guards pin a request to its CPU while
+leaving interrupts enabled: contending requesters can accept each other's IPIs,
+but cannot migrate mid-selection or be replaced by a same-CPU lock contender.
+Timers retain pending reschedules until the outer guard releases. Interrupt
+mask/unmask helpers now include compiler memory barriers. Shootdowns are enabled
+before runnable AP tasks can issue requests. This does not make IRQ-masked VM
+syscalls safe for shared mappings; their integration remains unfinished.
+
+Runtime evidence includes:
+
+- Nested pinning with live timer interrupts and a deferred reschedule.
+- A remote reader pinned to one CR3 across 64 remaps, checking each new value
+  after the writer's IPI acknowledgement. No scheduler flush can hide a missed
+  invalidation in this test.
+- Eight kernel workers sharing a user PML4, checking 64 more remaps and their
+  local residency through scheduling, then exiting with zero resident CPUs.
+- A separate 512-request contention stage, synchronized to start senders on
+  different CPUs. Separating it prevents reader-issued invalidations from
+  accidentally repairing the remap stage. Two- and four-vCPU runs observed
+  actual contention (294 and 260 waits in the recorded runs) and migration.
+
+The complete runtime suite passed at 4 GiB/two vCPUs and 3 GiB/four vCPUs.
+The final four-vCPU build also passed the extended 1,536-parent exit workload.
+The normal desktop interaction suite and kernel/app CPU-codegen audit passed;
+the default desktop image was rebuilt without startup runtime probes.
+An earlier test iteration failed its coverage gate because spawning workers
+alone did not guarantee migration/contention; explicit sender rendezvous was
+added, and migration is reported rather than assumed from task count.
+
+These are **kernel-side qualification workers**, not browser/app threads.
+Only the probe writer edits an existing PTE, and both backing frames remain
+allocated throughout. Concurrent user unmap/protect, user-copy and wait-word
+pinning, shared process resources, and user-thread creation/join/exit still
+need implementation and testing before Chromium can use this foundation.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,

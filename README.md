@@ -161,6 +161,9 @@ freestanding C/Zig floating-point calls, callbacks and blocking syscalls.
 Native C++ constructor/allocation/virtual-call probes also run in the guest.
 User page tables and mappings now have reference-counted lifetime independent
 of task records, with tests for retained mappings and final-release cleanup.
+The scheduler tracks CPUs using each address space, and CPU-pinned shootdown
+requests keep interrupts live. Kernel probes test remote remaps and contending
+senders on two and four vCPUs; shared user VM syscalls remain unfinished.
 This is groundwork for shared threads, not pthread support or a complete C++
 standard library. Configurable orphan-process stress and emergency panic
 diagnostics track a still-unexplained intermittent kernel bounds panic.

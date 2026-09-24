@@ -41,7 +41,7 @@ const io = @import("../arch/x86_64/io.zig");
 const time = @import("../time/time.zig");
 const gdt = @import("../arch/x86_64/gdt.zig");
 const percpu = @import("../arch/x86_64/percpu.zig");
-const vmm = @import("../mm/vmm.zig");
+const address_space = @import("../mm/address_space.zig");
 const task_mod_kstack = @import("task.zig");
 const ipc_object = @import("../ipc/object.zig");
 const fsbase = @import("../arch/x86_64/fsbase.zig");
@@ -343,6 +343,7 @@ fn enqueue(c: *percpu.PerCpu, t: *Task) void {
 /// Switch to the next runnable thread.
 /// Caller must hold `lock` with interrupts off; the new thread releases it.
 fn switchTo(c: *percpu.PerCpu, next: *Task) void {
+    std.debug.assert(c.preempt_depth == 0);
     const prev = currentOf(c) orelse unreachable;
     if (prev == next) return;
 
@@ -362,9 +363,7 @@ fn switchTo(c: *percpu.PerCpu, next: *Task) void {
 
     // Switch address spaces if they differ. Reloading CR3 flushes the TLB, so
     // it is worth skipping when both threads share one.
-    if (next.pageTable() != prev.pageTable()) {
-        vmm.loadCr3(next.pageTable());
-    }
+    address_space.switchTo(prev.user_space, next.user_space);
     fsbase.set(next.fs_base);
 
     // Run-queue lock and masked interrupts cover both state publication and
@@ -482,7 +481,7 @@ pub fn preemptIfNeeded() void {
     if (!started) return;
 
     const c = cpu();
-    if (!c.need_resched) return;
+    if (!c.need_resched or c.preempt_depth != 0) return;
     c.need_resched = false;
 
     lock.acquire();
@@ -510,13 +509,14 @@ pub fn preemptIfNeeded() void {
 /// Terminate the current thread. Never returns.
 pub fn exit(code: i32) noreturn {
     io.cli();
+    std.debug.assert(cpu().preempt_depth == 0);
     if (currentTask()) |t| {
         t.files.clear();
         @import("../ipc/ipc.zig").clearInputSinkOwnedBy(t.tid);
         @import("../net/net.zig").socketCloseOwnedBy(t.tid);
         @import("../net/tcp.zig").abortOwnedBy(t.tid);
         if (t.user_space) |space| {
-            vmm.loadCr3(vmm.kernelPml4());
+            address_space.switchTo(space, null);
             t.user_space = null;
             space.release();
         }
@@ -544,9 +544,7 @@ pub fn exit(code: i32) noreturn {
     const top = task_mod_kstack.kstackTop(next);
     gdt.setKernelStack(top);
     percpu.setKernelStack(top);
-    if (next.pageTable() != t.pageTable()) {
-        vmm.loadCr3(next.pageTable());
-    }
+    address_space.switchTo(null, next.user_space);
     fsbase.set(next.fs_base);
 
     // The dying thread's stack is still in use until we leave it, so it is
@@ -568,6 +566,9 @@ pub fn start() noreturn {
     last_boost_tick = time.tickCount();
 
     // contextStart lands in threadTrampoline, which releases the lock.
+    gdt.setKernelStack(task_mod_kstack.kstackTop(first));
+    percpu.setKernelStack(task_mod_kstack.kstackTop(first));
+    address_space.switchTo(null, first.user_space);
     fsbase.set(first.fs_base);
     context.contextStart(first.rsp, &first.fpu);
     unreachable;
@@ -583,6 +584,9 @@ pub fn startAp() noreturn {
     first.state = .running;
     c.current = first;
 
+    gdt.setKernelStack(task_mod_kstack.kstackTop(first));
+    percpu.setKernelStack(task_mod_kstack.kstackTop(first));
+    address_space.switchTo(null, first.user_space);
     fsbase.set(first.fs_base);
     context.contextStart(first.rsp, &first.fpu);
     unreachable;
@@ -590,6 +594,19 @@ pub fn startAp() noreturn {
 
 pub fn currentTask() ?*Task {
     return currentOf(cpu());
+}
+
+/// Transfer a live reference to the current kernel task before entering user
+/// code. IRQ masking makes the pointer, CR3 and CPU-residency change indivisible
+/// to this CPU's scheduler. No user thread-creation API is exposed here.
+pub fn attachCurrentUserSpace(space: *address_space.AddressSpace) void {
+    const was = spinlock.interruptsEnabled();
+    io.cli();
+    const task = currentTask() orelse unreachable;
+    std.debug.assert(task.user_space == null);
+    address_space.switchTo(null, space);
+    task.user_space = space;
+    if (was) io.sti();
 }
 
 pub fn taskCount() usize {

@@ -64,9 +64,7 @@ pub fn execNode(node: *const vfs.Node) Error!noreturn {
 
     // Record it on the task before loading, so the scheduler restores this
     // address space whenever it switches back to this thread.
-    std.debug.assert(t.user_space == null);
-    t.user_space = space;
-    vmm.loadCr3(pml4);
+    sched.attachCurrentUserSpace(space);
     // Every OrangeOS entry is `callconv(.c) noreturn`, not a POSIX assembly
     // _start expecting argc/argv. Emulate CALL's 8-byte return slot: RSP must
     // be 8 mod 16 at entry. Allocator instrumentation can read @returnAddress

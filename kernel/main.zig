@@ -181,8 +181,8 @@ export fn kmain() callconv(.c) noreturn {
 
     // Let the other cores into the scheduler now that the run queues exist
     // and there is work on them.
-    smp.releaseAps();
     tlb.enable();
+    smp.releaseAps();
 
     // Hand the boot context to the scheduler. This never returns: the boot
     // stack is abandoned and every subsequent instruction runs on a thread.
