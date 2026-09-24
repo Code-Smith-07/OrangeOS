@@ -22,9 +22,21 @@ fn run() !void {
     memory[0] = 42;
     require(memory[0] == 42, "restored write access");
     const address = @intFromPtr(memory.ptr);
-    require(pulp.syscall2(11, address, 4096) == -22, "partial unmap rejected");
+    try pulp.protectMemory(memory[4096..8192], .read);
+    require(pulp.syscall3(pulp.NR.read, @intCast(fd), address + 4096, 1) == -14, "subrange read-only");
+    require(memory[0] == 42 and memory[8192] == 0xa5, "adjacent pages survive protect");
+    try pulp.protectMemory(memory[4096..8192], .read_write);
+    try pulp.unmapMemory(memory[4096..8192]);
+    require(pulp.syscall3(1, 1, address + 4096, 1) == -14, "middle page unmapped");
+    require(memory[0] == 42 and memory[8192] == 0xa5, "adjacent pages survive unmap");
+    require(pulp.syscall3(12, address, 12288, 1) == -22, "protection cannot cross hole");
     require(pulp.syscall3(12, address, memory.len, 7) == -95, "RWX rejected");
-    try pulp.unmapMemory(memory);
+    const hole = try pulp.mapMemory(4096, .read_write);
+    require(@intFromPtr(hole.ptr) == address + 4096, "middle hole reused");
+    for (hole) |byte| require(byte == 0, "middle hole zeroed");
+    try pulp.unmapMemory(memory[0..4096]);
+    try pulp.unmapMemory(memory[8192..12288]);
+    try pulp.unmapMemory(hole);
     require(pulp.syscall3(1, 1, address, 1) == -14, "released mapping inaccessible");
     require(pulp.syscall2(11, address, 12288) == -22, "double unmap rejected");
     require(pulp.syscall2(11, @intFromPtr(&run), 4096) == -22, "image cannot be unmapped");
@@ -44,7 +56,7 @@ fn run() !void {
     for (slots) |slot| try pulp.unmapMemory(slot);
     // Exit cleanup owns this final mapping, even though the app forgets it.
     _ = try pulp.mapMemory(1024 * 1024, .read_write);
-    pulp.puts("vm-probe: PASS mapping, protection, rejection, reuse and capacity\n");
+    pulp.puts("vm-probe: PASS mapping, subranges, protection, rejection, reuse and capacity\n");
 }
 export fn _start() callconv(.c) noreturn {
     run() catch {

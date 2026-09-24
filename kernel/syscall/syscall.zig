@@ -431,7 +431,9 @@ fn sysWait(pid: u64, flags: u64) i64 {
     defer io.cli();
 
     while (t.state != .zombie) {
-        sched.yield();
+        // A spinning yield leaves the waiter runnable at a higher MLFQ level
+        // than CPU-bound children. Block briefly so the child can finish.
+        sched.sleepMs(1);
     }
     return t.exit_code;
 }

@@ -65,11 +65,12 @@ pub fn map(state: *State, pml4: u64, length: u64, prot: u64) Error!u64 {
     return base;
 }
 
-fn find(state: *State, address: u64, length: u64) Error!*Region {
+fn findContaining(state: *State, address: u64, length: u64) Error!*Region {
     const size = try sizeOf(length);
     if (address % vmm.PAGE_SIZE != 0) return error.Invalid;
+    const end = std.math.add(u64, address, size) catch return error.Invalid;
     for (&state.regions) |*r| {
-        if (r.size == size and r.address == address) return r;
+        if (r.size != 0 and address >= r.address and end <= r.address + r.size) return r;
     }
     return error.Invalid;
 }
@@ -81,18 +82,41 @@ fn releasePages(pml4: u64, address: u64, size: usize) void {
     }
 }
 
-/// Whole-allocation unmap only; partial ranges are explicitly rejected.
+/// Release a page-aligned subrange. A middle removal splits one owned region
+/// into two, so it needs a spare metadata slot before changing any mappings.
 pub fn unmap(state: *State, pml4: u64, address: u64, length: u64) Error!void {
-    const region = try find(state, address, length);
-    releasePages(pml4, address, region.size);
-    region.* = .{};
+    const size = try sizeOf(length);
+    const region = try findContaining(state, address, length);
+    const old_end = region.address + region.size;
+    const end = address + size;
+    var right: ?*Region = null;
+    if (address > region.address and end < old_end) {
+        for (&state.regions) |*r| {
+            if (r.size == 0) {
+                right = r;
+                break;
+            }
+        }
+        if (right == null) return error.OutOfMemory;
+    }
+
+    releasePages(pml4, address, size);
+    if (address == region.address and end == old_end) {
+        region.* = .{};
+    } else if (address == region.address) {
+        region.* = .{ .address = end, .size = @intCast(old_end - end) };
+    } else {
+        region.size = @intCast(address - region.address);
+        if (right) |slot| slot.* = .{ .address = end, .size = @intCast(old_end - end) };
+    }
 }
 
 pub fn protect(state: *State, pml4: u64, address: u64, length: u64, prot: u64) Error!void {
     const flags = try flagsFor(prot);
-    const region = try find(state, address, length);
+    _ = try findContaining(state, address, length);
+    const size = try sizeOf(length);
     var off: usize = 0;
-    while (off < region.size) : (off += vmm.PAGE_SIZE) {
+    while (off < size) : (off += vmm.PAGE_SIZE) {
         // Pages remain owned while PROT_NONE clears their user-access bit.
         const phys = vmm.translate(pml4, address + off) orelse unreachable;
         vmm.mapPage(pml4, address + off, phys, flags | vmm.OWNED) catch unreachable;

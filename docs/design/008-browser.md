@@ -37,7 +37,7 @@ network security, process isolation, font shaping or media stack.
 | Area | Current implementation | Work needed |
 |---|---|---|
 | Executables | Static freestanding Zig/C ELF; native C floating-point ABI probe; no libc underneath Pulp | General libc, allocator and C++ runtime/toolchain support |
-| Heap | Owned anonymous mapping/release/protection API plus legacy 256 KiB scratch arena | General C/C++ allocator, partial mappings, thread-safe VM, larger workloads |
+| Heap | Owned anonymous mapping/release/protection API, including page-aligned subranges, plus legacy 256 KiB scratch arena | General C/C++ allocator, sparse reservations, thread-safe VM, larger workloads |
 | CPU state | Eager per-task x87/SSE2 save/restore on every CPU; apps compile for baseline SSE2; kernel remains soft-float | XSAVE/AVX remain unsupported; retain CPU isolation and ABI regression gates |
 | Threads | Kernel scheduler, no pthread-compatible user API | User threads, thread-local storage, synchronization |
 | Network | DNS and blocking TCP; receive conflates timeout and EOF | Nonblocking/polling sockets with precise errors and cancellation |
@@ -91,8 +91,10 @@ subset, exposed by Pulp's `mapMemory`, `unmapMemory`, `protectMemory`:
 
 - Anonymous private allocations, page-rounded and zero-filled; 128 live regions,
   64 MiB maximum per mapping, 256 MiB per-process reserved arena.
-- Read/write, read-only and inaccessible protection. Anonymous execution,
-  fixed addresses, file mappings and partial unmap/protect remain unsupported.
+- Read/write, read-only and inaccessible protection. Page-aligned subrange
+  protection and unmap are supported within one owned region; a middle unmap
+  splits it into two live regions. Anonymous execution, fixed addresses,
+  file mappings and sparse reservation/commit remain unsupported.
 - Released virtual addresses, physical frames and empty page tables are reused.
   Exit releases owned anonymous mappings. The following cleanup milestone also
   reclaims image/stack pages; shared-object teardown and zombie reaping remain.
@@ -104,6 +106,17 @@ Qualification: `zig build -Dmm-test -Druntime-test -Ddesktop-profile`,
 physical-page conservation over 64 cycles, protection flags, cleanup and table
 teardown. Three ring-3 runs check API rejections, syscall copy permissions,
 zeroing, address reuse and slot exhaustion before the desktop starts.
+
+On 24 September 2026, subrange operations gained kernel and ring-3 coverage.
+The kernel test checks unaffected neighbors, prefix/suffix removal, hole reuse
+and frame conservation.
+This does not expand the 256 MiB virtual arena or provide V8-style reservation.
+`tools/vm_range_smoke.py` is the focused QEMU acceptance gate. The combined
+`tools/runtime_smoke.py` also passed once with two vCPUs, but earlier runs
+stalled during process stress and one later run panicked during desktop startup;
+repeatability remains an open reliability gate. The wait syscall now blocks
+briefly between checks instead of continuously yielding at a higher priority
+than CPU-bound children.
 
 This removes the first allocation blocker; it is not a completed engine port,
 C library, thread API, SIMD implementation or browser.

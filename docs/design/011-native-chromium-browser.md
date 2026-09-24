@@ -70,7 +70,7 @@ Baseline checked against the repository on 2026-09-23:
 | Area | Present | Required before browser qualification |
 |---|---|---|
 | CPU/runtime | Static freestanding Zig/C ELF; x87/SSE2 isolation; C ABI probes | libc/libc++, user threads, TLS, synchronization, upstream library tests |
-| Virtual memory | Owned anonymous mappings; 256 MiB arena, 64 MiB per mapping in `kernel/mm/user_vm.zig` | Large sparse reservations, partial mapping operations, file/shared mappings, concurrent VM and cross-CPU TLB correctness |
+| Virtual memory | Owned anonymous mappings with page-aligned subrange protect/unmap; 256 MiB arena, 64 MiB per mapping in `kernel/mm/user_vm.zig` | Large sparse reservations/commit, file/shared mappings, concurrent VM and cross-CPU TLB correctness |
 | Process lifecycle | Fault containment and private page reclamation | Complete task/descriptor/socket/IPC reaping; quota accounting; stress beyond scheduler's current 64 task slots |
 | Networking | DNS and blocking TCP | Precise EOF/error semantics, async readiness, cancellation, entropy, authenticated TLS and trust updates |
 | Storage | Existing CitrusFS and read-only user file interfaces | Durable writable profiles, transactions/locking, larger installation image and cache quotas |
@@ -698,7 +698,7 @@ Read-only host/guest capability audit on 2026-09-24:
 
 | Gate | Observed fact | Consequence |
 |---|---|---|
-| Guest virtual memory | `kernel/mm/user_vm.zig` caps the arena at 256 MiB and one mapping at 64 MiB, permits only whole-allocation unmap/protect, and forbids executable anonymous pages | A 4 GiB QEMU setting does not give V8 the sparse reservation and W^X/JIT transitions it needs. Add a concurrent reserve/commit/protect/unmap model and tests before engine linkage. |
+| Guest virtual memory | At the 2026-09-24 audit, `kernel/mm/user_vm.zig` capped the arena at 256 MiB and one mapping at 64 MiB, permitted only whole-allocation unmap/protect, and forbade executable anonymous pages | A 4 GiB QEMU setting does not give V8 the sparse reservation and W^X/JIT transitions it needs. Add a concurrent reserve/commit/protect/unmap model and tests before engine linkage. |
 | Guest storage | `scripts/mkdisk.sh` creates a 32 MiB CitrusFS image inside a 64 MiB GPT disk; the built files measured exactly 33,554,432 and 67,108,864 bytes | No browser binary, cache or durable profile belongs in this development image. Design a larger versioned install/profile volume, quota and recovery path without overwriting user data. |
 | Current VM graphics | QEMU 11.1.0 advertises `virtio-gpu-pci`/`virtio-vga` but no `virtio-gpu-gl` or `virtio-vga-gl`; its display list is `none`, `curses`, `cocoa`, `dbus`; the guest has a Limine linear framebuffer, not a GPU driver | Software output through Peel is the first port target. No accelerated GPU or hardware-video claim is valid. A future backend requires guest driver, buffer/fence protocol and named-host qualification. |
 | Current VM CPU | This Apple Silicon host's x86-64 QEMU binary lists only TCG acceleration | Functional bring-up is possible, but smooth media/8K performance cannot be inferred from host CPU/GPU capability. An AArch64 OrangeOS port is a separate project. |
@@ -716,6 +716,28 @@ guest virtual-memory primitives with correctness/stress tests, followed by
 threads/TLS and process/IPC cleanup; only then should the Chromium guest target
 be linked. Chromium's [Ozone integration guide](https://chromium.googlesource.com/chromium/src/+/main/docs/ozone_overview.md)
 is the upstream reference for the eventual Peel platform adapter.
+
+### 11.10 Guest VM subrange foundation
+
+The first Phase 2 VM slice adds page-aligned partial `mprotect` and `munmap`
+within one owned anonymous region. A middle unmap splits metadata and frees the
+removed frames; a split requiring a 129th live region fails before unmapping.
+Kernel and ring-3 probes check neighbor preservation, prefix/suffix removal,
+hole reuse and frame conservation.
+This is **not** a Chromium-compatible VM yet: mappings still allocate every
+physical page eagerly, are limited to a 256 MiB arena/64 MiB allocation, lack
+sparse reserve/commit, file/shared backing and executable transitions, and have
+no shared-address-space locking or remote TLB shootdown. Those remain gates
+before linking the guest engine.
+
+Qualification on 2026-09-24: `zig build -Dmm-test -Druntime-test -Ddesktop-profile`,
+`./scripts/mkdisk.sh`, and `python3 tools/vm_range_smoke.py` passed with a
+two-vCPU QEMU guest, including three
+ring-3 probes. A combined `tools/runtime_smoke.py` run also passed, but prior
+runs exposed intermittent process-stress stalls and one desktop-start panic.
+The wait syscall was changed from busy yielding to a short blocking sleep to
+avoid starving lower-priority children. Repeated end-to-end stability remains
+open; the focused VM pass is not a browser-engine qualification.
 
 ## 12. Security updates and distribution
 

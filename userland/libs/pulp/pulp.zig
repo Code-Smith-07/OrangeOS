@@ -595,7 +595,8 @@ pub fn mapMemory(length: usize, protection: MemoryProtection) Error![]align(4096
     const pointer: [*]align(4096) u8 = @ptrFromInt(@as(u64, @intCast(result)));
     return pointer[0..std.mem.alignForward(usize, length, 4096)];
 }
-/// Requires the entire allocation returned by mapMemory, not a subslice.
+/// Release a page-aligned subrange of an owned anonymous mapping. A middle
+/// removal leaves two live regions; unmap each survivor separately.
 pub fn unmapMemory(memory: []align(4096) u8) Error!void {
     const result = syscall2(NR.munmap, @intFromPtr(memory.ptr), memory.len);
     if (result < 0) return errno(result);

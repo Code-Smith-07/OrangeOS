@@ -14,10 +14,11 @@ def main():
         guest.until(lambda: "runtime: PASS repeated VM processes" in guest.log(),
                     "three complete ring-3 VM probes", 90)
         log = guest.log()
-        assert log.count("vm-probe: PASS mapping, protection, rejection, reuse and capacity") == 3
+        assert log.count("vm-probe: PASS mapping, subranges, protection, rejection, reuse and capacity") == 3
         assert "[FAIL]" not in log and "vm-probe: FAIL" not in log
         for marker in (
             "user VM: 64 cycles return frames AND page tables",
+            "user VM: subranges, hole reuse and frame conservation",
             "user VM: exit cleanup frees protected and writable memory",
             "user VM: address-space teardown conserves every page",
         ):

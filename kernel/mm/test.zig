@@ -279,6 +279,59 @@ fn testUserVm() void {
     pmm.freePage(borrowed);
 }
 
+fn testUserVmSubranges() void {
+    const vm = @import("user_vm.zig");
+    const baseline = pmm.stats().free_pages;
+    const space = vmm.createAddressSpace() catch {
+        check("user VM: subrange address space", false);
+        return;
+    };
+    var state: vm.State = .{};
+    var ok = true;
+    const address = vm.map(&state, space, 3 * vmm.PAGE_SIZE, 3) catch {
+        check("user VM: subrange setup", false);
+        vmm.destroyAddressSpace(space);
+        return;
+    };
+    vm.protect(&state, space, address + vmm.PAGE_SIZE, vmm.PAGE_SIZE, 1) catch {
+        ok = false;
+    };
+    if (vmm.leafFlags(space, address).? & vmm.WRITABLE == 0 or
+        vmm.leafFlags(space, address + vmm.PAGE_SIZE).? & vmm.WRITABLE != 0 or
+        vmm.leafFlags(space, address + 2 * vmm.PAGE_SIZE).? & vmm.WRITABLE == 0) ok = false;
+    vm.unmap(&state, space, address + vmm.PAGE_SIZE, vmm.PAGE_SIZE) catch {
+        ok = false;
+    };
+    if (vmm.translate(space, address) == null or
+        vmm.translate(space, address + vmm.PAGE_SIZE) != null or
+        vmm.translate(space, address + 2 * vmm.PAGE_SIZE) == null) ok = false;
+    if (vm.protect(&state, space, address, 3 * vmm.PAGE_SIZE, 1)) |_| {
+        ok = false;
+    } else |err| {
+        if (err != error.Invalid) ok = false;
+    }
+    const hole = vm.map(&state, space, vmm.PAGE_SIZE, 3) catch 0;
+    if (hole != address + vmm.PAGE_SIZE) ok = false;
+    vm.releaseAll(&state, space);
+    const edges = vm.map(&state, space, 3 * vmm.PAGE_SIZE, 3) catch 0;
+    if (edges == 0) {
+        ok = false;
+    } else {
+        vm.unmap(&state, space, edges, vmm.PAGE_SIZE) catch {
+            ok = false;
+        };
+        vm.unmap(&state, space, edges + 2 * vmm.PAGE_SIZE, vmm.PAGE_SIZE) catch {
+            ok = false;
+        };
+        if (vmm.translate(space, edges) != null or
+            vmm.translate(space, edges + vmm.PAGE_SIZE) == null or
+            vmm.translate(space, edges + 2 * vmm.PAGE_SIZE) != null) ok = false;
+    }
+    vm.releaseAll(&state, space);
+    vmm.destroyAddressSpace(space);
+    check("user VM: subranges, hole reuse and frame conservation", ok and pmm.stats().free_pages == baseline);
+}
+
 pub fn runAll() void {
     console.write("\n");
     console.info("memory subsystem tests:", .{});
@@ -292,6 +345,7 @@ pub fn runAll() void {
     testVmmTranslate();
     testWriteXorExecute();
     testUserVm();
+    testUserVmSubranges();
     testHeap();
     testHeapChurn();
 
