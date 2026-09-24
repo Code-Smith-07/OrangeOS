@@ -64,6 +64,9 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     const ui_options = b.addOptions();
     const runtime_test = b.option(bool, "runtime-test", "Run userspace runtime probes before desktop startup") orelse false;
+    const orphan_waves = b.option(u32, "runtime-orphan-waves", "Orphan cleanup stress waves (12 parents per wave)") orelse 8;
+    if (orphan_waves == 0 or orphan_waves > 1024) @panic("runtime-orphan-waves must be 1..1024");
+    ui_options.addOption(u32, "runtime_orphan_waves", orphan_waves);
     ui_options.addOption(bool, "runtime_test", runtime_test);
     options.addOption(bool, "runtime_test", runtime_test);
     ui_options.addOption(bool, "desktop_profile", b.option(bool, "desktop-profile", "Emit compositor frame timing for QEMU profiling") orelse false);

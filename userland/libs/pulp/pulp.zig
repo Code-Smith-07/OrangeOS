@@ -9,6 +9,7 @@
 const std = @import("std");
 pub const desktop_profile = @import("ui_options").desktop_profile;
 pub const runtime_test = @import("ui_options").runtime_test;
+pub const runtime_orphan_waves = @import("ui_options").runtime_orphan_waves;
 
 // ── Syscall numbers — must match kernel/syscall/syscall.zig ─────────────────
 

@@ -209,9 +209,9 @@ export fn _start() callconv(.c) noreturn {
         const reused = pulp.spawn("/bin/reap-probe") catch pulp.exit(111);
         if ((pulp.wait(reused) catch pulp.exit(112)) != 0) pulp.exit(113);
         pulp.puts("runtime: PASS full task table rejects spawn and recovers after reaping\n");
-        // Eight waves exceed the registry's lifetime capacity. Each parent
+        // Repeated waves exceed the registry's lifetime capacity. Each parent
         // abandons two children, one short-lived and one still running.
-        for (0..8) |_| {
+        for (0..pulp.runtime_orphan_waves) |_| {
             var parents: [12]i64 = undefined;
             for (&parents) |*pid| pid.* = pulp.spawn("/bin/orphan-probe") catch |err| {
                 pulp.print("runtime: orphan spawn failed {s}\n", .{@errorName(err)});
@@ -228,7 +228,7 @@ export fn _start() callconv(.c) noreturn {
         }
         const after_orphans = pulp.spawn("/bin/reap-probe") catch pulp.exit(117);
         if ((pulp.wait(after_orphans) catch pulp.exit(118)) != 0) pulp.exit(119);
-        pulp.puts("runtime: PASS orphan children are collected across 96 parent exits\n");
+        pulp.print("runtime: PASS orphan children are collected across {d} parent exits\n", .{pulp.runtime_orphan_waves * 12});
         const parent_fd = pulp.open("/etc/motd") catch pulp.exit(120);
         var text: [4]u8 = undefined;
         if ((pulp.read(@intCast(parent_fd), &text) catch pulp.exit(121)) != 4 or

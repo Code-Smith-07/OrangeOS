@@ -1023,6 +1023,21 @@ It is not libc++, exception handling, RTTI, thread-safe static initialization,
 pthread support, a production allocator, or a Chromium cross-build. Those
 remain required before installing the engine in OrangeOS.
 
+### 11.26 Repeatable process-lifecycle stress and panic evidence
+
+Runtime builds now accept `-Druntime-orphan-waves=N` (1..1024, default 8).
+Run `tools/runtime_smoke.py --orphan-waves N` against the matching image;
+the test checks the exact completed parent count, not a fixed success label.
+Each wave launches 12 parents which abandon two children each. This makes
+longer ownership/reaping tests reproducible without editing the init server.
+
+Eight consecutive default two-vCPU runtime runs passed while investigating
+the intermittent bounds panic recorded in 11.25. Extended 128-wave tests
+also reached the desktop with two and four vCPUs. These results do **not**
+establish a fix or a root cause. Panic handling now writes the bounds operands
+and caller address to the emergency serial path before framebuffer replay or
+normal console locking, so a recurrence should provide actionable evidence.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,

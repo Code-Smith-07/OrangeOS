@@ -4,10 +4,17 @@
 Build: zig build -Dmm-test -Druntime-test -Ddesktop-profile; scripts/mkdisk.sh
 """
 import re
+import argparse
 from desktop_smoke import Guest
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--orphan-waves", type=int, default=8,
+                        help="must match -Druntime-orphan-waves in the build")
+    args = parser.parse_args()
+    if not 1 <= args.orphan_waves <= 1024:
+        parser.error("--orphan-waves must be 1..1024")
     guest = Guest()
     print(f"Evidence: {guest.output}", flush=True)
     try:
@@ -71,8 +78,9 @@ def main():
                     "96 child reaps, slot reuse and wait ownership", 90)
         guest.until(lambda: "runtime: PASS full task table rejects spawn and recovers after reaping" in guest.log(),
                     "full task table rejects spawn and recovers after reaping", 90)
-        guest.until(lambda: "runtime: PASS orphan children are collected across 96 parent exits" in guest.log(),
-                    "orphan cleanup across 96 exiting parents", 90)
+        parent_exits = args.orphan_waves * 12
+        guest.until(lambda: f"runtime: PASS orphan children are collected across {parent_exits} parent exits" in guest.log(),
+                    f"orphan cleanup across {parent_exits} exiting parents", max(90, args.orphan_waves * 2))
         guest.until(lambda: "runtime: PASS private file descriptors and 96 exit cleanups" in guest.log(),
                     "file descriptor isolation and exit cleanup", 90)
         guest.until(lambda: "runtime: PASS private UDP sockets and 48 exit cleanups" in guest.log(),

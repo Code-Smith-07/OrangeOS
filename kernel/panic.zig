@@ -14,6 +14,7 @@ const fbcon = @import("drivers/video/fbcon.zig");
 const isr = @import("arch/x86_64/isr.zig");
 const backtrace = @import("debug/backtrace.zig");
 const smp = @import("arch/x86_64/smp.zig");
+const fmt = @import("lib/fmt.zig");
 
 /// Take the screen back and show the log that led here.
 ///
@@ -103,6 +104,12 @@ pub fn panicFn(msg: []const u8, first_trace_addr: ?usize) noreturn {
     console.emergencyWrite("\nKERNEL PANIC: ");
     console.emergencyWrite(msg);
     console.emergencyWrite("\n");
+    // Serial evidence must precede framebuffer replay and any console lock:
+    // a panic while a lock is held may never reach the formatted banner.
+    if (first_trace_addr) |addr| {
+        var address_buf: [64]u8 = undefined;
+        console.emergencyWrite(fmt.bufPrint(&address_buf, "PANIC address: 0x{x:0>16}\n", .{addr}));
+    }
     banner("KERNEL PANIC - Zest has stopped");
     console.print("  reason: {s}\n", .{msg});
     if (first_trace_addr) |addr| {
@@ -131,8 +138,8 @@ pub const handler = struct {
         panicFn(@errorName(err), @returnAddress());
     }
     pub fn outOfBounds(index: usize, len: usize) noreturn {
-        _ = index;
-        _ = len;
+        var detail: [128]u8 = undefined;
+        console.emergencyWrite(fmt.bufPrint(&detail, "PANIC bounds: index={d} len={d}\n", .{ index, len }));
         panicFn("index out of bounds", @returnAddress());
     }
     pub fn startGreaterThanEnd(start: usize, end: usize) noreturn {
