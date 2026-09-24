@@ -22,6 +22,9 @@ pub const NR = struct {
     pub const mmap: u64 = 10;
     pub const munmap: u64 = 11;
     pub const mprotect: u64 = 12;
+    pub const vm_reserve: u64 = 13;
+    pub const vm_commit: u64 = 14;
+    pub const vm_decommit: u64 = 15;
     pub const sleep_ms: u64 = 61;
     pub const open: u64 = 20;
     pub const close: u64 = 21;
@@ -603,6 +606,42 @@ pub fn unmapMemory(memory: []align(4096) u8) Error!void {
 }
 pub fn protectMemory(memory: []align(4096) u8, protection: MemoryProtection) Error!void {
     const result = syscall3(NR.mprotect, @intFromPtr(memory.ptr), memory.len, @intFromEnum(protection));
+    if (result < 0) return errno(result);
+}
+
+/// Virtual address space without physical pages. Access it only after commit.
+pub const MemoryReservation = struct { address: u64, len: usize };
+
+pub fn reserveMemory(length: usize) Error!MemoryReservation {
+    const result = syscall1(NR.vm_reserve, length);
+    if (result < 0) return errno(result);
+    return .{ .address = @intCast(result), .len = std.mem.alignForward(usize, length, 4096) };
+}
+
+fn reservationRange(reservation: MemoryReservation, offset: usize, length: usize) Error!u64 {
+    if (length == 0 or offset % 4096 != 0 or length % 4096 != 0 or
+        offset > reservation.len or length > reservation.len - offset) return Error.InvalidArgument;
+    return std.math.add(u64, reservation.address, offset) catch Error.InvalidArgument;
+}
+
+/// Commit zeroed pages within one reservation, at most 64 MiB per call.
+pub fn commitMemory(reservation: MemoryReservation, offset: usize, length: usize, protection: MemoryProtection) Error![]align(4096) u8 {
+    const address = try reservationRange(reservation, offset, length);
+    const result = syscall3(NR.vm_commit, address, length, @intFromEnum(protection));
+    if (result < 0) return errno(result);
+    const pointer: [*]align(4096) u8 = @ptrFromInt(address);
+    return pointer[0..length];
+}
+
+/// Drop resident pages; a later commit of the same range starts zeroed.
+pub fn decommitMemory(reservation: MemoryReservation, offset: usize, length: usize) Error!void {
+    const address = try reservationRange(reservation, offset, length);
+    const result = syscall2(NR.vm_decommit, address, length);
+    if (result < 0) return errno(result);
+}
+
+pub fn releaseReservedMemory(reservation: MemoryReservation) Error!void {
+    const result = syscall2(NR.munmap, reservation.address, reservation.len);
     if (result < 0) return errno(result);
 }
 

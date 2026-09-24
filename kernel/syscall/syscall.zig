@@ -61,6 +61,9 @@ pub const Nr = enum(u64) {
     mmap = 10,
     munmap = 11,
     mprotect = 12,
+    vm_reserve = 13,
+    vm_commit = 14,
+    vm_decommit = 15,
     sleep_ms = 61,
     open = 20,
     close = 21,
@@ -134,6 +137,9 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .mmap => sysMmap(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9),
         .munmap => sysMunmap(frame.rdi, frame.rsi),
         .mprotect => sysMprotect(frame.rdi, frame.rsi, frame.rdx),
+        .vm_reserve => sysVmReserve(frame.rdi),
+        .vm_commit => sysVmCommit(frame.rdi, frame.rsi, frame.rdx),
+        .vm_decommit => sysVmDecommit(frame.rdi, frame.rsi),
         .sleep_ms => sysSleepMs(frame.rdi),
         // Fourth argument is in r10, not rcx: the syscall instruction
         // clobbers rcx with the return address.
@@ -202,6 +208,20 @@ fn sysMunmap(address: u64, len: u64) i64 {
 fn sysMprotect(address: u64, len: u64, prot: u64) i64 {
     const t = sched.currentTask() orelse return -14;
     user_vm.protect(&t.anonymous_vm, t.address_space, address, len, prot) catch |e| return vmErrno(e);
+    return 0;
+}
+fn sysVmReserve(len: u64) i64 {
+    const t = sched.currentTask() orelse return -14;
+    return @intCast(user_vm.reserve(&t.anonymous_vm, t.address_space, len) catch |e| return vmErrno(e));
+}
+fn sysVmCommit(address: u64, len: u64, prot: u64) i64 {
+    const t = sched.currentTask() orelse return -14;
+    user_vm.commit(&t.anonymous_vm, t.address_space, address, len, prot) catch |e| return vmErrno(e);
+    return 0;
+}
+fn sysVmDecommit(address: u64, len: u64) i64 {
+    const t = sched.currentTask() orelse return -14;
+    user_vm.decommit(&t.anonymous_vm, t.address_space, address, len) catch |e| return vmErrno(e);
     return 0;
 }
 

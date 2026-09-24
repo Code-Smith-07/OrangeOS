@@ -332,6 +332,75 @@ fn testUserVmSubranges() void {
     check("user VM: subranges, hole reuse and frame conservation", ok and pmm.stats().free_pages == baseline);
 }
 
+fn testUserVmSparse() void {
+    const vm = @import("user_vm.zig");
+    const baseline = pmm.stats().free_pages;
+    const space = vmm.createAddressSpace() catch {
+        check("user VM: sparse address space", false);
+        return;
+    };
+    var state: vm.State = .{};
+    const after_root = pmm.stats().free_pages;
+    var ok = true;
+    const span = 1024 * 1024 * 1024;
+    const address = vm.reserve(&state, space, span) catch {
+        check("user VM: sparse reservation setup", false);
+        vmm.destroyAddressSpace(space);
+        return;
+    };
+    if (pmm.stats().free_pages != after_root or vmm.translate(space, address + span - vmm.PAGE_SIZE) != null) ok = false;
+    const page = address + 8 * 1024 * 1024;
+    vm.commit(&state, space, page, vmm.PAGE_SIZE, 3) catch {
+        ok = false;
+    };
+    if (vmm.translate(space, page)) |phys| {
+        const bytes: [*]u8 = @ptrFromInt(pmm.physToVirt(phys));
+        if (bytes[0] != 0) ok = false;
+        bytes[0] = 0x5a;
+    } else ok = false;
+    if (vm.commit(&state, space, page, vmm.PAGE_SIZE, 3)) |_| {
+        ok = false;
+    } else |err| {
+        if (err != error.Invalid) ok = false;
+    }
+    if (vm.protect(&state, space, page + vmm.PAGE_SIZE, vmm.PAGE_SIZE, 1)) |_| {
+        ok = false;
+    } else |err| {
+        if (err != error.Invalid) ok = false;
+    }
+    if (vm.protect(&state, space, page, 2 * vmm.PAGE_SIZE, 1)) |_| {
+        ok = false;
+    } else |err| {
+        if (err != error.Invalid or vmm.leafFlags(space, page).? & vmm.WRITABLE == 0) ok = false;
+    }
+    vm.decommit(&state, space, page, vmm.PAGE_SIZE) catch {
+        ok = false;
+    };
+    if (vmm.translate(space, page) != null or pmm.stats().free_pages != after_root) ok = false;
+    vm.commit(&state, space, page, vmm.PAGE_SIZE, 1) catch {
+        ok = false;
+    };
+    if (vmm.translate(space, page)) |phys| {
+        const bytes: [*]u8 = @ptrFromInt(pmm.physToVirt(phys));
+        if (bytes[0] != 0 or vmm.leafFlags(space, page).? & vmm.WRITABLE != 0) ok = false;
+    } else ok = false;
+    const split = address + 16 * 1024 * 1024;
+    vm.unmap(&state, space, split, vmm.PAGE_SIZE) catch {
+        ok = false;
+    };
+    if (vm.commit(&state, space, split, vmm.PAGE_SIZE, 3)) |_| {
+        ok = false;
+    } else |err| {
+        if (err != error.Invalid) ok = false;
+    }
+    vm.commit(&state, space, split + vmm.PAGE_SIZE, vmm.PAGE_SIZE, 3) catch {
+        ok = false;
+    };
+    vm.releaseAll(&state, space);
+    vmm.destroyAddressSpace(space);
+    check("user VM: sparse reserve, commit, decommit and cleanup", ok and pmm.stats().free_pages == baseline);
+}
+
 pub fn runAll() void {
     console.write("\n");
     console.info("memory subsystem tests:", .{});
@@ -346,6 +415,7 @@ pub fn runAll() void {
     testWriteXorExecute();
     testUserVm();
     testUserVmSubranges();
+    testUserVmSparse();
     testHeap();
     testHeapChurn();
 

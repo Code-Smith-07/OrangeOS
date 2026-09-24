@@ -54,9 +54,25 @@ fn run() !void {
     for (&slots) |*slot| slot.* = try pulp.mapMemory(1, .read_write);
     require(pulp.syscall6(10, 0, 4096, 3, 0x22, @bitCast(@as(i64, -1)), 0) == -12, "bounded mapping table");
     for (slots) |slot| try pulp.unmapMemory(slot);
+    const reservation = try pulp.reserveMemory(1024 * 1024 * 1024);
+    require(reservation.len == 1024 * 1024 * 1024, "large virtual reservation");
+    require(pulp.syscall3(pulp.NR.write, 1, reservation.address, 1) == -14, "reserved memory inaccessible");
+    const committed = try pulp.commitMemory(reservation, 4096, 4096, .read_write);
+    require(committed[0] == 0, "commit starts zeroed");
+    committed[0] = 0x69;
+    require(pulp.syscall3(pulp.NR.vm_commit, @intFromPtr(committed.ptr), 4096, 3) == -22, "overlapping commit rejected");
+    require(pulp.syscall3(pulp.NR.mprotect, reservation.address + 8192, 4096, 1) == -22, "protecting a hole rejected");
+    try pulp.decommitMemory(reservation, 4096, 4096);
+    require(pulp.syscall3(pulp.NR.write, 1, @intFromPtr(committed.ptr), 1) == -14, "decommitted memory inaccessible");
+    const recommitted = try pulp.commitMemory(reservation, 4096, 4096, .read);
+    require(recommitted[0] == 0, "recommit starts zeroed");
+    require(pulp.syscall3(pulp.NR.read, @intCast(fd), @intFromPtr(recommitted.ptr), 1) == -14, "read-only recommit protected");
+    require(pulp.syscall3(pulp.NR.vm_commit, reservation.address + reservation.len, 4096, 3) == -22, "commit outside reservation rejected");
+    try pulp.releaseReservedMemory(reservation);
+    require(pulp.syscall3(pulp.NR.vm_commit, reservation.address, 4096, 3) == -22, "released reservation unusable");
     // Exit cleanup owns this final mapping, even though the app forgets it.
     _ = try pulp.mapMemory(1024 * 1024, .read_write);
-    pulp.puts("vm-probe: PASS mapping, subranges, protection, rejection, reuse and capacity\n");
+    pulp.puts("vm-probe: PASS mapping, subranges, sparse reservation, protection, reuse and capacity\n");
 }
 export fn _start() callconv(.c) noreturn {
     run() catch {

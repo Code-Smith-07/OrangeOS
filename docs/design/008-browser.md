@@ -37,7 +37,7 @@ network security, process isolation, font shaping or media stack.
 | Area | Current implementation | Work needed |
 |---|---|---|
 | Executables | Static freestanding Zig/C ELF; native C floating-point ABI probe; no libc underneath Pulp | General libc, allocator and C++ runtime/toolchain support |
-| Heap | Owned anonymous mapping/release/protection API, including page-aligned subranges, plus legacy 256 KiB scratch arena | General C/C++ allocator, sparse reservations, thread-safe VM, larger workloads |
+| Heap | Owned anonymous maps and sparse reserve/commit/decommit with page-aligned subranges, plus legacy 256 KiB scratch arena | General C/C++ allocator, thread-safe VM, file/shared mappings and larger workloads |
 | CPU state | Eager per-task x87/SSE2 save/restore on every CPU; apps compile for baseline SSE2; kernel remains soft-float | XSAVE/AVX remain unsupported; retain CPU isolation and ABI regression gates |
 | Threads | Kernel scheduler, no pthread-compatible user API | User threads, thread-local storage, synchronization |
 | Network | DNS and blocking TCP; receive conflates timeout and EOF | Nonblocking/polling sockets with precise errors and cancellation |
@@ -110,13 +110,29 @@ zeroing, address reuse and slot exhaustion before the desktop starts.
 On 24 September 2026, subrange operations gained kernel and ring-3 coverage.
 The kernel test checks unaffected neighbors, prefix/suffix removal, hole reuse
 and frame conservation.
-This does not expand the 256 MiB virtual arena or provide V8-style reservation.
+At that subrange milestone, the virtual arena was still 256 MiB and lacked
+V8-style reservation. The following sparse-memory milestone expands the arena
+but does not yet qualify V8 or Chromium.
 `tools/vm_range_smoke.py` is the focused QEMU acceptance gate. The combined
 `tools/runtime_smoke.py` also passed once with two vCPUs, but earlier runs
 stalled during process stress and one later run panicked during desktop startup;
 repeatability remains an open reliability gate. The wait syscall now blocks
 briefly between checks instead of continuously yielding at a higher priority
 than CPU-bound children.
+
+On 24 September 2026, syscalls 13–15 and Pulp's `reserveMemory`,
+`commitMemory` and `decommitMemory` added sparse anonymous reservations. The
+arena is 8 GiB; one reservation may span 4 GiB, while each eager mapping or
+commit call is limited to 64 MiB. Reserve consumes virtual address space but
+no frames; decommit keeps the reservation and frees its frames. Kernel and
+three ring-3 QEMU probes verify a 1 GiB reservation, inaccessible holes,
+zeroed recommit, read-only protection, rejection of overlap/out-of-range
+commits and frame cleanup. `tools/vm_range_smoke.py` passed after the final
+boundary checks. The combined `tools/runtime_smoke.py` passed once before
+those checks, then timed out in pre-existing concurrent SIMD/C process stress
+on three later runs; all three VM probes passed in each run. That runtime
+reliability gate remains open. This is still a single-threaded, anonymous,
+non-executable VM API—not a browser engine or a full POSIX mapping layer.
 
 This removes the first allocation blocker; it is not a completed engine port,
 C library, thread API, SIMD implementation or browser.

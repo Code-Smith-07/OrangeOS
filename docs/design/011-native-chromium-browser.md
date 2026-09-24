@@ -37,7 +37,8 @@ acceptance targets, not measured results**.
 - Retain original SVG icons, licensed fonts, crisp scale-aware rendering and a
   restrained glass interface. Browser controls must stay responsive during load.
 - Make a descriptive local commit after each verified phase and report its hash,
-  tests and limitations. Push only with explicit user authorization.
+  tests and limitations. Push under the user's standing authorization to push
+  verified milestones; pause if they withdraw it.
 
 ## 2. Engine and maintenance decision
 
@@ -65,12 +66,12 @@ binaries unchanged requires a separate Linux ABI project and is not promised.
 
 ## 3. Current baseline and blockers
 
-Baseline checked against the repository on 2026-09-23:
+Baseline checked against the repository on 2026-09-24:
 
 | Area | Present | Required before browser qualification |
 |---|---|---|
 | CPU/runtime | Static freestanding Zig/C ELF; x87/SSE2 isolation; C ABI probes | libc/libc++, user threads, TLS, synchronization, upstream library tests |
-| Virtual memory | Owned anonymous mappings with page-aligned subrange protect/unmap; 256 MiB arena, 64 MiB per mapping in `kernel/mm/user_vm.zig` | Large sparse reservations/commit, file/shared mappings, concurrent VM and cross-CPU TLB correctness |
+| Virtual memory | 8 GiB arena; anonymous sparse reserve/commit/decommit with 4 GiB reservations, 64 MiB commit calls and page-aligned subranges in `kernel/mm/user_vm.zig` | File/shared mappings, executable W^X/JIT transitions, concurrent VM and cross-CPU TLB correctness |
 | Process lifecycle | Fault containment and private page reclamation | Complete task/descriptor/socket/IPC reaping; quota accounting; stress beyond scheduler's current 64 task slots |
 | Networking | DNS and blocking TCP | Precise EOF/error semantics, async readiness, cancellation, entropy, authenticated TLS and trust updates |
 | Storage | Existing CitrusFS and read-only user file interfaces | Durable writable profiles, transactions/locking, larger installation image and cache quotas |
@@ -81,8 +82,9 @@ Baseline checked against the repository on 2026-09-23:
 
 The current 32 MiB root image is not a browser installation volume. Its layout,
 installer and persistent storage must be expanded deliberately, preserving user
-data and rollback. The existing per-process VM bounds cannot be treated as a
-4 GiB browser runtime merely by changing QEMU's `-m` option.
+data and rollback. The new virtual reservation capacity cannot be treated as
+4 GiB of physical RAM, nor as a browser runtime merely by changing QEMU's `-m`
+option.
 
 ## 4. Deployment and resource profiles
 
@@ -724,11 +726,11 @@ within one owned anonymous region. A middle unmap splits metadata and frees the
 removed frames; a split requiring a 129th live region fails before unmapping.
 Kernel and ring-3 probes check neighbor preservation, prefix/suffix removal,
 hole reuse and frame conservation.
-This is **not** a Chromium-compatible VM yet: mappings still allocate every
-physical page eagerly, are limited to a 256 MiB arena/64 MiB allocation, lack
-sparse reserve/commit, file/shared backing and executable transitions, and have
-no shared-address-space locking or remote TLB shootdown. Those remain gates
-before linking the guest engine.
+At this first slice, mappings still allocated every physical page eagerly,
+were limited to a 256 MiB arena/64 MiB allocation, and lacked sparse
+reserve/commit. The subsequent sparse-memory slice is recorded below. File/shared
+backing, executable transitions, shared-address-space locking and remote TLB
+shootdown remain gates before linking the guest engine.
 
 Qualification on 2026-09-24: `zig build -Dmm-test -Druntime-test -Ddesktop-profile`,
 `./scripts/mkdisk.sh`, and `python3 tools/vm_range_smoke.py` passed with a
@@ -738,6 +740,31 @@ runs exposed intermittent process-stress stalls and one desktop-start panic.
 The wait syscall was changed from busy yielding to a short blocking sleep to
 avoid starving lower-priority children. Repeated end-to-end stability remains
 open; the focused VM pass is not a browser-engine qualification.
+
+### 11.11 Guest sparse-reservation foundation
+
+Syscalls 13–15 now expose reserve, commit and decommit of anonymous virtual
+memory. Pulp wraps them as `MemoryReservation` operations. A reserve may span
+up to 4 GiB in an 8 GiB process arena without allocating frames or page tables;
+each commit/decommit call is limited to 64 MiB and must be wholly inside one
+reservation. Commit zeroes new pages and rejects overlaps. Decommit frees frames
+but keeps the address claim; later recommit is zeroed. Partial `munmap` can
+split a reservation, and `mprotect` rejects uncommitted holes before touching
+any committed page. A maximum of 128 live region metadata slots still applies.
+
+Qualification on 2026-09-24: the desktop build and disk generation passed;
+`tools/vm_range_smoke.py` passed in both the 3 GiB desktop and 4 GiB browser
+two-vCPU QEMU profiles after the final boundary checks. The combined
+`tools/runtime_smoke.py` passed once before those checks,
+then timed out in existing concurrent-process stress on three subsequent runs;
+all VM probes passed in each run. Repeated end-to-end stability remains open.
+The kernel test verifies a 1 GiB reservation without physical allocation,
+frame conservation, protection and zeroed recommit. Three ring-3 probes cover
+holes, overlap and bounds rejection. The 4 GiB API ceiling is not a measured
+4 GiB resident workload. This remains **not Chromium-ready**: no executable
+W^X/JIT transition, file/shared backing, concurrent address-space locking or
+cross-CPU TLB shootdown; libc/libc++, threads, TLS, process lifecycle and secure
+networking are also incomplete. No browser engine has been installed in the guest.
 
 ## 12. Security updates and distribution
 

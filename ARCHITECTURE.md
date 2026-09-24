@@ -461,7 +461,7 @@ non-canonical hole. Kernel owns the top half; every process owns the bottom half
                        │                                                     │  F
                        │   ═══ unmapped gap ═══                              │
                        │                                                     │
-                       │   USER HEAP           grows ↑  (brk / sbrk)         │
+                       │   USER HEAP      owned maps / sparse reservations  │
  0x0000_0000_0060_0000 ┼─────────────────────────────────────────────────────┤
                        │   USER PROGRAM IMAGE                                │
                        │   .text .rodata .data .bss  — the ELF               │
@@ -696,7 +696,7 @@ kernel/
 │   ├── table.zig                    Syscall number → handler mapping
 │   ├── validate.zig                 ══ Userspace pointer validation ══
 │   │                                Every user pointer passes through here
-│   ├── sys_mem.zig                  mmap, munmap, mprotect, brk
+│   ├── sys_mem.zig                  mmap, munmap, mprotect, reserve/commit
 │   ├── sys_proc.zig                 fork, exec, exit, wait, getpid, kill
 │   ├── sys_file.zig                 open, close, read, write, seek, stat
 │   ├── sys_dir.zig                  mkdir, rmdir, readdir, chdir, unlink
@@ -1324,14 +1324,17 @@ We use the `syscall`/`sysret` instruction pair, not `int 0x80`.
 Roughly 80 calls at Phase 8. Numbers are stable once assigned — **never reuse a
 retired number.**
 
-Implemented memory subset (2026-09-23): calls 10–12 accept anonymous private
-memory only (`addr=0`, `flags=0x22`, `fd=-1`, `off=0`). Protection is 0, 1 or 3
-(none, read, read/write); executable mappings return `-ENOTSUP`. Lengths round
-to 4096 bytes; unmap/protect require a whole owned allocation. Limits are 128
-live mappings, 64 MiB each and a 256 MiB process arena. Invalid arguments return
-`-EINVAL`, exhaustion `-ENOMEM`. Pages and empty page tables are reclaimed on
-unmap; process exit releases these mappings. Other table entries remain design
-targets where they do not appear in `kernel/syscall/syscall.zig`.
+Implemented memory subset (2026-09-24): calls 10–12 accept anonymous private
+memory only (`addr=0`, `flags=0x22`, `fd=-1`, `off=0`); calls 13–15 reserve,
+commit and decommit sparse anonymous memory. Protection is 0, 1 or 3 (none,
+read, read/write); executable mappings return `-ENOTSUP`. Lengths round to
+4096 bytes; unmap/protect support page-aligned subranges within one owned
+region. The arena is 8 GiB with at most 128 live regions, 64 MiB per eager
+mapping or commit operation, and 4 GiB per sparse reservation. Reserving
+allocates no physical pages; decommit reclaims committed pages while retaining
+the virtual range. Invalid arguments return `-EINVAL`, exhaustion `-ENOMEM`.
+Process exit releases all owned regions. There is no `brk` syscall yet. Other
+table entries remain design targets where absent from `kernel/syscall/syscall.zig`.
 
 | #  | Name | Signature | Phase |
 |----|------|-----------|-------|
@@ -1348,7 +1351,9 @@ targets where they do not appear in `kernel/syscall/syscall.zig`.
 | 10 | `mmap` | `(addr, len, prot, flags, fd, off) → ptr` | P4 |
 | 11 | `munmap` | `(addr, len) → !void` | P4 |
 | 12 | `mprotect` | `(addr, len, prot) → !void` | P4 |
-| 13 | `brk` | `(addr) → ptr` | P4 |
+| 13 | `vm_reserve` | `(len) → ptr` | P4 |
+| 14 | `vm_commit` | `(addr, len, prot) → !void` | P4 |
+| 15 | `vm_decommit` | `(addr, len) → !void` | P4 |
 | | **── File I/O ──** | | |
 | 20 | `open` | `(path, flags, mode) → fd` | P5 |
 | 21 | `close` | `(fd) → !void` | P5 |
