@@ -1,7 +1,7 @@
 //! Task structures.
 //!
-//! Phase 4 stage 1 covers kernel threads only: one address space, no user
-//! mode. Process and address-space fields arrive with ring 3.
+//! Kernel and ring-3 task state. Each user task currently owns one address
+//! space; shared-address-space threads require VM locking and TLB shootdown.
 
 const std = @import("std");
 const heap = @import("../mm/heap.zig");
@@ -81,6 +81,8 @@ pub const Task = struct {
 
     /// Saved stack pointer. Valid whenever the thread is not running.
     rsp: u64,
+    /// User FS base (thread pointer), restored on each CPU before resumption.
+    fs_base: u64 = 0,
     /// Kernel-owned, initialized without inheriting the spawning CPU's state.
     fpu: @import("../arch/x86_64/fpu.zig").State = .{},
     kstack_base: u64,

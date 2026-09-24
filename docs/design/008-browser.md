@@ -39,12 +39,12 @@ network security, process isolation, font shaping or media stack.
 | Executables | Static freestanding Zig/C ELF; native C floating-point ABI probe; no libc underneath Pulp | General libc, allocator and C++ runtime/toolchain support |
 | Heap | Owned anonymous maps and sparse reserve/commit/decommit with page-aligned subranges, plus legacy 256 KiB scratch arena | General C/C++ allocator, thread-safe VM, file/shared mappings and larger workloads |
 | CPU state | Eager per-task x87/SSE2 save/restore on every CPU; apps compile for baseline SSE2; kernel remains soft-float | XSAVE/AVX remain unsupported; retain CPU isolation and ABI regression gates |
-| Threads | Kernel scheduler, no pthread-compatible user API | User threads, thread-local storage, synchronization |
+| Threads | Kernel scheduler and per-task FS-base TLS; no shared-address-space user threads or pthread API | User threads, libc TLS layout, synchronization and cross-CPU VM coherence |
 | Network | DNS and blocking TCP; receive conflates timeout and EOF | Nonblocking/polling sockets with precise errors and cancellation |
 | HTTPS | No TLS library, trust store or secure randomness API | Audited TLS port, entropy, certificate and hostname validation |
 | Files | Read-only user API; limited reclamation | Safe writes, profile storage, cache quotas, object cleanup |
 | Graphics | Peel CPU framebuffer and ASCII coverage atlas | Native engine backend, Unicode shaping, images, scalable surfaces |
-| Security | Synchronous ring-3 faults terminate the app; owned pages reclaimed | IPC/socket/file cleanup, task reaping, sandbox boundaries, permissions, lifecycle stress |
+| Security | Ring-3 faults terminate the app; owned pages, task records, IPC objects, file descriptors and socket slots have scoped exit cleanup | Sandbox boundaries, permissions, concurrent lifecycle stress |
 
 Evidence locations: build.zig; userland/libs/pulp/pulp.zig;
 kernel/sched/process.zig; kernel/arch/x86_64/context.zig;
@@ -80,8 +80,9 @@ ways to control overhead; there is no honest fixed RAM promise for arbitrary
 modern websites. No host-browser streaming, TLS-stripping proxy or hidden
 remote renderer is part of this native-browser plan.
 
-The user requires descriptive **local commits after each verified phase**.
-Do not push without explicit permission. Runtime work is necessary engineering,
+The user requires descriptive **local commits after each verified phase** and
+has explicitly authorized pushing the completed browser-foundation milestones.
+Runtime work is necessary engineering,
 not a completed browser; do not add a nonfunctional browser icon as a milestone.
 
 ## Runtime milestone: owned anonymous memory (23 September 2026)
@@ -193,6 +194,13 @@ slot reuse and exit recovery. TCP ownership guards compile and pass the
 desktop/runtime suites, but this test does not exercise an established TCP
 connection or qualify concurrent socket operations. Asynchronous network
 readiness, robust cross-CPU synchronization, and secure TLS remain open.
+
+The next TLS slice adds `tls_set_base`/`tls_get_base` and saves the user FS
+base per task across scheduling and migration. A ring-3 probe verifies private
+FS-relative data across 256 yield/sleep cycles, including both QEMU CPUs, in
+12 concurrent processes. This is register-level TLS isolation, not pthreads
+or an upstream-compatible libc TLS layout; shared-address-space threads still
+require VM locking and remote TLB invalidation.
 
 ## Runtime milestone: process fault containment (23 September 2026)
 

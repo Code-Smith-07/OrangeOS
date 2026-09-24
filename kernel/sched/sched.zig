@@ -44,6 +44,7 @@ const percpu = @import("../arch/x86_64/percpu.zig");
 const vmm = @import("../mm/vmm.zig");
 const task_mod_kstack = @import("task.zig");
 const ipc_object = @import("../ipc/object.zig");
+const fsbase = @import("../arch/x86_64/fsbase.zig");
 
 pub const Task = task_mod.Task;
 pub const Priority = task_mod.Priority;
@@ -364,6 +365,7 @@ fn switchTo(c: *percpu.PerCpu, next: *Task) void {
     if (next.address_space != 0 and next.address_space != prev.address_space) {
         vmm.loadCr3(next.address_space);
     }
+    fsbase.set(next.fs_base);
 
     // Run-queue lock and masked interrupts cover both state publication and
     // restore, including migration to a different CPU. Never use lazy #NM.
@@ -552,6 +554,7 @@ pub fn exit(code: i32) noreturn {
     if (next.address_space != 0 and next.address_space != t.address_space) {
         vmm.loadCr3(next.address_space);
     }
+    fsbase.set(next.fs_base);
 
     // The dying thread's stack is still in use until we leave it, so it is
     // freed by whoever reaps it, not here.
@@ -572,6 +575,7 @@ pub fn start() noreturn {
     last_boost_tick = time.tickCount();
 
     // contextStart lands in threadTrampoline, which releases the lock.
+    fsbase.set(first.fs_base);
     context.contextStart(first.rsp, &first.fpu);
     unreachable;
 }
@@ -586,6 +590,7 @@ pub fn startAp() noreturn {
     first.state = .running;
     c.current = first;
 
+    fsbase.set(first.fs_base);
     context.contextStart(first.rsp, &first.fpu);
     unreachable;
 }

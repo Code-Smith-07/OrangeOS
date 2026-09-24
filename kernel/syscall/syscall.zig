@@ -64,6 +64,8 @@ pub const Nr = enum(u64) {
     vm_reserve = 13,
     vm_commit = 14,
     vm_decommit = 15,
+    tls_set_base = 16,
+    tls_get_base = 17,
     sleep_ms = 61,
     open = 20,
     close = 21,
@@ -140,6 +142,8 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .vm_reserve => sysVmReserve(frame.rdi),
         .vm_commit => sysVmCommit(frame.rdi, frame.rsi, frame.rdx),
         .vm_decommit => sysVmDecommit(frame.rdi, frame.rsi),
+        .tls_set_base => sysTlsSetBase(frame.rdi),
+        .tls_get_base => sysTlsGetBase(),
         .sleep_ms => sysSleepMs(frame.rdi),
         // Fourth argument is in r10, not rcx: the syscall instruction
         // clobbers rcx with the return address.
@@ -223,6 +227,19 @@ fn sysVmDecommit(address: u64, len: u64) i64 {
     const t = sched.currentTask() orelse return -14;
     user_vm.decommit(&t.anonymous_vm, t.address_space, address, len) catch |e| return vmErrno(e);
     return 0;
+}
+
+fn sysTlsSetBase(base: u64) i64 {
+    if (base >= validate.USER_MAX) return -22;
+    const t = sched.currentTask() orelse return EIO;
+    t.fs_base = base;
+    @import("../arch/x86_64/fsbase.zig").set(base);
+    return 0;
+}
+
+fn sysTlsGetBase() i64 {
+    const t = sched.currentTask() orelse return EIO;
+    return @intCast(t.fs_base);
 }
 
 var snapshot_lock: snapshot_sync.SpinLock = .{};

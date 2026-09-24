@@ -49,7 +49,7 @@ if [ ! -f zig-out/bin/init ]; then
 fi
 
 cp zig-out/bin/init "$ROOTFS/sbin/init"
-for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe fault-null fault-ro fault-nx fault-opcode; do
+for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe tls-probe fault-null fault-ro fault-nx fault-opcode; do
     if [ -f "zig-out/bin/$prog" ]; then
         cp "zig-out/bin/$prog" "$ROOTFS/bin/$prog"
     fi

@@ -43,6 +43,17 @@ def main():
             assert any(mask.bit_count() > 1 for mask in masks), f"No SIMD process migrated between CPUs: {masks}"
         assert "simd-probe: FAIL" not in guest.log()
         print(f"PASS eager x87, all sixteen XMM registers, MXCSR and migration; CPU masks={masks}", flush=True)
+        guest.until(lambda: "runtime: PASS per-task FS TLS across two CPUs" in guest.log(),
+                    "twelve concurrent FS-base TLS probes", 90)
+        tls_masks = [int(mask, 16) for mask in re.findall(r"tls-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]
+        assert len(tls_masks) == 12, tls_masks
+        combined_tls = 0
+        for mask in tls_masks:
+            combined_tls |= mask
+        assert combined_tls.bit_count() >= min(cores, 2), tls_masks
+        if cores > 1:
+            assert any(mask.bit_count() > 1 for mask in tls_masks), f"TLS probes did not migrate: {tls_masks}"
+        print(f"PASS FS-base isolation, invalid-address rejection and migration; CPU masks={tls_masks}", flush=True)
         guest.until(lambda: "runtime: PASS freestanding C floating-point ABI" in guest.log(),
                     "four concurrent compiler-generated C/Zig floating-point probes", 90)
         assert guest.log().count("c-abi-probe: PASS") == 4

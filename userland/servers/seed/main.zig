@@ -149,6 +149,18 @@ export fn _start() callconv(.c) noreturn {
             }
         }
         pulp.puts("runtime: PASS concurrent SIMD process isolation\n");
+        for (0..2) |_| {
+            var pids: [6]i64 = undefined;
+            for (&pids) |*pid| pid.* = pulp.spawn("/bin/tls-probe") catch pulp.exit(139);
+            for (pids) |pid| {
+                const code = pulp.wait(pid) catch pulp.exit(140);
+                if (code != 0) {
+                    pulp.print("runtime: FAIL TLS process {d} exit {d}\n", .{ pid, code });
+                    pulp.exit(141);
+                }
+            }
+        }
+        pulp.puts("runtime: PASS per-task FS TLS across two CPUs\n");
         var c_probes: [4]i64 = undefined;
         for (&c_probes) |*pid| pid.* = pulp.spawn("/bin/c-abi-probe") catch pulp.exit(99);
         for (c_probes) |pid| {

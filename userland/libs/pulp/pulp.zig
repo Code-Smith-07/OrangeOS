@@ -25,6 +25,8 @@ pub const NR = struct {
     pub const vm_reserve: u64 = 13;
     pub const vm_commit: u64 = 14;
     pub const vm_decommit: u64 = 15;
+    pub const tls_set_base: u64 = 16;
+    pub const tls_get_base: u64 = 17;
     pub const sleep_ms: u64 = 61;
     pub const open: u64 = 20;
     pub const close: u64 = 21;
@@ -645,6 +647,18 @@ pub fn decommitMemory(reservation: MemoryReservation, offset: usize, length: usi
 pub fn releaseReservedMemory(reservation: MemoryReservation) Error!void {
     const result = syscall2(NR.munmap, reservation.address, reservation.len);
     if (result < 0) return errno(result);
+}
+
+/// Store the user-space thread pointer used by x86-64 FS-relative TLS loads.
+/// The process owns the pointed-to memory; it is not copied by the kernel.
+pub fn setTlsBase(base: u64) Error!void {
+    const result = syscall1(NR.tls_set_base, base);
+    if (result < 0) return errno(result);
+}
+
+pub fn getTlsBase() u64 {
+    const result = syscall0(NR.tls_get_base);
+    return if (result < 0) 0 else @intCast(result);
 }
 
 // ── Legacy scratch arena ────────────────────────────────────────────────────

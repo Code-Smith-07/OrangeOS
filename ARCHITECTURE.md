@@ -1354,6 +1354,8 @@ table entries remain design targets where absent from `kernel/syscall/syscall.zi
 | 13 | `vm_reserve` | `(len) → ptr` | P4 |
 | 14 | `vm_commit` | `(addr, len, prot) → !void` | P4 |
 | 15 | `vm_decommit` | `(addr, len) → !void` | P4 |
+| 16 | `tls_set_base` | `(user_fs_base) → !void`; 0 clears it | P4 runtime |
+| 17 | `tls_get_base` | `() → user_fs_base` | P4 runtime |
 | | **── File I/O ──** | | |
 | 20 | `open` | `(path, flags, mode) → fd` | P5 |
 | 21 | `close` | `(fd) → !void` | P5 |

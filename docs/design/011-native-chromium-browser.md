@@ -870,6 +870,23 @@ QEMU profiles with two CPUs; the normal desktop interaction smoke also passed.
 This is lifetime and basic ownership coverage, not handle-transfer security,
 namespaces, per-port authorization, concurrent stress, or browser-grade IPC.
 
+### 11.18 Per-task FS-base TLS foundation
+
+Syscalls 16 and 17 set/get the calling task's x86-64 user FS base. The kernel
+rejects non-user canonical bases; the caller still owns and must map the
+pointed-to storage. The scheduler restores FS base on every task switch and
+first start, including cross-CPU migration and exit-to-next-task. New tasks
+start with a zero base and do not inherit the spawner's TLS pointer.
+
+The ring-3 `tls-probe` sets a private mapped value, reads it through `%fs:0`,
+checks base queries and invalid-address rejection, and verifies it through
+256 yield/sleep cycles. Twelve probes in two concurrent waves crossed both
+QEMU CPUs and each observed migration. The combined runtime test passed in
+the 3 GiB desktop profile. This is TLS register isolation for separate
+processes, **not** shared-address-space user threads, pthreads, a general
+libc TLS layout, mutexes, futexes or cross-CPU page-table coherence. Those
+remain Phase 2 gates before native Chromium linkage.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,
