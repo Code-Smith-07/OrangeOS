@@ -56,6 +56,8 @@ def main():
                     "file descriptor isolation and exit cleanup", 90)
         guest.until(lambda: "runtime: PASS private UDP sockets and 48 exit cleanups" in guest.log(),
                     "UDP socket isolation and exit cleanup", 90)
+        guest.until(lambda: "runtime: PASS 96 IPC registry reuse, mappings and exit cleanups" in guest.log(),
+                    "IPC object ownership and exit cleanup", 90)
         guest.until(lambda: '"Welcome"' in guest.log() and "squeeze: window" in guest.log(),
                     "desktop starts after runtime stress", 60)
         guest.screenshot("runtime-desktop")

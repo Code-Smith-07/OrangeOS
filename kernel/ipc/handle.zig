@@ -20,11 +20,17 @@ pub const Table = struct {
     entries: [MAX_HANDLES]?*object.Object = [_]?*object.Object{null} ** MAX_HANDLES,
 
     pub fn insert(self: *Table, obj: *object.Object) Error!i64 {
+        object.retain(obj);
+        errdefer object.release(obj);
+        return self.insertOwned(obj);
+    }
+
+    /// Consume an existing reference, including the creator/acquire reference.
+    pub fn insertOwned(self: *Table, obj: *object.Object) Error!i64 {
         var i: usize = 0;
         while (i < MAX_HANDLES) : (i += 1) {
             if (self.entries[i] != null) continue;
             self.entries[i] = obj;
-            object.retain(obj);
             return @as(i64, @intCast(i)) + HANDLE_BASE;
         }
         return Error.TooManyHandles;

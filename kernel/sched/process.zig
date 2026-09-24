@@ -89,15 +89,18 @@ pub const SpawnRequest = struct {
 };
 
 /// Start a program with its stdio bound to a PTY.
-pub fn spawnPathWithPty(path: []const u8, pty: *anyopaque) !u32 {
-    const tid = try spawnPath(path);
-    if (sched.findByTid(tid)) |t| t.pty = pty;
-    return tid;
+pub fn spawnPathWithPty(path: []const u8, pty: *@import("../ipc/object.zig").Object) !u32 {
+    return spawnPathInternal(path, pty);
 }
 
 /// Read a program off disk and start it as a new task. Returns its tid.
 /// The caller keeps running; use wait() to synchronise.
 pub fn spawnPath(path: []const u8) !u32 {
+    const inherited = if (sched.currentTask()) |parent| parent.pty else null;
+    return spawnPathInternal(path, inherited);
+}
+
+fn spawnPathInternal(path: []const u8, pty: ?*@import("../ipc/object.zig").Object) !u32 {
     if (!vfs.isMounted()) return error.NotMounted;
 
     const node = vfs.resolve(path) catch return error.NotFound;
@@ -122,11 +125,7 @@ pub fn spawnPath(path: []const u8) !u32 {
     var name: []const u8 = path;
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| name = path[i + 1 ..];
 
-    const t = sched.spawn(name, spawnThread, req, .normal) catch return error.OutOfMemory;
-
-    // Children inherit the terminal they were started from, so a program run
-    // from a shell in a window has its output land in that same window.
-    if (parent) |p| t.pty = p.pty;
+    const t = sched.spawnWithPty(name, spawnThread, req, .normal, pty) catch return error.OutOfMemory;
 
     return t.tid;
 }

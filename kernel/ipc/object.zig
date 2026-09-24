@@ -78,16 +78,18 @@ pub const Port = struct {
         return self.count == 0;
     }
 
-    pub fn push(self: *Port, msg: *Message) Error!void {
+    pub fn push(self: *Port, msg: *Message) Error!u64 {
         const state = spinlock.acquireIrqSave(&self.lock);
         defer spinlock.releaseIrqRestore(&self.lock, state);
 
         if (self.count == QUEUE_DEPTH) return Error.QueueFull;
         msg.header.seq = self.next_seq;
         self.next_seq += 1;
+        const seq = msg.header.seq;
         self.queue[self.tail] = msg;
         self.tail = (self.tail + 1) % QUEUE_DEPTH;
         self.count += 1;
+        return seq;
     }
 
     pub fn pop(self: *Port) ?*Message {
@@ -109,7 +111,6 @@ pub const Shm = struct {
     phys: u64,
     order: usize,
     size: usize,
-    refs: u32,
 
     /// Shared buffers are named so a second process can find one without the
     /// first having to pass a handle through a message. Handle transfer is the
@@ -138,21 +139,42 @@ pub const Object = struct {
 pub const MAX_OBJECTS = 64;
 
 var objects: [MAX_OBJECTS]?*Object = [_]?*Object{null} ** MAX_OBJECTS;
-var object_count: usize = 0;
+var registry_lock: spinlock.SpinLock = .{};
+var object_count: usize = 0; // high-water mark; empty slots are reused
 
-fn allocObject() Error!*Object {
-    if (object_count >= MAX_OBJECTS) return Error.OutOfMemory;
+/// Caller holds registry_lock. The returned reference belongs to the caller.
+fn allocObjectLocked() Error!*Object {
+    var slot: usize = 0;
+    while (slot < object_count and objects[slot] != null) : (slot += 1) {}
+    if (slot >= MAX_OBJECTS) return Error.OutOfMemory;
     const obj = heap.create(Object) catch return Error.OutOfMemory;
-    objects[object_count] = obj;
-    object_count += 1;
+    objects[slot] = obj;
+    if (slot == object_count) object_count += 1;
     return obj;
+}
+
+fn findPortLocked(name: []const u8) ?*Object {
+    for (objects[0..object_count]) |maybe| {
+        const obj = maybe orelse continue;
+        if (obj.kind == .port and std.mem.eql(u8, obj.data.port.nameSlice(), name)) return obj;
+    }
+    return null;
+}
+
+fn findShmLocked(name: []const u8) ?*Object {
+    for (objects[0..object_count]) |maybe| {
+        const obj = maybe orelse continue;
+        if (obj.kind == .shm and std.mem.eql(u8, obj.data.shm.nameSlice(), name)) return obj;
+    }
+    return null;
 }
 
 pub fn createPort(name: []const u8) Error!*Object {
     if (name.len == 0 or name.len > MAX_NAME) return Error.NameTooLong;
-    if (findPort(name) != null) return Error.NameTaken;
-
-    const obj = try allocObject();
+    const state = spinlock.acquireIrqSave(&registry_lock);
+    defer spinlock.releaseIrqRestore(&registry_lock, state);
+    if (findPortLocked(name) != null) return Error.NameTaken;
+    const obj = try allocObjectLocked();
     obj.* = .{ .kind = .port, .refs = 1, .data = .{ .port = undefined } };
 
     const p = &obj.data.port;
@@ -161,35 +183,36 @@ pub fn createPort(name: []const u8) Error!*Object {
     return obj;
 }
 
-pub fn findPort(name: []const u8) ?*Object {
-    var i: usize = 0;
-    while (i < object_count) : (i += 1) {
-        const obj = objects[i] orelse continue;
-        if (obj.kind != .port) continue;
-        if (std.mem.eql(u8, obj.data.port.nameSlice(), name)) return obj;
-    }
-    return null;
+pub fn acquirePort(name: []const u8) ?*Object {
+    const state = spinlock.acquireIrqSave(&registry_lock);
+    defer spinlock.releaseIrqRestore(&registry_lock, state);
+    const obj = findPortLocked(name) orelse return null;
+    obj.refs += 1;
+    return obj;
 }
 
-pub fn findShm(name: []const u8) ?*Object {
-    var i: usize = 0;
-    while (i < object_count) : (i += 1) {
-        const obj = objects[i] orelse continue;
-        if (obj.kind != .shm) continue;
-        if (std.mem.eql(u8, obj.data.shm.nameSlice(), name)) return obj;
-    }
-    return null;
+pub fn acquireShm(name: []const u8) ?*Object {
+    const state = spinlock.acquireIrqSave(&registry_lock);
+    defer spinlock.releaseIrqRestore(&registry_lock, state);
+    const obj = findShmLocked(name) orelse return null;
+    obj.refs += 1;
+    return obj;
 }
 
 pub fn createShm(name: []const u8, size: usize) Error!*Object {
     if (name.len > MAX_NAME) return Error.NameTooLong;
-    if (name.len > 0 and findShm(name) != null) return Error.NameTaken;
-
     const pages = (size + pmm.PAGE_SIZE - 1) / pmm.PAGE_SIZE;
     const order = pmm.orderFor(pages);
     const phys = pmm.allocOrderZeroed(order) catch return Error.OutOfMemory;
 
-    const obj = allocObject() catch {
+    const state = spinlock.acquireIrqSave(&registry_lock);
+    if (name.len > 0 and findShmLocked(name) != null) {
+        spinlock.releaseIrqRestore(&registry_lock, state);
+        pmm.freeOrder(phys, order);
+        return Error.NameTaken;
+    }
+    const obj = allocObjectLocked() catch {
+        spinlock.releaseIrqRestore(&registry_lock, state);
         pmm.freeOrder(phys, order);
         return Error.OutOfMemory;
     };
@@ -200,27 +223,55 @@ pub fn createShm(name: []const u8, size: usize) Error!*Object {
             .phys = phys,
             .order = order,
             .size = pages * pmm.PAGE_SIZE,
-            .refs = 1,
             .name = undefined,
             .name_len = name.len,
         } },
     };
     if (name.len > 0) @memcpy(obj.data.shm.name[0..name.len], name);
+    spinlock.releaseIrqRestore(&registry_lock, state);
     return obj;
 }
 
 pub fn createPty() Error!*Object {
-    const obj = try allocObject();
+    const state = spinlock.acquireIrqSave(&registry_lock);
+    defer spinlock.releaseIrqRestore(&registry_lock, state);
+    const obj = try allocObjectLocked();
     obj.* = .{ .kind = .pty, .refs = 1, .data = .{ .pty = .{} } };
     return obj;
 }
 
 pub fn retain(obj: *Object) void {
+    const state = spinlock.acquireIrqSave(&registry_lock);
     obj.refs += 1;
+    spinlock.releaseIrqRestore(&registry_lock, state);
 }
 
 pub fn release(obj: *Object) void {
-    if (obj.refs > 0) obj.refs -= 1;
+    const state = spinlock.acquireIrqSave(&registry_lock);
+    std.debug.assert(obj.refs > 0);
+    obj.refs -= 1;
+    if (obj.refs != 0) {
+        spinlock.releaseIrqRestore(&registry_lock, state);
+        return;
+    }
+    for (objects[0..object_count]) |*entry| {
+        if (entry.* == obj) {
+            entry.* = null;
+            break;
+        }
+    }
+    while (object_count > 0 and objects[object_count - 1] == null) object_count -= 1;
+    spinlock.releaseIrqRestore(&registry_lock, state);
+
+    switch (obj.kind) {
+        .port => {
+            const port = &obj.data.port;
+            while (port.pop()) |msg| freeMessage(msg);
+        },
+        .shm => pmm.freeOrder(obj.data.shm.phys, obj.data.shm.order),
+        .pty => {},
+    }
+    heap.destroy(obj);
 }
 
 pub fn allocMessage() Error!*Message {
@@ -232,6 +283,8 @@ pub fn freeMessage(m: *Message) void {
 }
 
 pub fn portCount() usize {
+    const state = spinlock.acquireIrqSave(&registry_lock);
+    defer spinlock.releaseIrqRestore(&registry_lock, state);
     var n: usize = 0;
     var i: usize = 0;
     while (i < object_count) : (i += 1) {
@@ -243,5 +296,11 @@ pub fn portCount() usize {
 }
 
 pub fn objectCount() usize {
-    return object_count;
+    const state = spinlock.acquireIrqSave(&registry_lock);
+    defer spinlock.releaseIrqRestore(&registry_lock, state);
+    var count: usize = 0;
+    for (objects[0..object_count]) |entry| if (entry != null) {
+        count += 1;
+    };
+    return count;
 }

@@ -817,8 +817,8 @@ operations had no cross-CPU serialization. Parallel executable reads could
 corrupt directory or ELF data, producing false `NotFound` and user faults.
 The common block-device boundary now serializes complete reads and writes,
 including partition aliases. The longer-term browser path still requires
-asynchronous, independently owned storage requests. Global file descriptors,
-sockets and IPC objects are not yet fully process-owned or reclaimed.
+asynchronous, independently owned storage requests. The file descriptor,
+socket and IPC ownership slices below address separate lifetime hazards.
 
 ### 11.15 Per-task file descriptors
 
@@ -831,7 +831,7 @@ slot can be reused. Seed repeats this probe 96 times while holding its own
 file open and checks that its offset is unchanged afterward. Invalid 64-bit
 descriptor arguments return `EBADF` rather than overflowing a kernel cast.
 This is read-only file isolation, not POSIX fork/exec inheritance, shared open
-descriptions, writable files, or process-owned sockets/IPC.
+descriptions or writable files.
 
 ### 11.16 Task-owned socket slots
 
@@ -846,6 +846,29 @@ socket while 48 children leave all their sockets open and exit, then verifies
 its own slot remains usable. This proves the tested UDP ownership and exit
 reclamation path, not an established-TCP cleanup test. The network stack still
 lacks browser-grade concurrent readiness, locking, TLS and cancellation.
+
+### 11.17 IPC object lifetime and process ownership
+
+Named ports and shared buffers, plus PTYs, now use a locked registry with
+reusable slots instead of a lifetime-only allocation counter. Creation and
+name lookup return one owned reference; a task handle consumes it. Closing the
+last reference removes the object and frees its queued messages, shared-memory
+buddy frames, or PTY allocation. The compositor's input-sink registration,
+each shared-memory mapping, and every spawned PTY slave hold independent
+references. Process exit clears the sink, tears down its address space before
+releasing mapped frames, then releases its PTY and all remaining handles.
+PTY ownership is installed before a child is queued, eliminating the
+spawn-before-stdio race.
+
+The ring-3 IPC probe checks queued-message cleanup, same-name port recreation,
+port connection and delivery, mapping validity after handle close, named
+shared-memory reopening, PTY spawn with master close before child exit, and
+abandoned handles on exit. Seed runs
+it in 96 sequential processes, exceeding the 64-slot registry's lifetime
+capacity. The runtime smoke passed on both 3 GiB desktop and 4 GiB browser
+QEMU profiles with two CPUs; the normal desktop interaction smoke also passed.
+This is lifetime and basic ownership coverage, not handle-transfer security,
+namespaces, per-port authorization, concurrent stress, or browser-grade IPC.
 
 ## 12. Security updates and distribution
 

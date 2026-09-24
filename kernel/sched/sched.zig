@@ -43,6 +43,7 @@ const gdt = @import("../arch/x86_64/gdt.zig");
 const percpu = @import("../arch/x86_64/percpu.zig");
 const vmm = @import("../mm/vmm.zig");
 const task_mod_kstack = @import("task.zig");
+const ipc_object = @import("../ipc/object.zig");
 
 pub const Task = task_mod.Task;
 pub const Priority = task_mod.Priority;
@@ -280,12 +281,28 @@ pub fn spawn(
     arg: ?*anyopaque,
     priority: Priority,
 ) !*Task {
+    return spawnWithPty(name, entry, arg, priority, null);
+}
+
+/// Set inherited PTY ownership before the child becomes runnable.
+pub fn spawnWithPty(
+    name: []const u8,
+    entry: *const fn (?*anyopaque) void,
+    arg: ?*anyopaque,
+    priority: Priority,
+    pty: ?*ipc_object.Object,
+) !*Task {
     const t = try task_mod.create(name, entry, arg, priority, @intFromPtr(&threadTrampoline));
     t.parent_tid = if (currentTask()) |parent| parent.tid else 0;
+    if (pty) |obj| {
+        ipc_object.retain(obj);
+        t.pty = obj;
+    }
 
     const state = spinlock.acquireIrqSave(&lock);
     if (!registerTask(t)) {
         spinlock.releaseIrqRestore(&lock, state);
+        if (t.pty) |obj| ipc_object.release(obj);
         task_mod.destroy(t);
         return error.OutOfMemory;
     }
@@ -493,6 +510,7 @@ pub fn exit(code: i32) noreturn {
     io.cli();
     if (currentTask()) |t| {
         t.files.clear();
+        @import("../ipc/ipc.zig").clearInputSinkOwnedBy(t.tid);
         @import("../net/net.zig").socketCloseOwnedBy(t.tid);
         @import("../net/tcp.zig").abortOwnedBy(t.tid);
         @import("../mm/user_vm.zig").releaseAll(&t.anonymous_vm, t.address_space);
@@ -502,10 +520,15 @@ pub fn exit(code: i32) noreturn {
             t.address_space = vmm.kernelPml4();
             vmm.destroyAddressSpace(old_space);
         }
-        // Registry ownership currently keeps IPC objects alive; mapped shared
-        // frames are borrowed and were deliberately skipped by VM teardown.
+        // Address-space teardown must precede releasing borrowed SHM frames.
+        for (&t.mapped_shm) |*mapping| {
+            if (mapping.*) |obj| ipc_object.release(obj);
+            mapping.* = null;
+        }
+        if (t.pty) |obj| ipc_object.release(obj);
+        t.pty = null;
         for (&t.handles.entries) |*entry| {
-            if (entry.*) |obj| @import("../ipc/object.zig").release(obj);
+            if (entry.*) |obj| ipc_object.release(obj);
             entry.* = null;
         }
     }

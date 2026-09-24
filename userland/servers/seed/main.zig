@@ -227,6 +227,15 @@ export fn _start() callconv(.c) noreturn {
         if (reopened_udp != 0) pulp.exit(135);
         pulp.udpClose(reopened_udp);
         pulp.puts("runtime: PASS private UDP sockets and 48 exit cleanups\n");
+        for (0..96) |_| {
+            const child = pulp.spawn("/bin/ipc-probe") catch pulp.exit(136);
+            const code = pulp.wait(child) catch pulp.exit(137);
+            if (code != 0) {
+                pulp.print("runtime: FAIL IPC probe exit {d}\n", .{code});
+                pulp.exit(138);
+            }
+        }
+        pulp.puts("runtime: PASS 96 IPC registry reuse, mappings and exit cleanups\n");
     }
     loadConfig();
 

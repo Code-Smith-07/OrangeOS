@@ -9,6 +9,7 @@ const pmm = @import("../mm/pmm.zig");
 const context = @import("../arch/x86_64/context.zig");
 const vmm = @import("../mm/vmm.zig");
 const handle = @import("../ipc/handle.zig");
+const ipc_object = @import("../ipc/object.zig");
 const vfs = @import("../fs/vfs/vfs.zig");
 
 /// 32 KiB. The syscall and filesystem paths put several 4 KiB buffers on the
@@ -105,7 +106,7 @@ pub const Task = struct {
     /// When set, fd 0/1/2 route to this PTY's slave end instead of the serial
     /// console. Inherited by anything this task spawns, so a shell started in
     /// a terminal keeps its children in the same terminal.
-    pty: ?*anyopaque = null,
+    pty: ?*ipc_object.Object = null,
 
     /// Capabilities this task holds. Empty at creation: a process starts with
     /// no authority and receives handles explicitly.
@@ -120,6 +121,8 @@ pub const Task = struct {
     /// Next free virtual address for shared-memory mappings. Grows upward
     /// through a region reserved for the purpose.
     shm_next: u64 = SHM_REGION_BASE,
+    /// A mapping retains its frames even after the creating handle is closed.
+    mapped_shm: [128]?*ipc_object.Object = [_]?*ipc_object.Object{null} ** 128,
     anonymous_vm: @import("../mm/user_vm.zig").State = .{},
 
     /// Physical address of this task's PML4. Kernel threads share the kernel's.

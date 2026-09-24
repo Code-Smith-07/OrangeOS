@@ -36,15 +36,17 @@ fn currentTable() Error!*handle.Table {
 /// Create a named port and return a handle to it.
 pub fn portCreate(name: []const u8) Error!i64 {
     const obj = try object.createPort(name);
+    errdefer object.release(obj);
     const table = try currentTable();
-    return table.insert(obj);
+    return table.insertOwned(obj);
 }
 
 /// Get a handle to an existing port by name.
 pub fn portConnect(name: []const u8) Error!i64 {
-    const obj = object.findPort(name) orelse return Error.NoSuchPort;
+    const obj = object.acquirePort(name) orelse return Error.NoSuchPort;
+    errdefer object.release(obj);
     const table = try currentTable();
-    return table.insert(obj);
+    return table.insertOwned(obj);
 }
 
 /// Queue a message on a port. Returns the sequence number stamped on it.
@@ -55,15 +57,32 @@ pub fn portConnect(name: []const u8) Error!i64 {
 /// both, it waits on input and registers its port here, so a client message
 /// wakes the same channel. One wait point, no polling, no added latency on
 /// either path.
-var input_sink: ?*object.Port = null;
+var input_sink: ?*object.Object = null;
+var input_sink_owner: u32 = 0;
 var input_sink_lock: spinlock.SpinLock = .{};
 
 pub fn setInputSink(h: i64) Error!void {
     const table = try currentTable();
     const obj = try table.getPort(h);
+    const owner = sched.currentTask().?.tid;
+    object.retain(obj);
     const state = spinlock.acquireIrqSave(&input_sink_lock);
-    defer spinlock.releaseIrqRestore(&input_sink_lock, state);
-    input_sink = &obj.data.port;
+    const old = input_sink;
+    input_sink = obj;
+    input_sink_owner = owner;
+    spinlock.releaseIrqRestore(&input_sink_lock, state);
+    if (old) |previous| object.release(previous);
+}
+
+pub fn clearInputSinkOwnedBy(tid: u32) void {
+    const state = spinlock.acquireIrqSave(&input_sink_lock);
+    const old = if (input_sink_owner == tid) input_sink else null;
+    if (old != null) {
+        input_sink = null;
+        input_sink_owner = 0;
+    }
+    spinlock.releaseIrqRestore(&input_sink_lock, state);
+    if (old) |previous| object.release(previous);
 }
 
 /// Whether the compositor's client port already has work queued.
@@ -73,17 +92,15 @@ pub fn setInputSink(h: i64) Error!void {
 /// so a client message cannot be stranded behind a missed wakeup.
 pub fn inputPending() bool {
     const state = spinlock.acquireIrqSave(&input_sink_lock);
-    const port = input_sink;
-    spinlock.releaseIrqRestore(&input_sink_lock, state);
-
-    const p = port orelse return false;
-    return !p.isEmpty();
+    defer spinlock.releaseIrqRestore(&input_sink_lock, state);
+    const obj = input_sink orelse return false;
+    return !obj.data.port.isEmpty();
 }
 
 fn isInputSink(port: *object.Port) bool {
     const state = spinlock.acquireIrqSave(&input_sink_lock);
     defer spinlock.releaseIrqRestore(&input_sink_lock, state);
-    return input_sink == port;
+    return if (input_sink) |obj| &obj.data.port == port else false;
 }
 
 pub fn portSend(h: i64, opcode: u32, payload: []const u8) Error!u64 {
@@ -107,13 +124,13 @@ pub fn portSend(h: i64, opcode: u32, payload: []const u8) Error!u64 {
 
     // `errdefer` owns cleanup on failure. Freeing explicitly here as well
     // would return the same message to the allocator twice.
-    port.push(msg) catch return Error.QueueFull;
+    const seq = port.push(msg) catch return Error.QueueFull;
 
     // Anyone blocked on this port has work now.
     sched.wakeChannel(@intFromPtr(port));
     if (isInputSink(port)) sched.wakeChannel(event.waitChannel());
 
-    return msg.header.seq;
+    return seq;
 }
 
 pub const Received = struct {
@@ -121,12 +138,8 @@ pub const Received = struct {
     len: usize,
 };
 
-/// Take the next message from a port, blocking until one arrives.
-///
-/// Blocking is a yield loop rather than a wait queue. A wait queue needs the
-/// sender to know who is waiting, which needs per-port waiter lists; that is
-/// worth building when there are enough ports for the polling to cost
-/// something.
+/// Take the next message from a port, blocking on its scheduler wait channel
+/// until one arrives.
 pub fn portRecv(h: i64, out: []u8, blocking: bool) Error!Received {
     const table = try currentTable();
     const obj = try table.getPort(h);
@@ -164,15 +177,17 @@ pub fn portRecv(h: i64, out: []u8, blocking: bool) Error!Received {
 pub fn shmCreate(name: []const u8, size: usize) Error!i64 {
     if (size == 0 or size > 16 * 1024 * 1024) return Error.OutOfMemory;
     const obj = try object.createShm(name, size);
+    errdefer object.release(obj);
     const table = try currentTable();
-    return table.insert(obj);
+    return table.insertOwned(obj);
 }
 
 /// Get a handle to an existing named shared buffer.
 pub fn shmOpen(name: []const u8) Error!i64 {
-    const obj = object.findShm(name) orelse return Error.NoSuchPort;
+    const obj = object.acquireShm(name) orelse return Error.NoSuchPort;
+    errdefer object.release(obj);
     const table = try currentTable();
-    return table.insert(obj);
+    return table.insertOwned(obj);
 }
 
 /// Map a shared memory object into the calling process and return the address.
@@ -182,6 +197,16 @@ pub fn shmMap(h: i64, writable: bool) Error!u64 {
     const t = sched.currentTask() orelse return Error.BadHandle;
     const obj = try t.handles.getShm(h);
     const shm = &obj.data.shm;
+    var mapping_slot: ?*?*object.Object = null;
+    for (&t.mapped_shm) |*slot| {
+        if (slot.* == null) {
+            mapping_slot = slot;
+            break;
+        }
+    }
+    const slot = mapping_slot orelse return Error.OutOfMemory;
+    object.retain(obj);
+    errdefer object.release(obj);
 
     const base = t.shm_next;
     var flags: u64 = vmm.PRESENT | vmm.USER | vmm.NO_EXECUTE;
@@ -190,6 +215,11 @@ pub fn shmMap(h: i64, writable: bool) Error!u64 {
     var off: usize = 0;
     while (off < shm.size) : (off += vmm.PAGE_SIZE) {
         vmm.mapPage(t.address_space, base + off, shm.phys + off, flags) catch {
+            var undo: usize = 0;
+            while (undo < off) : (undo += vmm.PAGE_SIZE) {
+                _ = vmm.unmapPage(t.address_space, base + undo);
+                vmm.invalidatePage(base + undo);
+            }
             return Error.OutOfMemory;
         };
         vmm.invalidatePage(base + off);
@@ -198,6 +228,7 @@ pub fn shmMap(h: i64, writable: bool) Error!u64 {
     // Leave a guard page between mappings so an overrun faults instead of
     // silently landing in the next object.
     t.shm_next = base + shm.size + vmm.PAGE_SIZE;
+    slot.* = obj;
     return base;
 }
 

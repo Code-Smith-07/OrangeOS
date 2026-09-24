@@ -775,8 +775,14 @@ fn currentPty() ?*ipc_object.Object {
 
 fn sysPtyCreate() i64 {
     const obj = ipc_object.createPty() catch |e| return ipcErrno(e);
-    const t = sched.currentTask() orelse return EIO;
-    return t.handles.insert(obj) catch |e| ipcErrno(e);
+    const t = sched.currentTask() orelse {
+        ipc_object.release(obj);
+        return EIO;
+    };
+    return t.handles.insertOwned(obj) catch |e| {
+        ipc_object.release(obj);
+        return ipcErrno(e);
+    };
 }
 
 /// Master side: read what the shell has written.
