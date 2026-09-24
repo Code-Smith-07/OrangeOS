@@ -1038,6 +1038,35 @@ establish a fix or a root cause. Panic handling now writes the bounds operands
 and caller address to the emergency serial path before framebuffer replay or
 normal console locking, so a recurrence should provide actionable evidence.
 
+### 11.27 Reference-counted address-space ownership
+
+`kernel/mm/address_space.zig` now owns each user PML4, anonymous VM records,
+shared-mapping cursor and retained SHM objects. Tasks hold an explicit owned
+reference rather than embedding these resources. The scheduler derives CR3
+from that object; exit switches back to the kernel page table, detaches the
+reference and releases it before publishing a zombie. Executable-load failures
+use the same teardown path. Final release destroys page tables before releasing
+borrowed SHM frames. Kernel tasks have no user-space object.
+
+The boot memory test runs 64 ownership cycles with an executable-image page,
+a protected anonymous page and borrowed SHM. Intermediate releases preserve
+the mappings and contents; final releases must conserve physical-page counts
+and IPC object counts exactly. The runtime harness requires both test markers.
+Extended four-vCPU testing exercises 1,536 exiting orphan parents, in addition
+to the existing process, fault, TLS/SIMD, native C/C++, file and IPC probes.
+The 4 GiB/two-vCPU runtime profile also passed (22 boot memory checks, zero
+failures). Normal desktop interactions, the 9 MiB ELF loader test and the
+kernel/app CPU-codegen audit passed after the refactor. The desktop regression
+test now samples an empty calendar-panel region: its old single pixel fell on
+the bright weekday label on Fridays, falsely rejecting a correctly dark panel.
+
+This is a **lifetime prerequisite**, not a user-thread implementation. Only one
+task executes in each address space today. Atomic reference counting does not
+make simultaneous page-table edits or user-pointer accesses safe. Scheduler
+residency tracking, interruptible remote shootdowns, user-copy/wait-word pinning,
+shared process resources and a tested thread ABI remain required before
+enabling shared-address-space user threads. Chromium is still not installed.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,

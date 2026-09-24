@@ -206,30 +206,36 @@ fn sysMmap(address: u64, len: u64, prot: u64, flags: u64, fd: u64, offset: u64) 
     // MAP_PRIVATE | MAP_ANONYMOUS. No MAP_FIXED, file mappings or hints yet.
     if (address != 0 or flags != 0x22 or fd != std.math.maxInt(u64) or offset != 0) return -95;
     const t = sched.currentTask() orelse return -14;
-    return @intCast(user_vm.map(&t.anonymous_vm, t.address_space, len, prot) catch |e| return vmErrno(e));
+    const space = t.user_space orelse return -14;
+    return @intCast(user_vm.map(&space.anonymous_vm, space.pml4, len, prot) catch |e| return vmErrno(e));
 }
 fn sysMunmap(address: u64, len: u64) i64 {
     const t = sched.currentTask() orelse return -14;
-    user_vm.unmap(&t.anonymous_vm, t.address_space, address, len) catch |e| return vmErrno(e);
+    const space = t.user_space orelse return -14;
+    user_vm.unmap(&space.anonymous_vm, space.pml4, address, len) catch |e| return vmErrno(e);
     return 0;
 }
 fn sysMprotect(address: u64, len: u64, prot: u64) i64 {
     const t = sched.currentTask() orelse return -14;
-    user_vm.protect(&t.anonymous_vm, t.address_space, address, len, prot) catch |e| return vmErrno(e);
+    const space = t.user_space orelse return -14;
+    user_vm.protect(&space.anonymous_vm, space.pml4, address, len, prot) catch |e| return vmErrno(e);
     return 0;
 }
 fn sysVmReserve(len: u64) i64 {
     const t = sched.currentTask() orelse return -14;
-    return @intCast(user_vm.reserve(&t.anonymous_vm, t.address_space, len) catch |e| return vmErrno(e));
+    const space = t.user_space orelse return -14;
+    return @intCast(user_vm.reserve(&space.anonymous_vm, space.pml4, len) catch |e| return vmErrno(e));
 }
 fn sysVmCommit(address: u64, len: u64, prot: u64) i64 {
     const t = sched.currentTask() orelse return -14;
-    user_vm.commit(&t.anonymous_vm, t.address_space, address, len, prot) catch |e| return vmErrno(e);
+    const space = t.user_space orelse return -14;
+    user_vm.commit(&space.anonymous_vm, space.pml4, address, len, prot) catch |e| return vmErrno(e);
     return 0;
 }
 fn sysVmDecommit(address: u64, len: u64) i64 {
     const t = sched.currentTask() orelse return -14;
-    user_vm.decommit(&t.anonymous_vm, t.address_space, address, len) catch |e| return vmErrno(e);
+    const space = t.user_space orelse return -14;
+    user_vm.decommit(&space.anonymous_vm, space.pml4, address, len) catch |e| return vmErrno(e);
     return 0;
 }
 
@@ -259,14 +265,14 @@ fn waitErrno(e: user_wait.Error) i64 {
 fn sysUserWait(address: u64, expected: u64, timeout_ms: u64) i64 {
     if (expected > std.math.maxInt(u32) or timeout_ms > 60_000) return -22;
     const t = sched.currentTask() orelse return EIO;
-    user_wait.wait(t.address_space, address, @intCast(expected), timeout_ms) catch |e| return waitErrno(e);
+    user_wait.wait(t.pageTable(), address, @intCast(expected), timeout_ms) catch |e| return waitErrno(e);
     return 0;
 }
 
 fn sysUserWake(address: u64, max_wake: u64) i64 {
     if (max_wake > 64) return -22;
     const t = sched.currentTask() orelse return EIO;
-    return @intCast(user_wait.wake(t.address_space, address, @intCast(max_wake)) catch |e| return waitErrno(e));
+    return @intCast(user_wait.wake(t.pageTable(), address, @intCast(max_wake)) catch |e| return waitErrno(e));
 }
 
 var snapshot_lock: snapshot_sync.SpinLock = .{};
@@ -278,7 +284,7 @@ fn sysHostSnapshot(op: u64, ptr: u64, len: u64) i64 {
     if (op > 1 or len > 4096) return -22;
     if (op == 1 and !task.host_bridge) return -13;
     var buffer: [4096]u8 = undefined;
-    if (op == 1) validate.copyFromUser(task.address_space, &buffer, ptr, @intCast(len)) catch return EFAULT;
+    if (op == 1) validate.copyFromUser(task.pageTable(), &buffer, ptr, @intCast(len)) catch return EFAULT;
     const now = @import("../time/time.zig").millisSinceBoot();
     const irq = snapshot_sync.acquireIrqSave(&snapshot_lock);
     if (op == 1) {
@@ -299,7 +305,7 @@ fn sysHostSnapshot(op: u64, ptr: u64, len: u64) i64 {
     }
     @memcpy(buffer[0..size], host_snapshot[0..size]);
     snapshot_sync.releaseIrqRestore(&snapshot_lock, irq);
-    validate.copyToUser(task.address_space, ptr, buffer[0..size], size) catch return EFAULT;
+    validate.copyToUser(task.pageTable(), ptr, buffer[0..size], size) catch return EFAULT;
     return @intCast(size);
 }
 
@@ -312,14 +318,14 @@ fn sysHostIo(op: u64, ptr: u64, len: u64) i64 {
     if (op > 3 or len == 0 or len > buf.len or (op == 3 and len != 64)) return -22;
     const n: usize = @intCast(len);
     if (op == 1) {
-        validate.copyFromUser(task.address_space, &buf, ptr, n) catch return EFAULT;
+        validate.copyFromUser(task.pageTable(), &buf, ptr, n) catch return EFAULT;
     } else {
-        validate.check(task.address_space, ptr, n, true) catch return EFAULT;
+        validate.check(task.pageTable(), ptr, n, true) catch return EFAULT;
     }
     const result = bridge.operation(op, buf[0..n]);
     if (result > 0 and op != 1) {
         const copied: usize = @intCast(result);
-        validate.copyToUser(task.address_space, ptr, buf[0..copied], copied) catch return EFAULT;
+        validate.copyToUser(task.pageTable(), ptr, buf[0..copied], copied) catch return EFAULT;
     }
     return result;
 }
@@ -738,24 +744,25 @@ fn sysFbAcquire(info_ptr: u64) i64 {
 fn sysFbMap() i64 {
     const t = sched.currentTask() orelse return EIO;
     if (fb_owner != t.tid) return -13; // EACCES
+    const space = t.user_space orelse return EFAULT;
 
     const f = framebuffer.get() orelse return -19;
 
     const phys = pmm.virtToPhys(@intFromPtr(f.base));
     const size = std.mem.alignForward(usize, f.pitch * f.height, vmm.PAGE_SIZE);
 
-    const base = t.shm_next;
+    const base = space.shm_next;
     var off: usize = 0;
     while (off < size) : (off += vmm.PAGE_SIZE) {
         vmm.mapPage(
-            t.address_space,
+            space.pml4,
             base + off,
             phys + off,
             vmm.PRESENT | vmm.WRITABLE | vmm.USER | vmm.NO_EXECUTE | vmm.WRITE_THROUGH,
         ) catch return -12;
         vmm.invalidatePage(base + off);
     }
-    t.shm_next = base + size + vmm.PAGE_SIZE;
+    space.shm_next = base + size + vmm.PAGE_SIZE;
 
     return @bitCast(base);
 }

@@ -158,6 +158,12 @@ continues. Memory conservation and four actual faulting apps are tested in QEMU.
 Per-process x87/SSE2 state is now isolated across CPU switches, and apps compile
 with native SSE2 support. Concurrent guest probes check register isolation and
 freestanding C/Zig floating-point calls, callbacks and blocking syscalls.
+Native C++ constructor/allocation/virtual-call probes also run in the guest.
+User page tables and mappings now have reference-counted lifetime independent
+of task records, with tests for retained mappings and final-release cleanup.
+This is groundwork for shared threads, not pthread support or a complete C++
+standard library. Configurable orphan-process stress and emergency panic
+diagnostics track a still-unexplained intermittent kernel bounds panic.
 The modern browser engine, HTTPS and remaining runtime work are still tracked
 in the [browser runtime ledger](docs/design/008-browser.md). The new
 [native Chromium browser architecture](docs/design/011-native-chromium-browser.md)

@@ -26,8 +26,9 @@ const USER_STACK_PAGES: usize = 16;
 /// Build an address space from a filesystem node and drop into ring 3.
 /// Runs as the body of a kernel thread; never returns.
 pub fn execNode(node: *const vfs.Node) Error!noreturn {
-    const pml4 = try vmm.createAddressSpace();
-    errdefer vmm.destroyAddressSpace(pml4);
+    const space = try @import("../mm/address_space.zig").AddressSpace.create();
+    errdefer space.release();
+    const pml4 = space.pml4;
 
     const loaded = try elf.loadFromNode(pml4, node);
 
@@ -63,7 +64,8 @@ pub fn execNode(node: *const vfs.Node) Error!noreturn {
 
     // Record it on the task before loading, so the scheduler restores this
     // address space whenever it switches back to this thread.
-    t.address_space = pml4;
+    std.debug.assert(t.user_space == null);
+    t.user_space = space;
     vmm.loadCr3(pml4);
     // Every OrangeOS entry is `callconv(.c) noreturn`, not a POSIX assembly
     // _start expecting argc/argv. Emulate CALL's 8-byte return slot: RSP must

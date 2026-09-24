@@ -22,7 +22,7 @@ pub fn operation(op: u64, arg0: u64, arg1: u64) i64 {
     if (op > 5) return -22;
     if (op == 2) {
         if (arg1 != @sizeOf(Command)) return -22;
-        validate.check(task.address_space, arg0, @sizeOf(Command), true) catch return -14;
+        validate.check(task.pageTable(), arg0, @sizeOf(Command), true) catch return -14;
     }
     const now = time.millisSinceBoot();
     const irq = sync.acquireIrqSave(&lock);
@@ -54,7 +54,7 @@ pub fn operation(op: u64, arg0: u64, arg1: u64) i64 {
         },
         2 => {
             if (!active or done or taken) return -11;
-            validate.copyToUser(task.address_space, arg0, std.mem.asBytes(&command), @sizeOf(Command)) catch return -14;
+            validate.copyToUser(task.pageTable(), arg0, std.mem.asBytes(&command), @sizeOf(Command)) catch return -14;
             taken = true;
             return @sizeOf(Command);
         },

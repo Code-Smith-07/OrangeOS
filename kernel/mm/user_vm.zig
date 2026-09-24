@@ -1,7 +1,8 @@
 //! Owned anonymous mappings. Mutations are serialized per State and changed
 //! local translations are invalidated before any frame or page-table reuse.
-//! One task still owns each address space; remote shootdown, shared State
-//! ownership and coordinated teardown are required before user threads.
+//! State belongs to the reference-counted AddressSpace. Only one task still
+//! executes in it; remote shootdown, user-pointer pinning and coordinated
+//! mutations are required before shared user threads.
 const std = @import("std");
 const vmm = @import("vmm.zig");
 const pmm = @import("pmm.zig");

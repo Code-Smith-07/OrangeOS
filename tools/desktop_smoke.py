@@ -277,7 +277,10 @@ def main():
         assert g.pixel(700, 10) != citrus_bar and max(g.pixel(700, 10)) < 70, "Aurora dark shell chrome did not change"
         g.screenshot("06-aurora-theme")
         g.click(1150, 10)
-        g.until(lambda: max(g.pixel(950, 80)) < 100, "Aurora calendar uses dark material")
+        g.until(lambda: "desktop: calendar offset 0" in g.log(), "calendar opens")
+        # Sample the empty gap below the date tile, not (950,80): that point
+        # intersects weekday text on some dates (notably Friday).
+        g.until(lambda: max(g.region(1224, 158, 8, 8)) < 100, "Aurora calendar uses dark material")
         g.screenshot("06-aurora-calendar")
         g.key("esc")
         g.key("f4")

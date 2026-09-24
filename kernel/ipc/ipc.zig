@@ -195,10 +195,11 @@ pub fn shmOpen(name: []const u8) Error!i64 {
 /// to the other with no kernel involvement at all.
 pub fn shmMap(h: i64, writable: bool) Error!u64 {
     const t = sched.currentTask() orelse return Error.BadHandle;
+    const space = t.user_space orelse return Error.BadHandle;
     const obj = try t.handles.getShm(h);
     const shm = &obj.data.shm;
     var mapping_slot: ?*?*object.Object = null;
-    for (&t.mapped_shm) |*slot| {
+    for (&space.mapped_shm) |*slot| {
         if (slot.* == null) {
             mapping_slot = slot;
             break;
@@ -208,16 +209,16 @@ pub fn shmMap(h: i64, writable: bool) Error!u64 {
     object.retain(obj);
     errdefer object.release(obj);
 
-    const base = t.shm_next;
+    const base = space.shm_next;
     var flags: u64 = vmm.PRESENT | vmm.USER | vmm.NO_EXECUTE;
     if (writable) flags |= vmm.WRITABLE;
 
     var off: usize = 0;
     while (off < shm.size) : (off += vmm.PAGE_SIZE) {
-        vmm.mapPage(t.address_space, base + off, shm.phys + off, flags) catch {
+        vmm.mapPage(space.pml4, base + off, shm.phys + off, flags) catch {
             var undo: usize = 0;
             while (undo < off) : (undo += vmm.PAGE_SIZE) {
-                _ = vmm.unmapPage(t.address_space, base + undo);
+                _ = vmm.unmapPage(space.pml4, base + undo);
                 vmm.invalidatePage(base + undo);
             }
             return Error.OutOfMemory;
@@ -227,7 +228,7 @@ pub fn shmMap(h: i64, writable: bool) Error!u64 {
 
     // Leave a guard page between mappings so an overrun faults instead of
     // silently landing in the next object.
-    t.shm_next = base + shm.size + vmm.PAGE_SIZE;
+    space.shm_next = base + shm.size + vmm.PAGE_SIZE;
     slot.* = obj;
     return base;
 }

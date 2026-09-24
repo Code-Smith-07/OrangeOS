@@ -362,8 +362,8 @@ fn switchTo(c: *percpu.PerCpu, next: *Task) void {
 
     // Switch address spaces if they differ. Reloading CR3 flushes the TLB, so
     // it is worth skipping when both threads share one.
-    if (next.address_space != 0 and next.address_space != prev.address_space) {
-        vmm.loadCr3(next.address_space);
+    if (next.pageTable() != prev.pageTable()) {
+        vmm.loadCr3(next.pageTable());
     }
     fsbase.set(next.fs_base);
 
@@ -515,17 +515,10 @@ pub fn exit(code: i32) noreturn {
         @import("../ipc/ipc.zig").clearInputSinkOwnedBy(t.tid);
         @import("../net/net.zig").socketCloseOwnedBy(t.tid);
         @import("../net/tcp.zig").abortOwnedBy(t.tid);
-        @import("../mm/user_vm.zig").releaseAll(&t.anonymous_vm, t.address_space);
-        if (t.address_space != 0 and t.address_space != vmm.kernelPml4()) {
-            const old_space = t.address_space;
+        if (t.user_space) |space| {
             vmm.loadCr3(vmm.kernelPml4());
-            t.address_space = vmm.kernelPml4();
-            vmm.destroyAddressSpace(old_space);
-        }
-        // Address-space teardown must precede releasing borrowed SHM frames.
-        for (&t.mapped_shm) |*mapping| {
-            if (mapping.*) |obj| ipc_object.release(obj);
-            mapping.* = null;
+            t.user_space = null;
+            space.release();
         }
         if (t.pty) |obj| ipc_object.release(obj);
         t.pty = null;
@@ -551,8 +544,8 @@ pub fn exit(code: i32) noreturn {
     const top = task_mod_kstack.kstackTop(next);
     gdt.setKernelStack(top);
     percpu.setKernelStack(top);
-    if (next.address_space != 0 and next.address_space != t.address_space) {
-        vmm.loadCr3(next.address_space);
+    if (next.pageTable() != t.pageTable()) {
+        vmm.loadCr3(next.pageTable());
     }
     fsbase.set(next.fs_base);
 

@@ -22,9 +22,6 @@ pub const KSTACK_SIZE: usize = 32 * 1024;
 /// through whatever the corruption happened to overwrite.
 pub const STACK_CANARY: u64 = 0x0C0F_FEE0_0DEF_ACED;
 
-/// Where shared-memory mappings land in a process's address space. Well clear
-/// of the program image, the heap, and the stack.
-pub const SHM_REGION_BASE: u64 = 0x0000_6000_0000_0000;
 pub const NAME_LEN: usize = 32;
 
 pub const Error = error{OutOfMemory};
@@ -122,18 +119,9 @@ pub const Task = struct {
     host_bridge: bool = false,
     host_controls: bool = false,
 
-    /// Next free virtual address for shared-memory mappings. Grows upward
-    /// through a region reserved for the purpose.
-    shm_next: u64 = SHM_REGION_BASE,
-    /// A mapping retains its frames even after the creating handle is closed.
-    mapped_shm: [128]?*ipc_object.Object = [_]?*ipc_object.Object{null} ** 128,
-    anonymous_vm: @import("../mm/user_vm.zig").State = .{},
-
-    /// Physical address of this task's PML4. Kernel threads share the kernel's.
-    /// The scheduler reloads CR3 on any switch that changes it — without that,
-    /// a thread resumes on whatever address space ran last, which presents as
-    /// a user process faulting on its own perfectly valid code.
-    address_space: u64 = 0,
+    /// One owned reference, detached at exit before this task becomes a zombie.
+    /// Null kernel tasks use the kernel PML4. Shared execution is not enabled.
+    user_space: ?*@import("../mm/address_space.zig").AddressSpace = null,
 
     /// Run-queue link.
     next: ?*Task = null,
@@ -142,6 +130,10 @@ pub const Task = struct {
     ticks_used: u64 = 0,
     switches: u64 = 0,
     exit_code: i32 = 0,
+
+    pub fn pageTable(self: *const Task) u64 {
+        return if (self.user_space) |space| space.pml4 else vmm.kernelPml4();
+    }
 
     pub fn nameSlice(self: *const Task) []const u8 {
         return self.name[0..self.name_len];
@@ -179,7 +171,6 @@ pub fn create(
         .kstack_size = KSTACK_SIZE,
         .entry = entry,
         .arg = arg,
-        .address_space = vmm.kernelPml4(),
     };
     @memcpy(task.name[0..task.name_len], name[0..task.name_len]);
 
@@ -190,6 +181,7 @@ pub fn create(
 }
 
 pub fn destroy(task: *Task) void {
+    std.debug.assert(task.user_space == null);
     const pages = task.kstack_size / pmm.PAGE_SIZE;
     const order = pmm.orderFor(pages);
     pmm.freeOrder(pmm.virtToPhys(task.kstack_base), order);

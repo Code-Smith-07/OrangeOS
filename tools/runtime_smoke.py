@@ -33,6 +33,8 @@ def main():
             "user VM: sparse reserve, commit, decommit and cleanup",
             "user VM: exit cleanup frees protected and writable memory",
             "user VM: address-space teardown conserves every page",
+            "address space: mappings survive intermediate owner releases",
+            "address space: 64 final releases reclaim image, VM, SHM and page tables",
         ):
             assert f"[pass] {marker}" in log, marker
         print("PASS frame/page-table conservation and cleanup", flush=True)

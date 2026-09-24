@@ -401,6 +401,62 @@ fn testUserVmSparse() void {
     check("user VM: sparse reserve, commit, decommit and cleanup", ok and pmm.stats().free_pages == baseline);
 }
 
+fn testAddressSpaceLifetime() !void {
+    const spaces = @import("address_space.zig");
+    const vm = @import("user_vm.zig");
+    const object = @import("../ipc/object.zig");
+    // Warm any object-allocator slabs before comparing physical-page totals.
+    const warm_space = try spaces.AddressSpace.create();
+    warm_space.release();
+    const warm_shm = try object.createShm("", vmm.PAGE_SIZE);
+    object.release(warm_shm);
+    const baseline = pmm.stats().free_pages;
+    const objects_before = object.objectCount();
+    var retained_ok = true;
+    var reclaimed_ok = true;
+    for (0..64) |_| {
+        const space = try spaces.AddressSpace.create();
+        // On setup failure this reference owns every successfully added mapping.
+        errdefer space.release();
+        const image = try vmm.allocAndMap(space.pml4, 0x400000, vmm.PRESENT | vmm.USER | vmm.WRITABLE | vmm.NO_EXECUTE);
+        @as(*u64, @ptrFromInt(pmm.physToVirt(image))).* = 0x12345678;
+        const private = try vm.map(&space.anonymous_vm, space.pml4, vmm.PAGE_SIZE, 3);
+        try vm.protect(&space.anonymous_vm, space.pml4, private, vmm.PAGE_SIZE, 0);
+        const shm = try object.createShm("", vmm.PAGE_SIZE);
+        // Transfer the creator's reference into the mapping table, then mimic
+        // a second handle being retained and closed while the mapping survives.
+        space.mapped_shm[0] = shm;
+        {
+            object.retain(shm);
+            defer object.release(shm);
+            try vmm.mapPage(space.pml4, spaces.SHM_REGION_BASE, shm.data.shm.phys, vmm.PRESENT | vmm.USER | vmm.WRITABLE | vmm.NO_EXECUTE);
+        }
+        const shm_phys = shm.data.shm.phys;
+        @as(*u64, @ptrFromInt(pmm.physToVirt(shm_phys))).* = 0xaabbccdd;
+        space.shm_next += 2 * vmm.PAGE_SIZE;
+        const allocated = pmm.stats().free_pages;
+        // Simulate three owners dropping in sequence, without scheduling shared
+        // tasks (their concurrent VM safety is a separate, unfinished milestone).
+        space.retain();
+        space.retain();
+        space.release();
+        space.release();
+        retained_ok = retained_ok and pmm.stats().free_pages == allocated and
+            vmm.translate(space.pml4, 0x400000) == image and
+            vmm.leafFlags(space.pml4, private) != null and
+            vmm.translate(space.pml4, spaces.SHM_REGION_BASE) == shm_phys and
+            @as(*const u64, @ptrFromInt(pmm.physToVirt(image))).* == 0x12345678 and
+            @as(*const u64, @ptrFromInt(pmm.physToVirt(shm_phys))).* == 0xaabbccdd and
+            space.shm_next == spaces.SHM_REGION_BASE + 2 * vmm.PAGE_SIZE and
+            object.objectCount() == objects_before + 1;
+        space.release();
+        reclaimed_ok = reclaimed_ok and pmm.stats().free_pages == baseline and
+            object.objectCount() == objects_before;
+    }
+    check("address space: mappings survive intermediate owner releases", retained_ok);
+    check("address space: 64 final releases reclaim image, VM, SHM and page tables", reclaimed_ok);
+}
+
 pub fn runAll() void {
     console.write("\n");
     console.info("memory subsystem tests:", .{});
@@ -418,6 +474,9 @@ pub fn runAll() void {
     testUserVmSparse();
     testHeap();
     testHeapChurn();
+    testAddressSpaceLifetime() catch {
+        check("address space: lifetime test setup", false);
+    };
 
     console.print("\n[{s}] {d} passed, {d} failed\n", .{
         if (failed == 0) " ok " else "FAIL",
