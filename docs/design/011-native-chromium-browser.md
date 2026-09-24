@@ -655,6 +655,24 @@ reported 70% system-wide memory free, 513 MiB swap in use and 226 GiB free on
 the external build volume. These are host-build observations, not guest browser
 performance results or a completed reference-build gate.
 
+### 11.8 Normal-mode loopback engine check
+
+On 2026-09-24, `python3 tools/browser_normal_smoke.py` launched the pinned Mac
+Content Shell **without** `--run-web-tests`, `--no-sandbox` or certificate-bypass
+switches. A temporary server bound to `127.0.0.1` served only a tokenized local
+fixture. Content Shell reported six passing checks: JavaScript, DOM, CSS flex
+layout, canvas, an asynchronous timer and same-origin HTTP fetch. The harness
+cleaned up its own process group after receiving the report. Its isolated
+profile, logs and JSON evidence stayed on the external workspace.
+
+The launch emitted upstream/macOS warnings about a duplicate ANGLE Objective-C
+class and an in-memory LevelDB directory; Content Shell also opened its usual
+ephemeral loopback DevTools endpoint. The fixture does not exercise durable
+profile writes, certificate rejection, sandbox escapes, public websites,
+video, sustained rendering or guest execution. The smoke passed twice, but
+**Phase 1 remains open**: embedding choice, full dependency/patch map, guest
+storage plan, GPU capability audit and a documented go/no-go decision remain.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,

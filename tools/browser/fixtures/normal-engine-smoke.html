@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>OrangeOS normal-mode reference engine smoke</title>
+<style>
+  #layout { display: flex; width: 240px; height: 40px; }
+  #layout > div { flex: 1; }
+</style>
+<div id="layout"><div></div><div></div></div>
+<canvas id="canvas" width="2" height="2"></canvas>
+<pre id="result">Running normal-mode checks...</pre>
+<script>
+"use strict";
+(async () => {
+  const checks = {};
+  const check = (name, passed) => {
+    checks[name] = Boolean(passed);
+    if (!passed) throw new Error(name);
+  };
+  try {
+    check("javascript", [1, 2, 3].map(x => x * x).reduce((a, b) => a + b) === 14);
+    const node = document.createElement("span");
+    node.dataset.probe = "normal-engine";
+    document.body.append(node);
+    check("dom", document.querySelector('[data-probe="normal-engine"]') === node);
+    check("css-layout", document.querySelector("#layout > div").getBoundingClientRect().width === 120);
+    const context = document.querySelector("#canvas").getContext("2d");
+    context.fillStyle = "#123456";
+    context.fillRect(0, 0, 2, 2);
+    const pixel = context.getImageData(0, 0, 1, 1).data;
+    check("canvas", pixel[0] === 18 && pixel[1] === 52 && pixel[2] === 86 && pixel[3] === 255);
+    check("async", await new Promise(resolve => setTimeout(() => resolve(42), 0)) === 42);
+    const response = await fetch(new URL("ping", location.href), {cache: "no-store"});
+    check("http", response.ok && await response.text() === "pong");
+    document.querySelector("#result").textContent = "All normal-mode checks passed.";
+  } catch (error) {
+    checks.error = String(error);
+    document.querySelector("#result").textContent = "Normal-mode check failed: " + error;
+  }
+  await fetch(new URL("report", location.href), {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({marker: "ORANGE_NORMAL_ENGINE_RESULT", checks}),
+  });
+})();
+</script>

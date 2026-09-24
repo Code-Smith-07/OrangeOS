@@ -23,6 +23,7 @@ python3 tools/browser_reference.py hooks
 python3 tools/browser_reference.py generate
 python3 tools/browser_reference.py build
 python3 tools/browser_smoke.py
+python3 tools/browser_normal_smoke.py
 ```
 
 `status` is read-only and reports **recorded** results, not fresh qualification.
@@ -73,6 +74,18 @@ verification. No user-provided URLs are accepted. **It cannot qualify HTTPS,
 sandboxing, general public browsing, visible UI polish, media or OrangeOS**.
 Those require separate normal-browser/guest tests. Harness unit tests are not
 evidence that the engine fixture itself has run successfully.
+
+`browser_normal_smoke.py` performs a separate **normal-mode** launch of the
+built Mac Content Shell. It serves an unpredictable path on `127.0.0.1` and
+accepts a bounded report from the checked-in page. The six checks cover
+JavaScript, DOM, CSS flex layout, canvas, an async timer and a same-origin HTTP
+fetch. It uses an isolated profile under the external workspace, closes only
+the process group it started, and saves evidence there. It does **not** pass
+`--run-web-tests`, `--no-sandbox` or certificate-bypass switches. Content Shell
+still starts its own ephemeral localhost DevTools endpoint in this build; the
+test process is short-lived and no public URL is loaded. This is neither HTTPS
+certificate/sandbox testing nor proof of persistent profiles, real websites,
+GPU/video performance or a native OrangeOS browser.
 
 The tool stage explicitly initializes depot_tools' Python launcher as well as
 vpython. With auto-updates disabled, successfully running `gclient` alone does
