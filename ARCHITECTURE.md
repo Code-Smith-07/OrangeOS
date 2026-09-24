@@ -1765,6 +1765,14 @@ Native regression probes cover concurrent cross-CPU FP state and a freestanding
 C/Zig floating-point ABI subset. These are runtime foundations, not an installed
 browser, libc, thread API or C++ runtime. See [browser gates](docs/design/008-browser.md).
 
+**Cross-CPU paging foundation (24 September 2026):** a serialized fixed-vector
+IPI now acknowledges one-page TLB invalidation across online CPUs. A two-CPU
+QEMU probe repeatedly remaps a temporary kernel page and checks remote readback
+before clearing the mapping and releasing its frames. This passed in both 3 GiB
+and 4 GiB runtime profiles. User VM operations still need mutation locking and
+shootdown integration before any address space can be shared by user threads;
+this is not a native browser milestone by itself.
+
 ```
    ┌─────────────────────────────────────────────────────────────────┐
    │  Terminal 1                     Terminal 2                      │

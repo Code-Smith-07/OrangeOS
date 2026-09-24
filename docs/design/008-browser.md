@@ -208,6 +208,12 @@ through a shared-memory mapping; a 24-cycle ring-3 QEMU probe covers wake-one,
 timeout, invalid addresses, and process exit. It is not a pthread API or a
 replacement for shared-address-space threads and cross-CPU VM coherence.
 
+The TLB-shootdown slice adds an acknowledged fixed-vector IPI mechanism and
+tests 32 temporary kernel-page remaps with remote-CPU readback. Both 3 GiB and
+4 GiB two-CPU runtime profiles pass. User VM operations are not yet wired to
+this mechanism or protected by a shared-address-space mutation lock, so this
+does not enable user threads or qualify Chromium's memory model.
+
 ## Runtime milestone: process fault containment (23 September 2026)
 
 Synchronous ring-3 faults (including null access, writing read-only memory,

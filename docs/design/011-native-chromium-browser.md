@@ -906,6 +906,27 @@ passed on the 3 GiB/two-CPU QEMU profile. The primitive is a synchronization
 building block, not pthread mutexes/condition variables, cancellation,
 priority inheritance, shared-address-space threads or cross-CPU VM coherence.
 
+### 11.20 Cross-CPU TLB invalidation mechanism
+
+The kernel now has a serialized, acknowledged one-page TLB-shootdown request.
+It sends a fixed-vector IPI to the other online CPUs; each handler invalidates
+the page if its current CR3 matches the request, or unconditionally for a
+shared kernel mapping. The sender waits for every acknowledgement before it
+may reuse the physical frame. A one-second deadline panics instead of silently
+continuing with stale translations. The handler takes no lock. The kernel
+temporarily maps one test page, alternates its backing frame over 32 rounds,
+reads the value back on the remote CPU after each invalidation, then clears
+the mapping and invalidates it before freeing the frames.
+
+`tools/runtime_smoke.py` passed this probe and the existing runtime/desktop
+suite on both 3 GiB and 4 GiB, two-CPU QEMU profiles on 24 September 2026.
+This is an isolated kernel-mapping qualification, **not** cross-CPU coherence
+for concurrent user VM mutations. Existing per-process VM syscalls still use
+local invalidation; no user address space is shared by multiple threads yet.
+VM mutation locking, integration of shootdowns into every user map/protect/
+unmap and teardown path, and failure/lifetime stress remain gates before a
+shared-address-space user-thread API or native Chromium engine.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,

@@ -63,7 +63,9 @@ pub fn build(b: *std.Build) void {
 
     const options = b.addOptions();
     const ui_options = b.addOptions();
-    ui_options.addOption(bool, "runtime_test", b.option(bool, "runtime-test", "Run userspace runtime probes before desktop startup") orelse false);
+    const runtime_test = b.option(bool, "runtime-test", "Run userspace runtime probes before desktop startup") orelse false;
+    ui_options.addOption(bool, "runtime_test", runtime_test);
+    options.addOption(bool, "runtime_test", runtime_test);
     ui_options.addOption(bool, "desktop_profile", b.option(bool, "desktop-profile", "Emit compositor frame timing for QEMU profiling") orelse false);
     const timezone = b.option(i32, "timezone-minutes", "Local offset from UTC in minutes (default India +330)") orelse 330;
     if (timezone < -720 or timezone > 840) @panic("timezone-minutes must be -720..840");

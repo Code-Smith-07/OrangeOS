@@ -15,6 +15,8 @@ const gdt = @import("arch/x86_64/gdt.zig");
 const idt = @import("arch/x86_64/idt.zig");
 const mm = @import("mm/mm.zig");
 const mm_test = @import("mm/test.zig");
+const tlb = @import("mm/tlb.zig");
+const tlb_test = @import("mm/tlb_test.zig");
 const platform = @import("dev/acpi/init.zig");
 const time = @import("time/time.zig");
 const tsc = @import("time/tsc.zig");
@@ -121,6 +123,7 @@ export fn kmain() callconv(.c) noreturn {
         console.err("platform init failed: {s}", .{@errorName(e)});
         io.hang();
     };
+    tlb.init();
 
     @import("drivers/virtio/serial.zig").init();
     if (have_fb and graphical_boot) splash.progress(3);
@@ -145,6 +148,9 @@ export fn kmain() callconv(.c) noreturn {
     if (build_options.fs_test) fs_test.run();
 
     if (build_options.sched_test) sched_test.spawnAll();
+    if (build_options.runtime_test) {
+        _ = sched.spawn("tlb-probe", tlb_test.run, null, .normal) catch {};
+    }
 
     _ = sched.spawn("orphan-reaper", sched.orphanReaper, null, .batch) catch |e| {
         fbcon.reclaim();
@@ -176,6 +182,7 @@ export fn kmain() callconv(.c) noreturn {
     // Let the other cores into the scheduler now that the run queues exist
     // and there is work on them.
     smp.releaseAps();
+    tlb.enable();
 
     // Hand the boot context to the scheduler. This never returns: the boot
     // stack is abandoned and every subsequent instruction runs on a thread.

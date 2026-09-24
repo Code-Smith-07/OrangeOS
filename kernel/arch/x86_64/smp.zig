@@ -39,7 +39,7 @@ var online: usize = 1; // the boot processor
 var started: usize = 0;
 
 pub fn cpusOnline() usize {
-    return online;
+    return @atomicLoad(usize, &online, .acquire);
 }
 
 fn params() *volatile tramp.Params {
@@ -114,6 +114,13 @@ pub const VECTOR_PANIC_HALT: u8 = 0xF0;
 
 /// Destination shorthand 0b11: every CPU except the one sending.
 const SHORTHAND_ALL_BUT_SELF: u32 = 3 << 18;
+
+/// Send a fixed-vector interrupt to every other online CPU. The caller must
+/// install its handler first and arrange its own acknowledgement protocol.
+pub fn broadcastFixed(vector: u8) void {
+    if (@atomicLoad(usize, &online, .acquire) <= 1) return;
+    sendIpi(0, SHORTHAND_ALL_BUT_SELF | LEVEL_ASSERT | vector);
+}
 
 var halt_handler_installed: bool = false;
 

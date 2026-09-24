@@ -441,6 +441,25 @@ pub fn unmapPage(pml4_phys: u64, virt: u64) ?u64 {
     return phys;
 }
 
+/// Clear a temporary kernel mapping without pruning its shared page-table path.
+/// The caller must shoot down remote TLB entries before reusing the frame.
+pub fn clearKernelPage(virt: u64) ?u64 {
+    if (virt < 0xffff_8000_0000_0000) return null;
+    const pml4 = tableAt(kernel_pml4_phys);
+    const e3 = pml4[indexOf(virt, 3)];
+    if (e3 & PRESENT == 0) return null;
+    const e2 = tableAt(e3)[indexOf(virt, 2)];
+    if (e2 & PRESENT == 0 or e2 & HUGE != 0) return null;
+    const e1 = tableAt(e2)[indexOf(virt, 1)];
+    if (e1 & PRESENT == 0 or e1 & HUGE != 0) return null;
+    const leaf = &tableAt(e1)[indexOf(virt, 0)];
+    if (leaf.* & PRESENT == 0) return null;
+    const phys = leaf.* & ADDR_MASK;
+    leaf.* = 0;
+    invalidatePage(virt);
+    return phys;
+}
+
 pub fn currentCr3() u64 {
     return asm volatile ("movq %%cr3, %[out]"
         : [out] "=r" (-> u64),
