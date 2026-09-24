@@ -422,8 +422,10 @@ pub fn pruneEmptyTables(pml4_phys: u64, virt: u64) void {
     }
 }
 
-/// Remove one private 4 KiB mapping and return its frame to the owner.
-pub fn unmapPage(pml4_phys: u64, virt: u64) ?u64 {
+/// Clear a private lower-half leaf without freeing its page-table path. A
+/// shared-space caller must invalidate remote CPUs before freeing the frame
+/// or pruning the page tables.
+pub fn detachPage(pml4_phys: u64, virt: u64) ?u64 {
     if (virt >= 0x0000_8000_0000_0000) return null;
     const pml4 = tableAt(pml4_phys);
     const e3 = pml4[indexOf(virt, 3)];
@@ -436,6 +438,12 @@ pub fn unmapPage(pml4_phys: u64, virt: u64) ?u64 {
     if (leaf.* & PRESENT == 0) return null;
     const phys = leaf.* & ADDR_MASK;
     leaf.* = 0;
+    return phys;
+}
+
+/// Remove one 4 KiB mapping in a caller-owned, single-task address space.
+pub fn unmapPage(pml4_phys: u64, virt: u64) ?u64 {
+    const phys = detachPage(pml4_phys, virt) orelse return null;
     invalidatePage(virt);
     pruneEmptyTables(pml4_phys, virt);
     return phys;

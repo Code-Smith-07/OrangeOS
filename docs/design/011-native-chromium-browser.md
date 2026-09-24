@@ -927,6 +927,27 @@ VM mutation locking, integration of shootdowns into every user map/protect/
 unmap and teardown path, and failure/lifetime stress remain gates before a
 shared-address-space user-thread API or native Chromium engine.
 
+### 11.21 Exclusive-user-VM mutation and reclaim ordering
+
+Anonymous VM region mutations now take a lock in each task's `user_vm.State`.
+Unmap, decommit and exit cleanup detach leaf mappings in bounded batches,
+invalidate the current CPU's translations, and **only then** return frames and
+prune empty page tables. Protect and new-map paths likewise invalidate locally
+after changing page tables. This preserves the current one-task-per-address-
+space contract and makes the frame-reuse order explicit. The existing VM,
+runtime and desktop suites passed on both 3 GiB and 4 GiB two-CPU profiles.
+
+An attempted all-CPU IPI from the current user syscall path exposed a real
+deadlock: `SYSCALL` masks interrupts on entry, and two CPUs doing independent
+VM operations can wait on each other's undeliverable shootdowns. That path was
+removed. Remote shootdown now rejects an IRQ-masked caller, and requesters
+waiting for its serialization lock keep interrupts enabled. Before user
+threads, move VM ownership from per-task State to a shared process object,
+define an interruptible syscall/teardown protocol, send IPIs only to CPUs
+that may retain the address space, and test concurrent map/protect/unmap
+against migration and exit. A lock in today's per-task State is not itself a
+thread-safe shared address space. The browser remains absent.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,

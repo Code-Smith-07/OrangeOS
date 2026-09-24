@@ -1,8 +1,12 @@
-//! Owned anonymous mappings. One thread owns each address space today; user
-//! threads must add address-space locking and remote TLB invalidation first.
+//! Owned anonymous mappings. Mutations are serialized per State and changed
+//! local translations are invalidated before any frame or page-table reuse.
+//! One task still owns each address space; remote shootdown, shared State
+//! ownership and coordinated teardown are required before user threads.
 const std = @import("std");
 const vmm = @import("vmm.zig");
 const pmm = @import("pmm.zig");
+const tlb = @import("tlb.zig");
+const spinlock = @import("../sync/spinlock.zig");
 
 pub const BASE: u64 = 0x0000_4000_0000_0000;
 pub const LIMIT: usize = 8 * 1024 * 1024 * 1024;
@@ -10,7 +14,10 @@ pub const MAX_MAPPING: usize = 64 * 1024 * 1024;
 pub const MAX_RESERVATION: usize = 4 * 1024 * 1024 * 1024;
 pub const MAX_MAPPINGS = 128;
 pub const Region = struct { address: u64 = 0, size: usize = 0, sparse: bool = false };
-pub const State = struct { regions: [MAX_MAPPINGS]Region = [_]Region{.{}} ** MAX_MAPPINGS };
+pub const State = struct {
+    lock: spinlock.SpinLock = .{},
+    regions: [MAX_MAPPINGS]Region = [_]Region{.{}} ** MAX_MAPPINGS,
+};
 pub const Error = error{ Invalid, Unsupported, OutOfMemory };
 
 fn sizeOf(length: u64, max: usize) Error!usize {
@@ -61,6 +68,8 @@ fn checkUnmapped(pml4: u64, base: u64, size: usize) Error!void {
 pub fn map(state: *State, pml4: u64, length: u64, prot: u64) Error!u64 {
     const size = try sizeOf(length, MAX_MAPPING);
     const flags = try flagsFor(prot);
+    state.lock.acquire();
+    defer state.lock.release();
     const region = try emptySlot(state);
     const base = try firstFit(state, size);
     try checkUnmapped(pml4, base, size);
@@ -73,6 +82,7 @@ pub fn map(state: *State, pml4: u64, length: u64, prot: u64) Error!u64 {
             return error.OutOfMemory;
         };
     }
+    tlb.invalidateExclusiveRange(pml4, base, size / vmm.PAGE_SIZE);
     region.* = .{ .address = base, .size = size };
     return base;
 }
@@ -80,6 +90,8 @@ pub fn map(state: *State, pml4: u64, length: u64, prot: u64) Error!u64 {
 /// Reserve virtual addresses without allocating page tables or physical frames.
 pub fn reserve(state: *State, pml4: u64, length: u64) Error!u64 {
     const size = try sizeOf(length, MAX_RESERVATION);
+    state.lock.acquire();
+    defer state.lock.release();
     const region = try emptySlot(state);
     const base = try firstFit(state, size);
     try checkUnmapped(pml4, base, size);
@@ -98,9 +110,27 @@ fn findContaining(state: *State, address: u64, length: u64, max: usize) Error!*R
 }
 
 fn releasePages(pml4: u64, address: u64, size: usize) void {
+    const Entry = struct { address: u64, phys: u64 };
     var off: usize = 0;
-    while (off < size) : (off += vmm.PAGE_SIZE) {
-        if (vmm.unmapPage(pml4, address + off)) |phys| pmm.freePage(phys);
+    while (off < size) {
+        const count = @min((size - off) / vmm.PAGE_SIZE, 64);
+        var entries: [64]Entry = undefined;
+        var used: usize = 0;
+        for (0..count) |i| {
+            const va = address + off + i * vmm.PAGE_SIZE;
+            if (vmm.detachPage(pml4, va)) |phys| {
+                entries[used] = .{ .address = va, .phys = phys };
+                used += 1;
+            }
+        }
+        if (used != 0) {
+            tlb.invalidateExclusiveRange(pml4, address + off, count);
+            for (entries[0..used]) |entry| {
+                pmm.freePage(entry.phys);
+                vmm.pruneEmptyTables(pml4, entry.address);
+            }
+        }
+        off += count * vmm.PAGE_SIZE;
     }
 }
 
@@ -108,6 +138,8 @@ fn releasePages(pml4: u64, address: u64, size: usize) void {
 /// into two, so it needs a spare metadata slot before changing any mappings.
 pub fn unmap(state: *State, pml4: u64, address: u64, length: u64) Error!void {
     const size = try sizeOf(length, MAX_RESERVATION);
+    state.lock.acquire();
+    defer state.lock.release();
     const region = try findContaining(state, address, length, MAX_RESERVATION);
     const old_end = region.address + region.size;
     const end = address + size;
@@ -135,6 +167,8 @@ pub fn unmap(state: *State, pml4: u64, address: u64, length: u64) Error!void {
 
 pub fn protect(state: *State, pml4: u64, address: u64, length: u64, prot: u64) Error!void {
     const flags = try flagsFor(prot);
+    state.lock.acquire();
+    defer state.lock.release();
     _ = try findContaining(state, address, length, MAX_MAPPING);
     const size = try sizeOf(length, MAX_MAPPING);
     // Sparse reservations can contain holes; fail before changing any page.
@@ -146,8 +180,8 @@ pub fn protect(state: *State, pml4: u64, address: u64, length: u64, prot: u64) E
     while (off < size) : (off += vmm.PAGE_SIZE) {
         const phys = vmm.translate(pml4, address + off).?;
         vmm.mapPage(pml4, address + off, phys, flags | vmm.OWNED) catch unreachable;
-        vmm.invalidatePage(address + off);
     }
+    tlb.invalidateExclusiveRange(pml4, address, size / vmm.PAGE_SIZE);
 }
 
 /// Commit zeroed physical pages inside one sparse reservation. Overlap is
@@ -156,6 +190,8 @@ pub fn commit(state: *State, pml4: u64, address: u64, length: u64, prot: u64) Er
     const flags = try flagsFor(prot);
     if (prot == 0) return error.Invalid;
     const size = try sizeOf(length, MAX_MAPPING);
+    state.lock.acquire();
+    defer state.lock.release();
     const region = try findContaining(state, address, length, MAX_MAPPING);
     if (!region.sparse) return error.Invalid;
     try checkUnmapped(pml4, address, size);
@@ -167,17 +203,22 @@ pub fn commit(state: *State, pml4: u64, address: u64, length: u64, prot: u64) Er
             return error.OutOfMemory;
         };
     }
+    tlb.invalidateExclusiveRange(pml4, address, size / vmm.PAGE_SIZE);
 }
 
 /// Return committed frames to the PMM while retaining the virtual reservation.
 pub fn decommit(state: *State, pml4: u64, address: u64, length: u64) Error!void {
     const size = try sizeOf(length, MAX_MAPPING);
+    state.lock.acquire();
+    defer state.lock.release();
     const region = try findContaining(state, address, length, MAX_MAPPING);
     if (!region.sparse) return error.Invalid;
     releasePages(pml4, address, size);
 }
 
 pub fn releaseAll(state: *State, pml4: u64) void {
+    state.lock.acquire();
+    defer state.lock.release();
     for (&state.regions) |*r| {
         if (r.size != 0) releasePages(pml4, r.address, r.size);
         r.* = .{};

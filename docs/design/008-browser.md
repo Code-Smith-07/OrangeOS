@@ -214,6 +214,14 @@ tests 32 temporary kernel-page remaps with remote-CPU readback. Both 3 GiB and
 this mechanism or protected by a shared-address-space mutation lock, so this
 does not enable user threads or qualify Chromium's memory model.
 
+The next exclusive-user-VM slice serializes each task's anonymous region
+mutations and delays frame/page-table recycling until after local invalidation.
+An all-CPU user shootdown was tested and rejected: the current syscall ABI
+masks interrupts, causing independent CPUs to deadlock during concurrent VM
+cleanup. The remote-shootdown entry now rejects IRQ-masked callers. User
+threads require shared process-level VM ownership, a safe interruptible
+mutation/teardown protocol and targeted remote invalidation tests.
+
 ## Runtime milestone: process fault containment (23 September 2026)
 
 Synchronous ring-3 faults (including null access, writing read-only memory,

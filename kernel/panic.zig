@@ -98,6 +98,11 @@ pub fn exception(frame: *isr.TrapFrame) noreturn {
 pub fn panicFn(msg: []const u8, first_trace_addr: ?usize) noreturn {
     @branchHint(.cold);
 
+    // Emit the cause before repainting and replaying the framebuffer console:
+    // those operations can be slow or fault again on a damaged machine.
+    console.emergencyWrite("\nKERNEL PANIC: ");
+    console.emergencyWrite(msg);
+    console.emergencyWrite("\n");
     banner("KERNEL PANIC - Zest has stopped");
     console.print("  reason: {s}\n", .{msg});
     if (first_trace_addr) |addr| {

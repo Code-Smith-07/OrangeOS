@@ -60,8 +60,12 @@ fn handler(_: *isr.TrapFrame) void {
 
 fn request(cr3: u64, address: u64, sample: bool) Result {
     std.debug.assert(address % vmm.PAGE_SIZE == 0);
-    const state = spinlock.acquireIrqSave(&request_lock);
-    defer spinlock.releaseIrqRestore(&request_lock, state);
+    // A contender must keep accepting the other sender's IPI while waiting
+    // for this lock. Acquiring it with IRQs masked deadlocks two requesters.
+    if (@atomicLoad(bool, &ready, .acquire) and smp.cpusOnline() > 1 and
+        !spinlock.interruptsEnabled()) @panic("remote TLB shootdown requires interrupts enabled");
+    request_lock.acquire();
+    defer request_lock.release();
 
     if (cr3 == 0 or vmm.currentCr3() == cr3) vmm.invalidatePage(address);
     samples = [_]u64{0} ** percpu.MAX_CPUS;
@@ -90,6 +94,16 @@ fn request(cr3: u64, address: u64, sample: bool) Result {
 /// Pass cr3=0 for a kernel mapping shared by all address spaces.
 pub fn invalidate(cr3: u64, address: u64) void {
     _ = request(cr3, address, false);
+}
+
+/// Current user processes have exactly one task per address space. They need
+/// local invalidation before recycling frames, but broadcasting from their
+/// IRQ-masked syscall/exit paths would deadlock against another masked CPU.
+/// Do not use this once an address space can be scheduled by multiple tasks.
+pub fn invalidateExclusiveRange(cr3: u64, address: u64, pages: usize) void {
+    std.debug.assert(address % vmm.PAGE_SIZE == 0);
+    if (vmm.currentCr3() != cr3) return;
+    for (0..pages) |i| vmm.invalidatePage(address + i * vmm.PAGE_SIZE);
 }
 
 /// Test-only readback after remote invalidation, for a mapped kernel page.

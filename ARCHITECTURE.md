@@ -1773,6 +1773,14 @@ and 4 GiB runtime profiles. User VM operations still need mutation locking and
 shootdown integration before any address space can be shared by user threads;
 this is not a native browser milestone by itself.
 
+**Exclusive VM reclaim ordering (24 September 2026):** anonymous VM mutations
+are serialized per task; unmap/decommit/exit detach pages and invalidate the
+current CPU before frames or page tables are recycled. The current syscall
+entry masks interrupts, so broadcasting a user shootdown from that path can
+deadlock against another masked CPU. Remote shootdown requires an
+interrupt-enabled caller. Shared user threads still require process-owned VM
+state, an IRQ-safe mutation protocol and targeted cross-CPU testing.
+
 ```
    ┌─────────────────────────────────────────────────────────────────┐
    │  Terminal 1                     Terminal 2                      │
