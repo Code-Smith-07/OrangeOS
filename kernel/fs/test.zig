@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const vfs = @import("vfs/vfs.zig");
+const fd_mod = @import("fd.zig");
 const console = @import("../console.zig");
 
 var passed: usize = 0;
@@ -71,15 +72,15 @@ pub fn run() void {
     } else |_| {}
 
     // The file descriptor path.
-    var files: vfs.FileTable = .{};
-    if (vfs.open(&files, "/etc/motd", 0)) |fd| {
-        const size = vfs.statSize(&files, fd) catch 0;
+    var files: fd_mod.FileTable = .{};
+    if (fd_mod.open(&files, "/etc/motd", 0)) |fd| {
+        const size = (fd_mod.statFd(&files, fd) catch fd_mod.Status{ .size = 0, .kind = .file, .mode = 0 }).size;
         var small: [8]u8 = undefined;
-        const n1 = vfs.read(&files, fd, &small) catch 0;
-        const n2 = vfs.read(&files, fd, &small) catch 0;
+        const n1 = fd_mod.readFd(&files, fd, &small) catch 0;
+        const n2 = fd_mod.readFd(&files, fd, &small) catch 0;
         check("open/read advances the file offset", n1 == 8 and n2 > 0 and size > 8);
-        vfs.close(&files, fd) catch {};
-        check("close then use of a stale fd is refused", vfs.read(&files, fd, &small) == vfs.Error.BadFd);
+        fd_mod.close(&files, fd) catch {};
+        check("close then use of a stale fd is refused", fd_mod.readFd(&files, fd, &small) == vfs.Error.BadFd);
     } else |_| check("open /etc/motd", false);
 
     // The init binary must be present and look like an ELF.
@@ -114,10 +115,10 @@ fn tmpfsChecks() void {
     check("the root filesystem refuses changes", vfs.mkdir("/etc/new") == vfs.Error.ReadOnly);
     check("an existing root path reports EEXIST to mkdir", vfs.mkdir("/etc") == vfs.Error.Exists);
 
-    var files: vfs.FileTable = .{};
+    var files: fd_mod.FileTable = .{};
     check("mkdir /tmp/kernel-test", if (vfs.mkdir("/tmp/kernel-test")) |_| true else |_| false);
     const flags = vfs.OPEN_READ | vfs.OPEN_WRITE | vfs.OPEN_CREATE | vfs.OPEN_EXCLUSIVE;
-    const fd = vfs.open(&files, "/tmp/kernel-test/data", flags) catch {
+    const fd = fd_mod.open(&files, "/tmp/kernel-test/data", flags) catch {
         check("create /tmp/kernel-test/data", false);
         return;
     };
@@ -126,20 +127,20 @@ fn tmpfsChecks() void {
     var ok = true;
     for (0..3) |i| {
         @memset(&page, @intCast('a' + i));
-        ok = ok and (vfs.write(&files, fd, &page) catch 0) == page.len;
+        ok = ok and (fd_mod.writeFd(&files, fd, &page) catch 0) == page.len;
     }
-    ok = ok and (vfs.write(&files, fd, "tail") catch 0) == 4;
-    check("write three pages and a tail", ok and (vfs.statSize(&files, fd) catch 0) == 3 * 4096 + 4);
-    _ = vfs.seekFrom(&files, fd, 4094, .set) catch 0;
+    ok = ok and (fd_mod.writeFd(&files, fd, "tail") catch 0) == 4;
+    check("write three pages and a tail", ok and ((fd_mod.statFd(&files, fd) catch fd_mod.Status{ .size = 0, .kind = .file, .mode = 0 }).size) == 3 * 4096 + 4);
+    _ = fd_mod.seekFd(&files, fd, 4094, .set) catch 0;
     var across: [4]u8 = undefined;
-    const got = vfs.read(&files, fd, &across) catch 0;
+    const got = fd_mod.readFd(&files, fd, &across) catch 0;
     check("a read across a page boundary", got == 4 and std.mem.eql(u8, &across, "aabb"));
-    check("exclusive create of an existing file fails", vfs.open(&files, "/tmp/kernel-test/data", flags) == vfs.Error.Exists);
+    check("exclusive create of an existing file fails", fd_mod.open(&files, "/tmp/kernel-test/data", flags) == vfs.Error.Exists);
     check("rmdir of a non-empty directory fails", vfs.remove("/tmp/kernel-test", true) == vfs.Error.NotEmpty);
     check("unlink while open", if (vfs.remove("/tmp/kernel-test/data", false)) |_| true else |_| false);
-    _ = vfs.seekFrom(&files, fd, 0, .set) catch 0;
-    check("an unlinked open file stays readable", (vfs.read(&files, fd, &across) catch 0) == 4 and across[0] == 'a');
-    vfs.close(&files, fd) catch {};
+    _ = fd_mod.seekFd(&files, fd, 0, .set) catch 0;
+    check("an unlinked open file stays readable", (fd_mod.readFd(&files, fd, &across) catch 0) == 4 and across[0] == 'a');
+    fd_mod.close(&files, fd) catch {};
     check("rmdir of the emptied directory", if (vfs.remove("/tmp/kernel-test", true)) |_| true else |_| false);
     const after = vfs.usage("/tmp") catch before;
     check("closing the last handle returns every page", after.free_bytes == before.free_bytes);

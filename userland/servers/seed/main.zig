@@ -173,6 +173,13 @@ export fn _start() callconv(.c) noreturn {
             pulp.exit(186);
         }
         pulp.puts("runtime: PASS 511 threads in one program\n");
+        const pipe_program = pulp.spawn("/bin/pipe-probe") catch pulp.exit(187);
+        const pipe_code = pulp.wait(pipe_program) catch pulp.exit(188);
+        if (pipe_code != 0) {
+            pulp.print("runtime: FAIL pipes and descriptors exit {d}\n", .{pipe_code});
+            pulp.exit(189);
+        }
+        pulp.puts("runtime: PASS pipes, eventfd and descriptor duplication\n");
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.
         for (0..2) |_| {

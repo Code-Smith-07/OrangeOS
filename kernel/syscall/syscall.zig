@@ -9,6 +9,7 @@ const sched = @import("../sched/sched.zig");
 const validate = @import("validate.zig");
 const vmm = @import("../mm/vmm.zig");
 const vfs = @import("../fs/vfs/vfs.zig");
+const fd_mod = @import("../fs/fd.zig");
 const serial = @import("../drivers/char/serial.zig");
 const io = @import("../arch/x86_64/io.zig");
 const process = @import("../sched/process.zig");
@@ -89,6 +90,10 @@ pub const Nr = enum(u64) {
     statfs = 122,
     pread = 123,
     pwrite = 124,
+    pipe = 130,
+    dup = 131,
+    fd_control = 132,
+    eventfd = 133,
     readdir = 34,
     readdir_page = 38,
     port_create = 50,
@@ -145,6 +150,8 @@ const EXDEV: i64 = -18;
 const EFBIG: i64 = -27;
 const EBUSY: i64 = -16;
 const ESPIPE: i64 = -29;
+const EPIPE: i64 = -32;
+const ENOMEM: i64 = -12;
 /// The calling program is exiting; a blocked call gave up.
 const EINTR: i64 = -4;
 
@@ -170,6 +177,10 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .statfs => sysStatfs(frame.rdi, frame.rsi, frame.rdx),
         .pread => sysPread(frame.rdi, frame.rsi, frame.rdx, frame.r10),
         .pwrite => sysPwrite(frame.rdi, frame.rsi, frame.rdx, frame.r10),
+        .pipe => sysPipe(frame.rdi, frame.rsi),
+        .dup => sysDup(frame.rdi, frame.rsi, frame.rdx),
+        .fd_control => sysFdControl(frame.rdi, frame.rsi, frame.rdx),
+        .eventfd => sysEventFd(frame.rdi, frame.rsi),
         .close => sysClose(frame.rdi),
         .read => sysRead(frame.rdi, frame.rsi, frame.rdx),
         .spawn => sysSpawn(frame.rdi, frame.rsi),
@@ -471,11 +482,19 @@ fn copyStatus(pointer: u64, status: FileStatus) i64 {
     return 0;
 }
 
+/// The open file description behind `fd`, with a reference for the caller;
+/// null when there is none (for 0-2, the console).
+fn descriptionOf(fd: u64) ?*fd_mod.Description {
+    if (fd > std.math.maxInt(i32)) return null;
+    const proc = sched.currentProcess() orelse return null;
+    return fd_mod.lookup(&proc.files, @intCast(fd));
+}
+
 fn sysSeek(fd: u64, offset: u64, whence: u64) i64 {
-    if (fd > std.math.maxInt(i32)) return EBADF;
     if (whence > 2) return EINVAL;
-    const proc = sched.currentProcess() orelse return EIO;
-    const position = vfs.seekFrom(&proc.files, @intCast(fd), @bitCast(offset), @enumFromInt(whence)) catch |e| return vfsErrno(e);
+    const desc = descriptionOf(fd) orelse return if (fd <= 2) ESPIPE else EBADF;
+    defer desc.release();
+    const position = fd_mod.seek(desc, @bitCast(offset), @enumFromInt(whence)) catch |e| return vfsErrno(e);
     return @intCast(position);
 }
 
@@ -493,11 +512,13 @@ fn sysStat(path_ptr: u64, path_len: u64, out: u64) i64 {
 }
 
 fn sysFstat(fd: u64, out: u64) i64 {
-    if (fd <= 2) return copyStatus(out, .{ .size = 0, .kind = 3, .mode = vfs.OPEN_READ | vfs.OPEN_WRITE });
-    if (fd > std.math.maxInt(i32)) return EBADF;
-    const proc = sched.currentProcess() orelse return EIO;
-    const status = vfs.statFd(&proc.files, @intCast(fd)) catch |e| return vfsErrno(e);
-    return copyStatus(out, .{ .size = status.size, .kind = if (status.directory) 2 else 1, .mode = status.mode });
+    const desc = descriptionOf(fd) orelse {
+        if (fd <= 2) return copyStatus(out, .{ .size = 0, .kind = 3, .mode = vfs.OPEN_READ | vfs.OPEN_WRITE });
+        return EBADF;
+    };
+    defer desc.release();
+    const status = fd_mod.stat(desc);
+    return copyStatus(out, .{ .size = status.size, .kind = @intFromEnum(status.kind), .mode = status.mode });
 }
 
 /// Nanoseconds on clock 0 (monotonic, since boot) or 1 (wall, since the
@@ -512,7 +533,7 @@ fn sysClockNs(clock: u64) i64 {
 }
 
 fn sysWrite(fd: u64, buf: u64, len: u64) i64 {
-    if (fd == 0 or fd > std.math.maxInt(i32)) return EBADF;
+    if (fd > std.math.maxInt(i32)) return EBADF;
     if (len == 0) return 0;
     if (len > 4096) return EFAULT;
 
@@ -521,15 +542,20 @@ fn sysWrite(fd: u64, buf: u64, len: u64) i64 {
     var kbuf: [4096]u8 = undefined;
     validate.copyFromUser(pml4, &kbuf, buf, @intCast(len)) catch return EFAULT;
 
-    if (fd > 2) {
-        const proc = sched.currentProcess() orelse return EIO;
-        const n = vfs.write(&proc.files, @intCast(fd), kbuf[0..@intCast(len)]) catch |e| return vfsErrno(e);
+    if (descriptionOf(fd)) |desc| {
+        defer desc.release();
+        // A pipe or eventfd write may block until a reader makes room.
+        io.sti();
+        defer io.cli();
+        const n = fd_mod.write(desc, kbuf[0..@intCast(len)]) catch |e| return vfsErrno(e);
         return @intCast(n);
     }
+    if (fd > 2) return EBADF;
 
     // A task with a PTY writes into it rather than to the console. That is
     // what puts a shell's output in a terminal window without the shell
     // knowing anything about windows.
+    if (fd == 0) return EBADF;
     if (currentPty()) |obj| {
         return @intCast(pty_mod.slaveWrite(&obj.data.pty, kbuf[0..@intCast(len)]));
     }
@@ -552,6 +578,11 @@ fn vfsErrno(e: vfs.Error) i64 {
         vfs.Error.InvalidArgument => EINVAL,
         vfs.Error.FileTooBig => EFBIG,
         vfs.Error.Busy => EBUSY,
+        vfs.Error.WouldBlock => EAGAIN,
+        vfs.Error.BrokenPipe => EPIPE,
+        vfs.Error.Interrupted => EINTR,
+        vfs.Error.NotSeekable => ESPIPE,
+        vfs.Error.OutOfMemory => ENOMEM,
         vfs.Error.NameTooLong => ENAMETOOLONG,
         vfs.Error.TooManyOpen => EMFILE,
         vfs.Error.BadFd => EBADF,
@@ -564,7 +595,7 @@ fn sysOpen(path_ptr: u64, path_len: u64, flags: u64) i64 {
     const name = copyPath(&path, path_ptr, path_len) catch |e| return pathErrno(e);
     if (flags > std.math.maxInt(u32)) return EINVAL;
     const proc = sched.currentProcess() orelse return EIO;
-    const fd = vfs.open(&proc.files, name, @intCast(flags)) catch |e| return vfsErrno(e);
+    const fd = fd_mod.open(&proc.files, name, @intCast(flags)) catch |e| return vfsErrno(e);
     return fd;
 }
 
@@ -606,38 +637,108 @@ fn sysRename(from_ptr: u64, from_len: u64, to_ptr: u64, to_len: u64) i64 {
 }
 
 fn sysPread(fd: u64, buf: u64, len: u64, offset: u64) i64 {
-    if (fd <= 2) return ESPIPE;
-    if (fd > std.math.maxInt(i32)) return EBADF;
+    const desc = descriptionOf(fd) orelse return if (fd <= 2) ESPIPE else EBADF;
+    defer desc.release();
     if (len == 0) return 0;
     if (len > 4096) return EFAULT;
     if (offset > std.math.maxInt(i64)) return EINVAL;
-    const proc = sched.currentProcess() orelse return EIO;
     var kbuf: [4096]u8 = undefined;
-    const n = vfs.readAtOffset(&proc.files, @intCast(fd), offset, kbuf[0..@intCast(len)]) catch |e| return vfsErrno(e);
+    const n = fd_mod.readAtOffset(desc, offset, kbuf[0..@intCast(len)]) catch |e| return vfsErrno(e);
     validate.copyToUser(vmm.currentCr3(), buf, kbuf[0..n], n) catch return EFAULT;
     return @intCast(n);
 }
 
 fn sysPwrite(fd: u64, buf: u64, len: u64, offset: u64) i64 {
-    if (fd <= 2) return ESPIPE;
-    if (fd > std.math.maxInt(i32)) return EBADF;
+    const desc = descriptionOf(fd) orelse return if (fd <= 2) ESPIPE else EBADF;
+    defer desc.release();
     if (len == 0) return 0;
     if (len > 4096) return EFAULT;
     if (offset > std.math.maxInt(i64)) return EINVAL;
-    const proc = sched.currentProcess() orelse return EIO;
     var kbuf: [4096]u8 = undefined;
     validate.copyFromUser(vmm.currentCr3(), &kbuf, buf, @intCast(len)) catch return EFAULT;
-    const n = vfs.writeAtOffset(&proc.files, @intCast(fd), offset, kbuf[0..@intCast(len)]) catch |e| return vfsErrno(e);
+    const n = fd_mod.writeAtOffset(desc, offset, kbuf[0..@intCast(len)]) catch |e| return vfsErrno(e);
     return @intCast(n);
 }
 
 fn sysFtruncate(fd: u64, length: u64) i64 {
-    if (fd <= 2) return EINVAL;
-    if (fd > std.math.maxInt(i32)) return EBADF;
+    const desc = descriptionOf(fd) orelse return if (fd <= 2) EINVAL else EBADF;
+    defer desc.release();
     if (length > std.math.maxInt(i64)) return EINVAL;
-    const proc = sched.currentProcess() orelse return EIO;
-    vfs.truncate(&proc.files, @intCast(fd), length) catch |e| return vfsErrno(e);
+    fd_mod.truncate(desc, length) catch |e| return vfsErrno(e);
     return 0;
+}
+
+// ── Pipes, duplication, descriptor flags, eventfd ───────────────────────────
+
+/// Flags for pipe, dup and eventfd.
+const FD_NONBLOCK: u64 = 1;
+const FD_CLOEXEC: u64 = 2;
+const EFD_SEMAPHORE: u64 = 4;
+
+fn sysPipe(out: u64, flags: u64) i64 {
+    if (flags & ~(FD_NONBLOCK | FD_CLOEXEC) != 0) return EINVAL;
+    const proc = sched.currentProcess() orelse return EIO;
+    const fds = fd_mod.createPipe(&proc.files, flags & FD_NONBLOCK != 0, flags & FD_CLOEXEC != 0) catch |e| return vfsErrno(e);
+    validate.copyToUser(vmm.currentCr3(), out, std.mem.asBytes(&fds), @sizeOf([2]i32)) catch {
+        fd_mod.close(&proc.files, fds[0]) catch {};
+        fd_mod.close(&proc.files, fds[1]) catch {};
+        return EFAULT;
+    };
+    return 0;
+}
+
+/// dup (`new` = -1: the lowest free descriptor) or dup2/dup3 (exactly `new`).
+fn sysDup(old: u64, new: u64, flags: u64) i64 {
+    if (flags & ~FD_CLOEXEC != 0) return EINVAL;
+    if (old > std.math.maxInt(i32)) return EBADF;
+    const proc = sched.currentProcess() orelse return EIO;
+    const cloexec = flags & FD_CLOEXEC != 0;
+    const result = if (new == std.math.maxInt(u64))
+        fd_mod.dup(&proc.files, @intCast(old), fd_mod.FD_BASE, cloexec)
+    else if (new > std.math.maxInt(i32))
+        return EBADF
+    else
+        fd_mod.dupTo(&proc.files, @intCast(old), @intCast(new), cloexec);
+    return result catch |e| vfsErrno(e);
+}
+
+/// fcntl's descriptor commands: 0 DUPFD (lowest at or above `arg`),
+/// 1 DUPFD_CLOEXEC, 2 GETFD, 3 SETFD, 4 GETFL, 5 SETFL.
+fn sysFdControl(fd: u64, command: u64, arg: u64) i64 {
+    if (fd > std.math.maxInt(i32)) return EBADF;
+    const proc = sched.currentProcess() orelse return EIO;
+    const n: i32 = @intCast(fd);
+    const installed = fd_mod.lookup(&proc.files, n);
+    defer if (installed) |d| d.release();
+    if (installed == null) {
+        // The console behind 0-2 has no description to duplicate or flag.
+        if (fd > 2) return EBADF;
+        return switch (command) {
+            2 => 0,
+            3 => 0,
+            4 => vfs.OPEN_READ | vfs.OPEN_WRITE,
+            5 => 0,
+            else => EBADF,
+        };
+    }
+    return switch (command) {
+        0, 1 => blk: {
+            if (arg >= fd_mod.MAX_OPEN) break :blk EINVAL;
+            break :blk fd_mod.dup(&proc.files, n, @intCast(arg), command == 1) catch |e| vfsErrno(e);
+        },
+        2 => if (fd_mod.cloexecOf(&proc.files, n)) |c| @intFromBool(c) else |e| vfsErrno(e),
+        3 => if (fd_mod.setCloexec(&proc.files, n, arg & 1 != 0)) |_| 0 else |e| vfsErrno(e),
+        4 => installed.?.statusFlags(),
+        5 => if (fd_mod.setStatus(&proc.files, n, @truncate(arg))) |_| 0 else |e| vfsErrno(e),
+        else => EINVAL,
+    };
+}
+
+fn sysEventFd(initial: u64, flags: u64) i64 {
+    if (flags & ~(FD_NONBLOCK | FD_CLOEXEC | EFD_SEMAPHORE) != 0) return EINVAL;
+    if (initial > std.math.maxInt(u32)) return EINVAL;
+    const proc = sched.currentProcess() orelse return EIO;
+    return fd_mod.createEventFd(&proc.files, @intCast(initial), flags & EFD_SEMAPHORE != 0, flags & FD_NONBLOCK != 0, flags & FD_CLOEXEC != 0) catch |e| vfsErrno(e);
 }
 
 /// What `statfs` reports for the filesystem holding a path.
@@ -661,7 +762,7 @@ fn sysStatfs(path_ptr: u64, path_len: u64, out: u64) i64 {
 fn sysClose(fd: u64) i64 {
     if (fd > std.math.maxInt(i32)) return EBADF;
     const proc = sched.currentProcess() orelse return EIO;
-    vfs.close(&proc.files, @intCast(fd)) catch |e| return vfsErrno(e);
+    fd_mod.close(&proc.files, @intCast(fd)) catch |e| return vfsErrno(e);
     return 0;
 }
 
@@ -672,10 +773,24 @@ fn sysRead(fd: u64, buf: u64, len: u64) i64 {
 
     const pml4 = vmm.currentCr3();
 
+    if (descriptionOf(fd)) |desc| {
+        defer desc.release();
+        // Read into kernel memory first, then copy out: the object never
+        // writes through an unvalidated user pointer. A pipe or eventfd read
+        // may block, which needs interrupts on.
+        io.sti();
+        defer io.cli();
+        var kbuf: [4096]u8 = undefined;
+        const n = fd_mod.read(desc, kbuf[0..@intCast(len)]) catch |e| return vfsErrno(e);
+        validate.copyToUser(pml4, buf, kbuf[0..n], n) catch return EFAULT;
+        return @intCast(n);
+    }
+    if (fd != 0) return EBADF;
+
     // fd 0 is the console. Block until at least one byte is available, then
     // return what is there rather than waiting for the full request: a shell
     // wants each keystroke as it arrives, not a full buffer.
-    if (fd == 0) {
+    {
         var kbuf: [256]u8 = undefined;
         const want = @min(len, kbuf.len);
 
@@ -729,18 +844,6 @@ fn sysRead(fd: u64, buf: u64, len: u64) i64 {
         validate.copyToUser(pml4, buf, kbuf[0..n], n) catch return EFAULT;
         return @intCast(n);
     }
-
-    // Read into kernel memory first, then copy out. Reading straight into the
-    // user buffer would mean the filesystem writing through an unvalidated
-    // pointer.
-    var kbuf: [4096]u8 = undefined;
-    const proc = sched.currentProcess() orelse return EIO;
-    const n = vfs.read(&proc.files, @intCast(fd), kbuf[0..@intCast(len)]) catch |e| {
-        return vfsErrno(e);
-    };
-
-    validate.copyToUser(pml4, buf, kbuf[0..n], n) catch return EFAULT;
-    return @intCast(n);
 }
 
 const ECHILD: i64 = -10;
@@ -892,10 +995,10 @@ fn sysReaddirFd(fd: u64, out: u64, max: u64) i64 {
     if (fd > std.math.maxInt(i32)) return EBADF;
     if (max == 0) return 0;
     const proc = sched.currentProcess() orelse return EIO;
-    const cursor = vfs.DirRead.begin(&proc.files, @intCast(fd)) catch |e| return vfsErrno(e);
+    const cursor = fd_mod.DirRead.begin(&proc.files, @intCast(fd)) catch |e| return vfsErrno(e);
     var ctx = ReaddirCtx{ .max = @min(max, 32), .skip = cursor.start() };
     const listed = cursor.entries(&ctx, collectEntry);
-    cursor.end(&proc.files, if (listed) |_| ctx.count else |_| 0);
+    cursor.end(if (listed) |_| ctx.count else |_| 0);
     listed catch |e| return vfsErrno(e);
 
     const bytes = ctx.count * @sizeOf(UserDirEntry);

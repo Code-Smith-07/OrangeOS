@@ -128,6 +128,10 @@ def main():
         guest.until(lambda: "runtime: PASS 511 threads in one program" in guest.log() or "thread-capacity: FAIL" in guest.log()
                     or "runtime: FAIL thread capacity" in guest.log(), "511 POSIX threads in one program, twice", 180)
         assert "thread-capacity: PASS 2 waves of 511 concurrent threads, EAGAIN beyond, all joined" in guest.log(), guest.log()[-2000:]
+        guest.until(lambda: "runtime: PASS pipes, eventfd and descriptor duplication" in guest.log() or "pipe-probe: FAIL" in guest.log()
+                    or "runtime: FAIL pipes and descriptors" in guest.log(), "pipes, eventfd and descriptor duplication", 120)
+        assert re.search(r"pipe-probe: PASS pipes \(EOF, EPIPE, nonblocking, 64 KiB, 1 MiB stream, atomic writes from 4 threads\), "
+                         r"eventfd, dup family and 25[0-3] descriptors", guest.log()), guest.log()[-2000:]
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]

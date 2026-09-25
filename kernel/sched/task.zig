@@ -97,7 +97,7 @@ pub const Process = struct {
     /// with no authority and receives handles explicitly.
     handles: handle.Table = .{},
     /// Files opened by this process. Ordinary spawn does not inherit them.
-    files: vfs.FileTable = .{},
+    files: @import("../fs/fd.zig").FileTable = .{},
     // Boot-issued authority, never inherited by ordinary spawned programs.
     service_manager: bool = false,
     host_bridge: bool = false,
