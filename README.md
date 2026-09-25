@@ -152,41 +152,40 @@ may change with macOS updates. Interactive physical-slider acceptance is still
 manual. Radio changes and Bluetooth pairing remain unfinished.
 See the [native Control Center screenshot](docs/screenshots/control-center.png).
 
-**Browser runtime progress.** Apps can now allocate, protect and release private
-memory. Synchronous app faults terminate the affected process while the OS
-continues. Memory conservation and four actual faulting apps are tested in QEMU.
-Per-process x87/SSE2 state is now isolated across CPU switches, and apps compile
-with native SSE2 support. Concurrent guest probes check register isolation and
-freestanding C/Zig floating-point calls, callbacks and blocking syscalls.
-Native C++ constructor/allocation/virtual-call probes also run in the guest.
-User page tables and mappings now have reference-counted lifetime independent
-of task records, with tests for retained mappings and final-release cleanup.
-The scheduler tracks CPUs using each address space, and CPU-pinned shootdown
-requests keep interrupts live. Kernel probes test remote remaps and contending
-senders on two and four vCPUs. Descriptors, handles, stdio and device/socket
-ownership now belong to a process record shared by its threads. User VM
-changes are now safe while other CPUs run the same address space: they shoot
-down every resident CPU and wait for in-flight kernel copies before freeing
-anything, checked by mutation-tested concurrency probes. Programs can now
-create real threads sharing their address space, with join, private TLS, a
-futex mutex, and program exit or a fault in any thread ending every thread.
-The network stack is now safe to use from several CPUs and threads at once,
-and its waits sleep rather than spin with interrupts masked. Anonymous memory
-can be flipped to read/execute under W^X for JIT code. C programs now build
-against musl 1.2.5 and run natively: stdio, malloc, clocks, file reads, TLS and
-POSIX threads, with musl's Linux calls translated in userland onto OrangeOS
-calls. C++20 programs link libc++, libc++abi and libunwind, with exceptions,
-RTTI, iostreams, `std::format`, thread-safe statics and `std::thread`. `/tmp`
-is a writable in-memory filesystem (create, write, truncate, rename, unlink
-while open, directory listing); the disk itself stays read-only, and there is
-no dynamic linking yet. Configurable orphan-process stress and emergency panic
-diagnostics track a still-unexplained intermittent kernel bounds panic.
-The modern browser engine, HTTPS and remaining runtime work are still tracked
-in the [browser runtime ledger](docs/design/008-browser.md). The new
-[native Chromium browser architecture](docs/design/011-native-chromium-browser.md)
-defines the 4 GiB profile, graphics/media integration, essential-site
-tests and hardware-dependent 4K/8K qualification. No browser engine or smooth
-video-playback capability is installed or certified yet.
+**Browser runtime progress** (updated 2026-09-25). The goal is Chromium running
+natively inside OrangeOS; no browser engine is installed yet. Chromium will be
+built from source as a Linux target against musl. OrangeOS provides a
+Linux-compatible userland layer for it; its own kernel ABI is unchanged and no
+Linux kernel code is involved
+([decision](docs/design/011-native-chromium-browser.md#21-platform-target-decision-2026-09-25)).
+Done so far, each tested in QEMU on two and four vCPUs:
+
+- **Memory:** sparse reserve/commit across a 16 TiB arena, with up to 16,384
+  mappings per program. W^X executable memory for a JIT. Changes are safe while
+  other CPUs run the same program: remote TLB shootdowns, and waits for
+  in-flight kernel copies before memory is freed.
+- **Processes and threads:** process records shared by threads; up to 512
+  threads per program and 1,024 system-wide; private TLS and futex waits.
+  Exit or a fault in any thread ends the whole program, and every resource is
+  reclaimed.
+- **C and C++:** musl 1.2.5 (stdio, malloc, pthreads, TLS, files) and LLVM
+  libc++/libc++abi/libunwind (exceptions, RTTI, iostreams, `std::format`,
+  `std::thread`). A userland layer translates musl's Linux calls into OrangeOS
+  calls.
+- **Files:** a writable in-memory `/tmp` (create, write, truncate, rename,
+  unlink while open, directory listing, `pread`/`pwrite`). The disk itself
+  stays read-only.
+- **Network:** DNS and blocking TCP/UDP, safe for concurrent threads.
+- **Reliability:** the long-standing intermittent kernel panic was found and
+  fixed. Scheduler, heap and spawn checks catch that class of bug early.
+
+The ordered list of what remains (IPC plumbing, sockets, shared memory,
+signals, entropy, fonts, then the Chromium cross-build and Peel display
+backend) is kept current in
+[011 §11.0](docs/design/011-native-chromium-browser.md#110-current-status-and-remaining-work).
+Older runtime history is in the [browser runtime ledger](docs/design/008-browser.md).
+No browser engine or smooth video-playback capability is installed or
+certified yet.
 
 **Browser Phase 1 preparation.** `ORANGE_VM_PROFILE=browser` now selects
 4096 MiB / two vCPUs across the preview, test and run launchers. The default
