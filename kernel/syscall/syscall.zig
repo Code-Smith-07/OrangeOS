@@ -202,40 +202,56 @@ fn vmErrno(e: user_vm.Error) i64 {
         error.OutOfMemory => -12,
     };
 }
+// Anonymous VM changes may shoot down other CPUs running threads of this
+// program, and must keep acknowledging theirs while they wait. SYSCALL masked
+// interrupts on entry, so each call re-enables them for the duration.
+
 fn sysMmap(address: u64, len: u64, prot: u64, flags: u64, fd: u64, offset: u64) i64 {
     // MAP_PRIVATE | MAP_ANONYMOUS. No MAP_FIXED, file mappings or hints yet.
     if (address != 0 or flags != 0x22 or fd != std.math.maxInt(u64) or offset != 0) return -95;
     const t = sched.currentTask() orelse return -14;
     const space = t.user_space orelse return -14;
-    return @intCast(user_vm.map(&space.anonymous_vm, space.pml4, len, prot) catch |e| return vmErrno(e));
+    io.sti();
+    defer io.cli();
+    return @intCast(user_vm.map(space, len, prot) catch |e| return vmErrno(e));
 }
 fn sysMunmap(address: u64, len: u64) i64 {
     const t = sched.currentTask() orelse return -14;
     const space = t.user_space orelse return -14;
-    user_vm.unmap(&space.anonymous_vm, space.pml4, address, len) catch |e| return vmErrno(e);
+    io.sti();
+    defer io.cli();
+    user_vm.unmap(space, address, len) catch |e| return vmErrno(e);
     return 0;
 }
 fn sysMprotect(address: u64, len: u64, prot: u64) i64 {
     const t = sched.currentTask() orelse return -14;
     const space = t.user_space orelse return -14;
-    user_vm.protect(&space.anonymous_vm, space.pml4, address, len, prot) catch |e| return vmErrno(e);
+    io.sti();
+    defer io.cli();
+    user_vm.protect(space, address, len, prot) catch |e| return vmErrno(e);
     return 0;
 }
 fn sysVmReserve(len: u64) i64 {
     const t = sched.currentTask() orelse return -14;
     const space = t.user_space orelse return -14;
-    return @intCast(user_vm.reserve(&space.anonymous_vm, space.pml4, len) catch |e| return vmErrno(e));
+    io.sti();
+    defer io.cli();
+    return @intCast(user_vm.reserve(space, len) catch |e| return vmErrno(e));
 }
 fn sysVmCommit(address: u64, len: u64, prot: u64) i64 {
     const t = sched.currentTask() orelse return -14;
     const space = t.user_space orelse return -14;
-    user_vm.commit(&space.anonymous_vm, space.pml4, address, len, prot) catch |e| return vmErrno(e);
+    io.sti();
+    defer io.cli();
+    user_vm.commit(space, address, len, prot) catch |e| return vmErrno(e);
     return 0;
 }
 fn sysVmDecommit(address: u64, len: u64) i64 {
     const t = sched.currentTask() orelse return -14;
     const space = t.user_space orelse return -14;
-    user_vm.decommit(&space.anonymous_vm, space.pml4, address, len) catch |e| return vmErrno(e);
+    io.sti();
+    defer io.cli();
+    user_vm.decommit(space, address, len) catch |e| return vmErrno(e);
     return 0;
 }
 
@@ -701,6 +717,9 @@ fn sysShmOpen(name_ptr: u64, name_len: u64) i64 {
 }
 
 fn sysShmMap(h: u64, writable: u64) i64 {
+    // A failed mapping rolls back with a shootdown, which needs interrupts.
+    io.sti();
+    defer io.cli();
     const addr = ipc.shmMap(@bitCast(h), writable != 0) catch |e| return ipcErrno(e);
     return @bitCast(addr);
 }
@@ -771,19 +790,15 @@ fn sysFbMap() i64 {
     const phys = pmm.virtToPhys(@intFromPtr(f.base));
     const size = std.mem.alignForward(usize, f.pitch * f.height, vmm.PAGE_SIZE);
 
-    const base = space.shm_next;
-    var off: usize = 0;
-    while (off < size) : (off += vmm.PAGE_SIZE) {
-        vmm.mapPage(
-            space.pml4,
-            base + off,
-            phys + off,
-            vmm.PRESENT | vmm.WRITABLE | vmm.USER | vmm.NO_EXECUTE | vmm.WRITE_THROUGH,
-        ) catch return -12;
-        vmm.invalidatePage(base + off);
-    }
-    space.shm_next = base + size + vmm.PAGE_SIZE;
-
+    // A failed mapping rolls back with a shootdown, which needs interrupts.
+    io.sti();
+    defer io.cli();
+    const base = space.mapBorrowed(
+        phys,
+        size,
+        vmm.PRESENT | vmm.WRITABLE | vmm.USER | vmm.NO_EXECUTE | vmm.WRITE_THROUGH,
+        null,
+    ) catch return -12;
     return @bitCast(base);
 }
 

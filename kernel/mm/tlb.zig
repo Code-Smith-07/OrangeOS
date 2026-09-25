@@ -1,9 +1,9 @@
-//! Synchronous cross-CPU invalidation for a single virtual page.
+//! Synchronous cross-CPU invalidation of a page range.
 //!
 //! The request is serialized and acknowledged before the caller can free or
 //! reuse a frame. The IPI handler takes no locks, so a target interrupted
-//! while holding another spinlock can still acknowledge. This is the hardware
-//! mechanism; shared user address spaces still need VM mutation ownership.
+//! while holding another spinlock can still acknowledge. Long ranges become a
+//! full non-global flush on each target instead of one INVLPG per page.
 const std = @import("std");
 const spinlock = @import("../sync/spinlock.zig");
 const isr = @import("../arch/x86_64/isr.zig");
@@ -15,6 +15,8 @@ const vmm = @import("vmm.zig");
 const preempt = @import("../sched/preempt.zig");
 
 pub const VECTOR: u8 = 0xF1;
+/// Above this many pages a CR3 reload is cheaper than per-page INVLPG.
+pub const FULL_FLUSH_PAGES: usize = 32;
 pub const Result = struct {
     remote_mask: u64,
     samples: [percpu.MAX_CPUS]u64,
@@ -27,6 +29,7 @@ var generation: u64 = 0;
 var next_generation: u64 = 0; // sender only, protected by request_lock
 var target_cr3: u64 = 0; // 0 means every address space (kernel mapping)
 var target_page: u64 = 0;
+var target_pages: usize = 1;
 var sample_page: bool = false;
 var target_mask: u64 = 0;
 var pending: usize = 0;
@@ -54,7 +57,7 @@ fn handler(_: *isr.TrapFrame) void {
     {
         last_generation[cpu] = epoch;
         if (target_cr3 == 0 or vmm.currentCr3() == target_cr3) {
-            vmm.invalidatePage(target_page);
+            invalidateLocal(target_page, target_pages);
             if (sample_page) {
                 const value: *const volatile u64 = @ptrFromInt(target_page);
                 samples[cpu] = value.*;
@@ -66,30 +69,48 @@ fn handler(_: *isr.TrapFrame) void {
     apic.eoi();
 }
 
-fn request(cr3: u64, address: u64, sample: bool, requested_mask: u64) Result {
+/// Invalidate a range on this CPU only.
+fn invalidateLocal(address: u64, pages: usize) void {
+    if (pages > FULL_FLUSH_PAGES) {
+        vmm.flushLocal();
+        return;
+    }
+    for (0..pages) |i| vmm.invalidatePage(address + i * vmm.PAGE_SIZE);
+}
+
+fn request(cr3: u64, address: u64, pages: usize, sample: bool, requested_mask: u64) Result {
     const pin = preempt.acquire();
     defer pin.release();
-    std.debug.assert(address % vmm.PAGE_SIZE == 0);
+    std.debug.assert(address % vmm.PAGE_SIZE == 0 and pages != 0);
+    // A CR3 reload keeps global (kernel) translations, so kernel ranges must
+    // stay on the per-page path.
+    std.debug.assert(cr3 != 0 or pages <= FULL_FLUSH_PAGES);
     const self_bit = @as(u64, 1) << @intCast(percpu.cpuIndex());
     std.debug.assert(requested_mask & self_bit == 0);
     const targets = if (@atomicLoad(bool, &ready, .acquire)) requested_mask else 0;
     std.debug.assert(targets & ~smp.onlineMask() == 0);
+    const local = cr3 == 0 or vmm.currentCr3() == cr3;
+    // Purely local work takes no shared lock. An exit path with IRQs masked
+    // must never spin behind a sender that is waiting for this CPU's ack.
+    if (targets == 0) {
+        if (local) invalidateLocal(address, pages);
+        return .{ .remote_mask = 0, .samples = [_]u64{0} ** percpu.MAX_CPUS };
+    }
     // A contender must keep accepting the other sender's IPI while waiting
     // for this lock. Acquiring it with IRQs masked deadlocks two requesters.
-    if (targets != 0 and
-        !spinlock.interruptsEnabled()) @panic("remote TLB shootdown requires interrupts enabled");
+    if (!spinlock.interruptsEnabled()) @panic("remote TLB shootdown requires interrupts enabled");
     if (!request_lock.tryAcquire()) {
         _ = @atomicRmw(u64, &contentions, .Add, 1, .monotonic);
         request_lock.acquire();
     }
     defer request_lock.release();
 
-    if (cr3 == 0 or vmm.currentCr3() == cr3) vmm.invalidatePage(address);
+    if (local) invalidateLocal(address, pages);
     samples = [_]u64{0} ** percpu.MAX_CPUS;
-    if (targets == 0) return .{ .remote_mask = 0, .samples = samples };
 
     target_cr3 = cr3;
     target_page = address;
+    target_pages = pages;
     sample_page = sample;
     target_mask = targets;
     @atomicStore(u64, &remote_mask, 0, .release);
@@ -116,24 +137,22 @@ pub fn invalidate(cr3: u64, address: u64) void {
     const pin = preempt.acquire();
     defer pin.release();
     const self_bit = @as(u64, 1) << @intCast(percpu.cpuIndex());
-    _ = request(cr3, address, false, smp.onlineMask() & ~self_bit);
+    _ = request(cr3, address, 1, false, smp.onlineMask() & ~self_bit);
 }
 
 /// Snapshot-based targeted invalidation. Caller must remain CPU-pinned from
 /// selection of requested_mask through this call (and exclude its own CPU).
 pub fn invalidateMask(cr3: u64, address: u64, requested_mask: u64) Result {
     std.debug.assert(percpu.this().preempt_depth != 0);
-    return request(cr3, address, false, requested_mask);
+    return request(cr3, address, 1, false, requested_mask);
 }
 
-/// Current user processes have exactly one task per address space. They need
-/// local invalidation before recycling frames, but broadcasting from their
-/// IRQ-masked syscall/exit paths would deadlock against another masked CPU.
-/// Do not use this once an address space can be scheduled by multiple tasks.
-pub fn invalidateExclusiveRange(cr3: u64, address: u64, pages: usize) void {
-    std.debug.assert(address % vmm.PAGE_SIZE == 0);
-    if (vmm.currentCr3() != cr3) return;
-    for (0..pages) |i| vmm.invalidatePage(address + i * vmm.PAGE_SIZE);
+/// Range form of invalidateMask, for one user address space. The caller stays
+/// pinned from choosing `requested_mask` through this call; remote targets
+/// require interrupts enabled.
+pub fn invalidateRangeMask(cr3: u64, address: u64, pages: usize, requested_mask: u64) Result {
+    std.debug.assert(percpu.this().preempt_depth != 0 and cr3 != 0);
+    return request(cr3, address, pages, false, requested_mask);
 }
 
 /// Test-only readback after remote invalidation, for a mapped kernel page.
@@ -141,13 +160,13 @@ pub fn sampleKernelPage(address: u64) Result {
     const pin = preempt.acquire();
     defer pin.release();
     const self_bit = @as(u64, 1) << @intCast(percpu.cpuIndex());
-    return request(0, address, true, smp.onlineMask() & ~self_bit);
+    return request(0, address, 1, true, smp.onlineMask() & ~self_bit);
 }
 
 /// Probe one selected remote CPU; the returned mask contains acknowledgements.
 pub fn sampleKernelCpu(address: u64, cpu: usize) Result {
     std.debug.assert(cpu < percpu.MAX_CPUS);
-    return request(0, address, true, @as(u64, 1) << @intCast(cpu));
+    return request(0, address, 1, true, @as(u64, 1) << @intCast(cpu));
 }
 
 /// Raw fixed-vector delivery count, used to prove an excluded CPU was not sent

@@ -34,6 +34,27 @@ def main():
                     "shared-PML4 scheduling, contending shootdowns and final CPU detach", 60)
         guest.until(lambda: "[pass] TLB contention: 512 worker requests" in guest.log(),
                     "simultaneous shootdown senders accept each other's IPIs", 30)
+        if guest.profile.cpus > 1:
+            for kind, pages in (("unmap/remap", 8), ("unmap/remap", 48), ("decommit/commit", 8)):
+                marker = f"[pass] concurrent user VM: 64 {kind} rounds of {pages} pages refresh a pinned remote TLB"
+                guest.until(lambda: marker in guest.log() or "[FAIL] concurrent user VM" in guest.log(),
+                            f"{kind} of {pages} pages refreshes a pinned remote TLB", 90)
+                assert marker in guest.log(), guest.log()[-2000:]
+            for pages in (8, 48):
+                marker = f"[pass] concurrent user VM: 64 detaches of {pages} borrowed pages"
+                guest.until(lambda: marker in guest.log() or "[FAIL] concurrent user VM" in guest.log(),
+                            f"deterministic detach of {pages} pages never leaves a stale remote TLB entry", 90)
+                assert marker in guest.log(), guest.log()[-2000:]
+        guest.until(lambda: "[pass] concurrent user VM: 192 detaches raced" in guest.log()
+                    or "[FAIL] concurrent user VM" in guest.log(),
+                    "kernel copies racing detach never touch detached frames", 90)
+        assert "[FAIL] concurrent user VM" not in guest.log(), guest.log()[-2000:]
+        race = re.search(r"192 detaches raced (\d+) kernel copies \((\d+) clean faults\)", guest.log())
+        print(f"PASS copies racing detach: {race.group(1)} copies, {race.group(2)} clean faults", flush=True)
+        guest.until(lambda: "[pass] concurrent user VM: 8 detaches waited for an in-flight access" in guest.log()
+                    or "[FAIL] concurrent user VM" in guest.log(),
+                    "a detach waits for an access that began before it", 60)
+        assert "[FAIL] concurrent user VM" not in guest.log(), guest.log()[-2000:]
         log = guest.log()
         assert log.count("vm-probe: PASS mapping, subranges, sparse reservation, protection, reuse and capacity") == 3
         assert "[FAIL]" not in log and "vm-probe: FAIL" not in log

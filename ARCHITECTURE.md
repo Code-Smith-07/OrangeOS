@@ -1788,6 +1788,13 @@ CPUs do not. The caller must supply that mask; no scheduler-owned user
 address-space residency mask exists yet, so shared user-VM shootdown remains
 unavailable until migration and CR3-switch races are addressed.
 
+**Shared-space VM protocol (25 September 2026):** the residency mask now
+exists, and the VM syscalls re-enable interrupts, lock the address space
+while pinned, shoot down a page range on every resident CPU, unlink emptied
+tables in the same shootdown, and wait for in-flight kernel user-copies
+before freeing frames or tables. See
+[browser plan §11.30](docs/design/011-native-chromium-browser.md#1130-thread-safe-user-vm-changes-and-kernel-user-memory-access).
+
 ```
    ┌─────────────────────────────────────────────────────────────────┐
    │  Terminal 1                     Terminal 2                      │

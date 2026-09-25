@@ -12,8 +12,15 @@
 //!   2. address + length does not overflow
 //!   3. the whole range is mapped in the calling process's address space
 //!   4. the mapping permits the access being asked for
+//!
+//! Another thread of the same program may unmap the range on a different CPU
+//! while a copy runs. Each check-and-copy is therefore one address-space
+//! access (see mm/address_space.zig): frames and page tables it can reach
+//! are not freed until it ends, so a racing unmap makes the copy fault
+//! cleanly or complete against the old contents, never touch a reused frame.
 
 const vmm = @import("../mm/vmm.zig");
+const address_space = @import("../mm/address_space.zig");
 
 pub const Error = error{Fault};
 
@@ -33,8 +40,17 @@ fn rangeOk(addr: u64, len: usize) bool {
     return end[0] <= USER_MAX;
 }
 
-/// Verify a user range is mapped with the required permissions.
+/// Verify a user range is mapped with the required permissions. The answer
+/// can change as soon as this returns; a copy re-validates under its own
+/// access.
 pub fn check(pml4: u64, addr: u64, len: usize, need_write: bool) Error!void {
+    const access = address_space.beginCurrentAccess(pml4);
+    defer if (access) |a| a.end();
+    return checkInAccess(pml4, addr, len, need_write);
+}
+
+/// `check`, for a caller that has already begun an access to this space.
+pub fn checkInAccess(pml4: u64, addr: u64, len: usize, need_write: bool) Error!void {
     if (!rangeOk(addr, len)) return Error.Fault;
     if (len == 0) return;
 
@@ -53,7 +69,9 @@ pub fn check(pml4: u64, addr: u64, len: usize, need_write: bool) Error!void {
 /// Copy `len` bytes from user memory into a kernel buffer.
 pub fn copyFromUser(pml4: u64, dest: []u8, user_addr: u64, len: usize) Error!void {
     if (len > dest.len) return Error.Fault;
-    try check(pml4, user_addr, len, false);
+    const access = address_space.beginCurrentAccess(pml4);
+    defer if (access) |a| a.end();
+    try checkInAccess(pml4, user_addr, len, false);
 
     // Safe now: the range is verified mapped and user-owned. Walk it page by
     // page through the HHDM rather than dereferencing the user address, so
@@ -73,7 +91,9 @@ pub fn copyFromUser(pml4: u64, dest: []u8, user_addr: u64, len: usize) Error!voi
 /// Copy `len` bytes from a kernel buffer into user memory.
 pub fn copyToUser(pml4: u64, user_addr: u64, src: []const u8, len: usize) Error!void {
     if (len > src.len) return Error.Fault;
-    try check(pml4, user_addr, len, true);
+    const access = address_space.beginCurrentAccess(pml4);
+    defer if (access) |a| a.end();
+    try checkInAccess(pml4, user_addr, len, true);
 
     var copied: usize = 0;
     while (copied < len) {
