@@ -1385,8 +1385,60 @@ The desktop image grew to an 80 MiB disk (48 MiB filesystem) to fit it.
 
 Not provided yet: signals, `fork`/`exec` from C, environment variables,
 writable files, directories and pipes through libc, sockets through libc, and
-dynamic linking. libc++ (§11.25's next step) can now be built on this
-library.
+dynamic linking. libc++ is built on this library (§11.35).
+
+### 11.35 libc++, libc++abi and libunwind for native C++ programs
+
+C++ programs now link the LLVM 19 C++ runtime, compiled from the pinned Zig
+toolchain's copies into three static libraries:
+- `libc++`: the whole library except other platforms' support code, the
+  libdispatch backend and the time-zone database;
+- `libc++abi`: with exceptions;
+- `libunwind`.
+
+Zig configures libc++ with `-D` flags instead of `__config_site`, and the
+build follows that for a musl target: pthread threading, the musl locale
+backend, the serial PSTL backend, and no vendor availability markup. It also
+defines `_GNU_SOURCE`, which clang's Linux driver would supply and without
+which musl hides the POSIX declarations that libc++ uses under
+`-std=c++NN`. Two details the freestanding user target needed:
+- `-fhosted` undoes Zig's `-ffreestanding`;
+- the libc++ headers go on the `-I` path ahead of Zig's builtin C headers,
+  which they wrap with `#include_next`.
+
+Exceptions use the normal zero-cost path. C and C++ programs on musl link
+with a new script, `userland/libs/musl-orange/program.ld`. It keeps
+`.eh_frame`, `.gcc_except_table` and the linker-built `.eh_frame_hdr`, whose
+`PT_GNU_EH_FRAME` header libunwind finds through musl's static
+`dl_iterate_phdr`. That function reads the program-header copy the kernel
+passes as `AT_PHDR` (§11.34), so no kernel change was needed. The script
+also collects `.fini_array` for static destructors. Thread-safe statics use
+libc++abi's mutex-and-condition-variable guard, and `std::thread` is musl
+pthreads.
+
+Verified on 2026-09-25 inside the full runtime suite (47 checks, two and four
+vCPUs), plus the desktop interaction suite. `/bin/cxx-probe` is C++20 built
+with `-Wall -Wextra -Werror`. It checks:
+- a throw through 17 frames caught by base class, with every frame's
+  destructor run;
+- catch-all rethrow and library-thrown `std::out_of_range`;
+- `std::bad_alloc` from a failed 64 TiB `new`, and `exception_ptr`;
+- `dynamic_cast`, `typeid` and `std::bad_cast`;
+- vector, sort, map and unordered_map;
+- `ostringstream`, `std::format`, `stod`, and `ifstream` of `/etc/motd`;
+- one construction of a static that four threads race to initialize;
+- four `std::thread`s under a mutex and a condition variable;
+- an exception carried out of a thread by `std::future`, and `std::async`;
+- `sleep_for` measured by `steady_clock`.
+
+The binary is 0.95 MB statically linked (ReleaseSafe).
+
+Not provided yet: `std::random_device` (no `/dev/urandom` or `getrandom`),
+`std::filesystem` beyond what the read-only filesystem allows, time zones,
+and shared libraries. This covers the C++ runtime requirement in §11.25 and
+the runtime row in the source inventory. It does not cover the rest of
+Chromium's build: its own pinned libc++ revision, GN target configuration,
+and the platform layer.
 
 ## 12. Security updates and distribution
 

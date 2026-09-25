@@ -152,6 +152,13 @@ export fn _start() callconv(.c) noreturn {
             pulp.exit(177);
         }
         pulp.puts("runtime: PASS C program on musl\n");
+        const cxx_program = pulp.spawn("/bin/cxx-probe") catch pulp.exit(178);
+        const cxx_code = pulp.wait(cxx_program) catch pulp.exit(179);
+        if (cxx_code != 0) {
+            pulp.print("runtime: FAIL libc++ program exit {d}\n", .{cxx_code});
+            pulp.exit(180);
+        }
+        pulp.puts("runtime: PASS C++ program on libc++\n");
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.
         for (0..2) |_| {
