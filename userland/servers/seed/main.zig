@@ -187,6 +187,13 @@ export fn _start() callconv(.c) noreturn {
             pulp.exit(192);
         }
         pulp.puts("runtime: PASS epoll, poll and select\n");
+        const unix_program = pulp.spawn("/bin/unix-probe") catch pulp.exit(193);
+        const unix_code = pulp.wait(unix_program) catch pulp.exit(194);
+        if (unix_code != 0) {
+            pulp.print("runtime: FAIL socket pairs exit {d}\n", .{unix_code});
+            pulp.exit(195);
+        }
+        pulp.puts("runtime: PASS socket pairs and descriptor passing\n");
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.
         for (0..2) |_| {

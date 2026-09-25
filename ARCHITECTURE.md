@@ -1419,6 +1419,10 @@ link musl 1.2.5, whose Linux-numbered calls are translated in userland by
 | 135 | `epoll_ctl` | `(epfd, op, fd, *event) → !void` — op 1 add, 2 delete, 3 modify; event is Linux's packed `{u32 events, u64 data}`; EPOLLET and EPOLLONESHOT supported; regular files refused (implemented) | P5 runtime |
 | 136 | `epoll_wait` | `(epfd, *events, max, timeout_ms) → count` — at most 128 per call; -1 waits indefinitely (implemented) | P5 runtime |
 | 137 | `poll` | `(*pollfd, nfds, timeout_ms) → count` — at most 1024 entries (implemented) | P5 runtime |
+| 138 | `socketpair` | `(type, flags, *[2]i32) → !void` — 1 stream, 2 datagram, 5 seqpacket; flags as for `pipe` (implemented) | P5 runtime |
+| 139 | `sendmsg` | `(fd, *{iov, iov_count, fds, fd_count: u32, flags: u32}, flags) → count` — passes up to 64 descriptions; flag 1 don't wait (implemented) | P5 runtime |
+| 140 | `recvmsg` | `(fd, *message, flags) → count` — installs received descriptions and writes back how many; message flags 1 truncated, 2 descriptions dropped; flags 1 don't wait, 2 close-on-exec (implemented) | P5 runtime |
+| 141 | `shutdown` | `(fd, how) → !void` — 0 read, 1 write, 2 both (implemented) | P5 runtime |
 | | **── Threads ──** | | |
 | 40 | `thread_create` | `(entry, stack, arg, tls_base, exit_word) → tid` (implemented; `entry(arg)` in ring 3, kernel stores 0 to `exit_word` and wakes it at thread exit) | P4 runtime |
 | 41 | `thread_exit` | `(status) noreturn` — ends the calling thread; the last thread's status becomes the program's (implemented) | P4 runtime |

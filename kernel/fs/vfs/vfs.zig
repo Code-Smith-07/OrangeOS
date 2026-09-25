@@ -43,6 +43,7 @@ pub const Error = error{
     Interrupted,
     NotSeekable,
     OutOfMemory,
+    MessageTooLong,
 };
 
 pub const MAX_PATH = 256;

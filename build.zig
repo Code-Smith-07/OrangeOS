@@ -323,6 +323,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "thread-capacity", .sources = &.{"userland/bin/thread-capacity/probe.c"} },
         .{ .name = "pipe-probe", .sources = &.{"userland/bin/pipe-probe/probe.c"} },
         .{ .name = "epoll-probe", .sources = &.{"userland/bin/epoll-probe/probe.c"} },
+        .{ .name = "unix-probe", .sources = &.{"userland/bin/unix-probe/probe.c"} },
     };
     for (c_programs) |program| {
         const mod = b.createModule(.{

@@ -446,7 +446,7 @@ named hold the evidence.
 | # | Item | Status |
 |---|---|---|
 | A1 | Browser-scale task table and per-program thread capacity | Done (§11.38) |
-| A2 | Pipes, `socketpair`/Unix sockets with descriptor passing, `poll`/`epoll`, `eventfd` | Descriptions, `dup`, pipes, `eventfd` (§11.39) and `epoll`/`poll`/`select` (§11.40) done; `socketpair` with descriptor passing in progress |
+| A2 | Pipes, `socketpair`/Unix sockets with descriptor passing, `poll`/`epoll`, `eventfd` | Done (§11.39–§11.41); passing between *processes* needs A3's inherited descriptors; named Unix sockets deferred to B8 |
 | A3 | POSIX process launch (`posix_spawn`: argv, environment, inherited descriptors), `chdir`, `*at()` relative to directory descriptors | To do |
 | A4 | Shared memory by descriptor (`memfd`, `mmap(MAP_SHARED)`), file mappings | To do |
 | A5 | V8/PartitionAlloc memory: `MAP_FIXED` and hints within reservations, alignment, `madvise(DONTNEED)`, `mremap` | Region capacity and arena size done (§11.38); the rest to do |
@@ -1798,6 +1798,59 @@ plus the desktop and Files suites. `/bin/epoll-probe` (C, `-Werror`) checks:
 - `poll`: `POLLNVAL`, a blocking wake, `POLLHUP`, and `poll(NULL, 0, 20)` as a
   sleep;
 - `select` with and without a ready descriptor.
+
+### 11.41 Socket pairs and descriptor passing
+
+This completes item A2. Mojo, Chromium's IPC system, runs over connected
+local sockets and moves descriptors between processes with `SCM_RIGHTS`.
+
+`kernel/ipc/unix_socket.zig` implements connected pairs (`socketpair`):
+- **Queues.** One queue per direction, 256 KiB each. A segment is one send's
+  data plus the open file descriptions sent with it, each held by its own
+  reference while in flight.
+- **Stream sockets** deliver bytes in order and may join or split sends. A
+  read never runs from plain data into a segment that carries descriptions;
+  those arrive with the first bytes read from their segment, as on Linux.
+- **Seqpacket and datagram sockets** keep message boundaries and truncate a
+  message longer than the reader's buffer (`MSG_TRUNC`).
+- **Receiving descriptions.** The receiver's system call installs arrived
+  descriptions into its own table. Those that do not fit the control buffer
+  are closed and `MSG_CTRUNC` is set, exactly as Linux sizes it (the space
+  for two descriptors holds two).
+- **Closing and shutdown.** Closing an end discards what was sent to it,
+  releasing descriptions in flight. The peer sees end of file, or `EPIPE`
+  when sending. `shutdown` half-closes. Readiness supports epoll, including
+  `EPOLLRDHUP`.
+- **Limitation.** A socket sent through its own queue stays alive until the
+  other end closes; there is no cycle collector.
+
+The kernel takes a native message: an iovec array plus an i32 descriptor
+array. musl's translation parses and builds Linux `msghdr`/`cmsghdr`
+(`SCM_RIGHTS` only) and maps `MSG_DONTWAIT` and `MSG_CMSG_CLOEXEC`
+(`MSG_NOSIGNAL` means nothing without signals). `send`/`recv`/`sendto`/
+`recvfrom` without addresses work on pairs; `read`/`write` also work and
+close any descriptions that arrive. `socket()` itself honestly returns
+`EAFNOSUPPORT` until BSD sockets arrive (B8). Native calls: 138–141.
+
+Verified on 2026-09-25: full runtime suite (54 checks) on two and four
+vCPUs, plus the desktop and Files suites. `/bin/unix-probe` (C, `-Werror`)
+checks:
+- stream partial and joined reads, and `S_ISSOCK`;
+- a pipe end moved through a pair, so closing the only copy gives the pipe
+  end of file;
+- a passed file sharing its offset;
+- plain data not merged with a later rights message;
+- `MSG_CTRUNC` closing the dropped description, and `MSG_CMSG_CLOEXEC`;
+- `EAGAIN` and a 256 KiB queue;
+- epoll `EPOLLIN`/`EPOLLRDHUP`, shutdown end of file, and `EPIPE`;
+- seqpacket boundaries and `MSG_TRUNC`, datagrams, and `EAFNOSUPPORT` for
+  non-local pairs;
+- 200 Mojo-like rounds between threads, each passing a new pipe end;
+- a description still in flight released when both ends close, with no
+  descriptor leaked.
+
+Passing descriptors between *processes* works the same way, but a second
+process can only get a socket end by inheriting it, which is item A3.
 
 ## 12. Security updates and distribution
 
