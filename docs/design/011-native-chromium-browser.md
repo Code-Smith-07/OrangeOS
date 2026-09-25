@@ -1263,6 +1263,50 @@ two CPUs can already race today, even from separate programs — and needs
 serialization before multi-threaded network clients. The task registry is
 still 64 slots shared by all threads.
 
+### 11.32 Serialized network stack with interruptible waits
+
+The kernel network stack (e1000 rings, receive buffer, ARP cache, UDP
+sockets, ICMP reply records, TCP connections, DNS/DHCP ids) now sits behind
+one lock in `kernel/net/net.zig`, held only for bounded steps. Waits no longer
+busy-spin: every wait polls under the lock, drops it and sleeps 1 ms
+(`waitStep`), stopping at its deadline or when the program is exiting.
+Blocking ARP resolution happens only at the start of an operation, outside
+the lock; sends made under the lock use the cache and on a miss request the
+address and report no route (TCP retransmits). Each ping uses a fresh ICMP
+identifier matched against a small reply table, so concurrent pings never
+consume each other's replies (off-subnet pings now resolve the gateway, not
+the destination). UDP receive copies the datagram out under the lock instead
+of returning a pointer into a buffer the next arrival overwrites. TCP slots
+carry a generation, so a wait whose connection was closed and reused by
+another thread reports `NotConnected`.
+
+This fixes a crash introduced by the combination of threads and the old
+busy-waits: a thread spinning in a network syscall with interrupts masked
+could not acknowledge another thread's `munmap` shootdown. The new
+`net-thread-probe` reproduces it — on the previous network code it ends in
+`KERNEL PANIC: TLB shootdown timeout`; on the new code about 150–200k
+unmaps complete while a sibling waits three seconds for a ping to TEST-NET-1.
+
+Runtime-test builds now start PID 1 only after the kernel probes finish: the
+pinned-reader probes hold a CPU for seconds by design, which (depending on
+timing) confined userland probes to one CPU and failed their CPU-coverage
+checks.
+
+Verified on 2026-09-25, full runtime suite on 3 GiB with two and four vCPUs
+(42 checks each): 2 × (24/24 concurrent gateway pings from three threads plus
+UDP socket churn from two threads, and unmaps during a 3 s network wait);
+3 × program exit interrupting a 5 s ping in well under 2.5 s; 2 × two threads
+each fetching 6000 verified bytes over concurrent TCP connections from a
+loopback fixture served by `tools/runtime_smoke.py` (the guest reaches the
+host as 10.0.2.2:38457); boot DHCP, ARP and 4/4 gateway pings. The desktop
+interaction suite passed on the 3 GiB and 4 GiB profiles.
+
+This is correctness for concurrent use of the existing stack, not the
+browser's network service: there is still no interrupt-driven receive, no
+readiness API, no non-blocking sockets, no TLS and one-segment TCP windows.
+Replies are observed between 1 ms sleeps, so latency figures have that
+granularity.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,

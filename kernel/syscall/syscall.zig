@@ -1079,8 +1079,8 @@ fn sysUdpSend(sock: u64, dst: u64, port: u64, buf_and_len: u64) i64 {
 fn sysUdpRecv(sock: u64, buf: u64, len: u64) i64 {
     const task = sched.currentTask() orelse return EIO;
     if (!net.socketOwnedBy(@intCast(sock), task.ownerId())) return EBADF;
-    net.poll();
-    const d = net.recvFrom(@intCast(sock)) orelse return EAGAIN;
+    var d: net.Datagram = undefined;
+    if (!net.pollReceive(@intCast(sock), &d)) return EAGAIN;
 
     const n = @min(len, d.len);
     const pml4 = vmm.currentCr3();

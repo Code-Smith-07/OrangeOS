@@ -5,7 +5,40 @@ Build: zig build -Dmm-test -Druntime-test -Ddesktop-profile; scripts/mkdisk.sh
 """
 import re
 import argparse
+import socketserver
+import threading
 from desktop_smoke import Guest
+
+# The guest's tcp-probe reaches this through QEMU's host alias 10.0.2.2.
+# Loopback only; the port is fixed because guest programs take no arguments.
+TCP_FIXTURE_PORT = 38457
+TCP_PAYLOAD = 6000
+
+
+class TcpFixture(socketserver.StreamRequestHandler):
+    """Answer "orange-tcp <token>" with a payload derived from the token."""
+
+    def handle(self):
+        parts = self.rfile.readline(64).decode("ascii", "replace").split()
+        if len(parts) != 2 or parts[0] != "orange-tcp" or not parts[1].isdigit():
+            return
+        token = int(parts[1]) & 0xFF
+        self.wfile.write(bytes((i * 31 + token) & 0xFF for i in range(TCP_PAYLOAD)))
+        with self.server.lock:
+            self.server.served += 1
+
+
+class FixtureServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.served = 0
+        try:
+            super().__init__(("127.0.0.1", TCP_FIXTURE_PORT), TcpFixture)
+        except OSError as error:
+            raise SystemExit(f"TCP fixture port 127.0.0.1:{TCP_FIXTURE_PORT} unavailable: {error}")
 
 
 def main():
@@ -15,6 +48,8 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.orphan_waves <= 1024:
         parser.error("--orphan-waves must be 1..1024")
+    fixture = FixtureServer()
+    threading.Thread(target=fixture.serve_forever, daemon=True).start()
     guest = Guest()
     print(f"Evidence: {guest.output}", flush=True)
     try:
@@ -123,6 +158,17 @@ def main():
         assert guest.log().count("[app fault]") == 8, guest.log().count("[app fault]")
         guest.until(lambda: "runtime: PASS a program outlives its first thread" in guest.log(),
                     "the last thread's status becomes the program's", 60)
+        guest.until(lambda: "runtime: PASS threads share the network stack" in guest.log(),
+                    "threads share the network stack; long waits accept shootdowns", 120)
+        assert guest.log().count("net-thread-probe: PASS 24/24 concurrent pings") == 2, guest.log()[-1500:]
+        unmaps = re.findall(r"UDP churn, (\d+) unmaps during a 3 s network wait", guest.log())
+        print(f"PASS concurrent pings and UDP churn; unmaps during network waits: {unmaps}", flush=True)
+        guest.until(lambda: "runtime: PASS program exit interrupts a network wait" in guest.log(),
+                    "program exit interrupts a network wait", 60)
+        guest.until(lambda: "runtime: TCP probes finished" in guest.log(), "concurrent TCP fetches from the host fixture", 90)
+        assert guest.log().count("tcp-probe: PASS 2 threads each fetched 6000 verified bytes concurrently") == 2, guest.log()[-1500:]
+        assert fixture.served == 4, fixture.served
+        print("PASS two threads fetch verified payloads over concurrent TCP connections, twice", flush=True)
         guest.until(lambda: "runtime: PASS 96 child reaps, slot reuse and wait ownership" in guest.log(),
                     "96 child reaps, slot reuse and wait ownership", 90)
         guest.until(lambda: "runtime: PASS full task table rejects spawn and recovers after reaping" in guest.log(),
@@ -148,6 +194,8 @@ def main():
         raise
     finally:
         guest.close()
+        fixture.shutdown()
+        fixture.server_close()
 
 
 if __name__ == "__main__":

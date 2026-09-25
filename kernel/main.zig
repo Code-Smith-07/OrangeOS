@@ -148,6 +148,9 @@ export fn kmain() callconv(.c) noreturn {
     if (build_options.fs_test) fs_test.run();
 
     if (build_options.sched_test) sched_test.spawnAll();
+    // Runtime-test builds run the kernel probes first: they pin CPUs for
+    // seconds by design, which would skew the CPU-coverage checks of the
+    // userland probes PID 1 starts. The probe task starts PID 1 when done.
     if (build_options.runtime_test) {
         _ = sched.spawn("tlb-probe", tlb_test.run, null, .normal) catch {};
     }
@@ -170,7 +173,7 @@ export fn kmain() callconv(.c) noreturn {
     if (build_options.budget) {
         _ = sched.spawn("budget", budgetThread, null, .batch) catch {};
     }
-    _ = process.spawnInit() catch |e| {
+    if (!build_options.runtime_test) _ = process.spawnInit() catch |e| {
         fbcon.reclaim();
         console.err("could not spawn init: {s}", .{@errorName(e)});
     };

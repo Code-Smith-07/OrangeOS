@@ -223,6 +223,35 @@ export fn _start() callconv(.c) noreturn {
             }
         }
         pulp.puts("runtime: PASS a program outlives its first thread and exits with the last thread's status\n");
+        for (0..2) |_| {
+            const child = pulp.spawn("/bin/net-thread-probe") catch pulp.exit(163);
+            const code = pulp.wait(child) catch pulp.exit(164);
+            if (code != 0) {
+                pulp.print("runtime: FAIL network thread probe exit {d}\n", .{code});
+                pulp.exit(165);
+            }
+        }
+        pulp.puts("runtime: PASS threads share the network stack and long network waits accept shootdowns\n");
+        for (0..3) |_| {
+            const started = pulp.uptimeMs();
+            const child = pulp.spawn("/bin/net-exit-probe") catch pulp.exit(166);
+            const code = pulp.wait(child) catch pulp.exit(167);
+            const elapsed = pulp.uptimeMs() - started;
+            if (code != 7 or elapsed >= 2500) {
+                pulp.print("runtime: FAIL network exit probe exit {d} after {d} ms\n", .{ code, elapsed });
+                pulp.exit(168);
+            }
+        }
+        pulp.puts("runtime: PASS program exit interrupts a network wait\n");
+        for (0..2) |_| {
+            const child = pulp.spawn("/bin/tcp-probe") catch pulp.exit(169);
+            const code = pulp.wait(child) catch pulp.exit(170);
+            if (code != 0) {
+                pulp.print("runtime: FAIL TCP probe exit {d}\n", .{code});
+                pulp.exit(171);
+            }
+        }
+        pulp.puts("runtime: TCP probes finished\n");
         // More than the registry's 64 concurrent slots must be possible over
         // the machine's lifetime once each child has been waited/reaped.
         for (0..96) |_| {
