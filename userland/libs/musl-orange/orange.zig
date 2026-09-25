@@ -47,6 +47,10 @@ const OR = struct {
     const dup = 131;
     const fd_control = 132;
     const eventfd = 133;
+    const epoll_create = 134;
+    const epoll_ctl = 135;
+    const epoll_wait = 136;
+    const poll = 137;
     const thread_create = 40;
     const thread_exit = 41;
     const gettid = 45;
@@ -116,6 +120,16 @@ const SYS = struct {
     const rt_sigaction = 13;
     const rt_sigprocmask = 14;
     const ioctl = 16;
+    const poll = 7;
+    const select = 23;
+    const epoll_create = 213;
+    const epoll_wait = 232;
+    const epoll_ctl = 233;
+    const pselect6 = 270;
+    const ppoll = 271;
+    const epoll_pwait = 281;
+    const epoll_create1 = 291;
+    const epoll_pwait2 = 441;
     const pipe = 22;
     const dup = 32;
     const dup2 = 33;
@@ -411,6 +425,88 @@ fn vectored(nr: u64, fd: u64, vec: u64, count: u64) i64 {
     return total;
 }
 
+// ── Readiness ───────────────────────────────────────────────────────────────
+
+/// A `struct timespec *` timeout in milliseconds, rounded up; null pointer
+/// means wait indefinitely (-1). Invalid values give null.
+fn timeoutMs(address: u64) ?u64 {
+    if (address == 0) return @bitCast(@as(i64, -1));
+    const ts: *const Timespec = @ptrFromInt(address);
+    if (ts.sec < 0 or ts.nsec < 0 or ts.nsec >= 1_000_000_000) return null;
+    const ms = @as(u64, @intCast(ts.sec)) * 1000 + (@as(u64, @intCast(ts.nsec)) + 999_999) / 1_000_000;
+    return @min(ms, std.math.maxInt(i32));
+}
+
+/// A `struct timeval *` timeout, as timeoutMs.
+fn timevalMs(address: u64) ?u64 {
+    const tv: *const [2]i64 = @ptrFromInt(address);
+    if (tv[0] < 0 or tv[1] < 0 or tv[1] >= 1_000_000) return null;
+    const ms = @as(u64, @intCast(tv[0])) * 1000 + (@as(u64, @intCast(tv[1])) + 999) / 1000;
+    return @min(ms, std.math.maxInt(i32));
+}
+
+const PollFd = extern struct { fd: i32, events: i16, revents: i16 };
+const POLLIN: i16 = 0x001;
+const POLLPRI: i16 = 0x002;
+const POLLOUT: i16 = 0x004;
+const POLLERR: i16 = 0x008;
+const POLLHUP: i16 = 0x010;
+const POLLNVAL: i16 = 0x020;
+const FD_SETSIZE = 1024;
+
+fn inSet(set: u64, fd: usize) bool {
+    if (set == 0) return false;
+    const words: [*]const u64 = @ptrFromInt(set);
+    return words[fd / 64] & (@as(u64, 1) << @intCast(fd % 64)) != 0;
+}
+
+fn addToSet(set: u64, fd: usize) void {
+    const words: [*]u64 = @ptrFromInt(set);
+    words[fd / 64] |= @as(u64, 1) << @intCast(fd % 64);
+}
+
+/// select/pselect on top of poll. `timeout` null: invalid; the sentinel
+/// maxInt(u64) (from a null pointer): indefinite.
+fn select(nfds: u64, readers: u64, writers: u64, exceptions: u64, timeout: ??u64) i64 {
+    if (nfds > FD_SETSIZE) return err(E.INVAL);
+    const ms: u64 = if (timeout) |t| (t orelse return err(E.INVAL)) else @bitCast(@as(i64, -1));
+    var fds: [FD_SETSIZE]PollFd = undefined;
+    var count: usize = 0;
+    for (0..@intCast(nfds)) |fd| {
+        var events: i16 = 0;
+        if (inSet(readers, fd)) events |= POLLIN;
+        if (inSet(writers, fd)) events |= POLLOUT;
+        if (inSet(exceptions, fd)) events |= POLLPRI;
+        if (events == 0) continue;
+        fds[count] = .{ .fd = @intCast(fd), .events = events, .revents = 0 };
+        count += 1;
+    }
+    const r = raw3(OR.poll, @intFromPtr(&fds), count, ms);
+    if (r < 0) return r;
+    const words = (nfds + 63) / 64;
+    for ([_]u64{ readers, writers, exceptions }) |set| {
+        if (set != 0) @memset(@as([*]u64, @ptrFromInt(set))[0..@intCast(words)], 0);
+    }
+    var ready: i64 = 0;
+    for (fds[0..count]) |entry| {
+        if (entry.revents & POLLNVAL != 0) return err(E.BADF);
+        const fd: usize = @intCast(entry.fd);
+        if (entry.events & POLLIN != 0 and entry.revents & (POLLIN | POLLHUP | POLLERR) != 0) {
+            addToSet(readers, fd);
+            ready += 1;
+        }
+        if (entry.events & POLLOUT != 0 and entry.revents & (POLLOUT | POLLERR) != 0) {
+            addToSet(writers, fd);
+            ready += 1;
+        }
+        if (entry.events & POLLPRI != 0 and entry.revents & POLLPRI != 0) {
+            addToSet(exceptions, fd);
+            ready += 1;
+        }
+    }
+    return ready;
+}
+
 // ── Futexes ─────────────────────────────────────────────────────────────────
 
 const FUTEX_WAIT = 0;
@@ -501,7 +597,7 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
     const d: u64 = @bitCast(a4);
     const e: u64 = @bitCast(a5);
     const f: u64 = @bitCast(a6);
-    return switch (n) {
+    return dispatch: switch (n) {
         SYS.read => raw3(OR.read, a, b, @min(c, 4096)),
         SYS.write => raw3(OR.write, a, b, @min(c, 4096)),
         SYS.pread64 => raw(OR.pread, a, b, @min(c, 4096), d, 0),
@@ -602,6 +698,17 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
         SYS.dup2 => raw3(OR.dup, a, b, 0),
         // dup3 differs from dup2 only in refusing old == new.
         SYS.dup3 => if (a == b or c & ~O_CLOEXEC != 0) err(E.INVAL) else raw3(OR.dup, a, b, fdFlags(c)),
+        SYS.poll => raw3(OR.poll, a, b, @bitCast(@as(i64, @as(i32, @truncate(a3))))),
+        SYS.ppoll => raw3(OR.poll, a, b, timeoutMs(c) orelse break :dispatch err(E.INVAL)),
+        SYS.select => select(a, b, c, d, if (e == 0) null else timevalMs(e)),
+        SYS.pselect6 => select(a, b, c, d, if (e == 0) null else timeoutMs(e)),
+        // A size argument, ignored as Linux does, but it must be positive.
+        SYS.epoll_create => if (a1 <= 0) err(E.INVAL) else raw1(OR.epoll_create, 0),
+        SYS.epoll_create1 => if (a & ~O_CLOEXEC != 0) err(E.INVAL) else raw1(OR.epoll_create, fdFlags(a)),
+        SYS.epoll_ctl => raw(OR.epoll_ctl, a, b, c, d, 0),
+        // No signals are ever delivered, so the pwait masks change nothing.
+        SYS.epoll_wait, SYS.epoll_pwait => raw(OR.epoll_wait, a, b, c, @bitCast(@as(i64, @as(i32, @truncate(a4)))), 0),
+        SYS.epoll_pwait2 => raw(OR.epoll_wait, a, b, c, timeoutMs(d) orelse break :dispatch err(E.INVAL), 0),
         SYS.eventfd => raw2(OR.eventfd, a, 0),
         SYS.eventfd2 => blk: {
             const semaphore: u64 = 1; // EFD_SEMAPHORE

@@ -1415,6 +1415,10 @@ link musl 1.2.5, whose Linux-numbered calls are translated in userland by
 | 131 | `dup` | `(old, new, flags) → fd` — `new` = -1 takes the lowest free descriptor ≥ 3, otherwise exactly `new` (dup2); flag 2 close-on-exec (implemented) | P5 runtime |
 | 132 | `fd_control` | `(fd, cmd, arg) → value` — 0 DUPFD, 1 DUPFD_CLOEXEC, 2 GETFD, 3 SETFD, 4 GETFL, 5 SETFL (append, nonblocking) (implemented) | P5 runtime |
 | 133 | `eventfd` | `(initial, flags) → fd` — flags 1 nonblocking, 2 close-on-exec, 4 semaphore (implemented) | P5 runtime |
+| 134 | `epoll_create` | `(flags) → fd` — flag 2 close-on-exec (implemented) | P5 runtime |
+| 135 | `epoll_ctl` | `(epfd, op, fd, *event) → !void` — op 1 add, 2 delete, 3 modify; event is Linux's packed `{u32 events, u64 data}`; EPOLLET and EPOLLONESHOT supported; regular files refused (implemented) | P5 runtime |
+| 136 | `epoll_wait` | `(epfd, *events, max, timeout_ms) → count` — at most 128 per call; -1 waits indefinitely (implemented) | P5 runtime |
+| 137 | `poll` | `(*pollfd, nfds, timeout_ms) → count` — at most 1024 entries (implemented) | P5 runtime |
 | | **── Threads ──** | | |
 | 40 | `thread_create` | `(entry, stack, arg, tls_base, exit_word) → tid` (implemented; `entry(arg)` in ring 3, kernel stores 0 to `exit_word` and wakes it at thread exit) | P4 runtime |
 | 41 | `thread_exit` | `(status) noreturn` — ends the calling thread; the last thread's status becomes the program's (implemented) | P4 runtime |

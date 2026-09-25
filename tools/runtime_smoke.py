@@ -132,6 +132,9 @@ def main():
                     or "runtime: FAIL pipes and descriptors" in guest.log(), "pipes, eventfd and descriptor duplication", 120)
         assert re.search(r"pipe-probe: PASS pipes \(EOF, EPIPE, nonblocking, 64 KiB, 1 MiB stream, atomic writes from 4 threads\), "
                          r"eventfd, dup family and 25[0-3] descriptors", guest.log()), guest.log()[-2000:]
+        guest.until(lambda: "runtime: PASS epoll, poll and select" in guest.log() or "epoll-probe: FAIL" in guest.log()
+                    or "runtime: FAIL readiness" in guest.log(), "epoll, poll and select", 120)
+        assert "epoll-probe: PASS level/edge/oneshot, OUT/HUP/ERR, blocking and timed waits, removal on close, eventfd pump, 64 pipes, poll and select" in guest.log(), guest.log()[-2000:]
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]
