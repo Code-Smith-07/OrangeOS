@@ -149,7 +149,11 @@ fn freeUnlocked(ptr: [*]u8, caller: usize) void {
         return;
     }
 
-    if (std.debug.runtime_safety) @memset(ptr[0 .. SIZE_CLASSES[hdr.class] - HEADER_SIZE], POISON);
+    if (std.debug.runtime_safety) {
+        @memset(ptr[0 .. SIZE_CLASSES[hdr.class] - HEADER_SIZE], POISON);
+        // Who freed it: a use after free that reads this word can name them.
+        @as(*align(1) usize, @ptrCast(ptr)).* = caller;
+    }
     caches[hdr.class].free(raw);
 }
 

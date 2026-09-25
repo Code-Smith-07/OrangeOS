@@ -57,6 +57,8 @@ const Queue = struct {
     tail: ?*Task = null,
 
     fn push(self: *Queue, t: *Task) void {
+        if (t.on_run_queue or t.state == .running or t.state == .zombie) schedulerBug("pushed twice or while running/exited", t);
+        t.on_run_queue = true;
         t.next = null;
         if (self.tail) |tail| {
             tail.next = t;
@@ -72,6 +74,8 @@ const Queue = struct {
         self.head = t.next;
         if (self.head == null) self.tail = null;
         t.next = null;
+        t.on_run_queue = false;
+        if (t.state != .ready) schedulerBug("dequeued a task that is not ready", t);
         return t;
     }
 
@@ -81,6 +85,17 @@ const Queue = struct {
 };
 
 var queues: [task_mod.LEVEL_COUNT]Queue = [_]Queue{.{}} ** task_mod.LEVEL_COUNT;
+
+/// A broken scheduler invariant: report the task on the lock-free emergency
+/// path (the console lock may be held) and stop.
+fn schedulerBug(what: []const u8, t: *const Task) noreturn {
+    @branchHint(.cold);
+    var line: [192]u8 = undefined;
+    console.emergencyWrite(std.fmt.bufPrint(&line, "SCHED BUG: {s}: task 0x{x} tid {d} state {s} queued {} waiting {} sleeping {}\n", .{
+        what, @intFromPtr(t), t.tid, @tagName(t.state), t.on_run_queue, t.on_wait_list, t.wake_at_ns != 0,
+    }) catch "SCHED BUG\n");
+    @panic("scheduler invariant broken");
+}
 var lock: spinlock.SpinLock = .{};
 
 var task_count: usize = 0;
@@ -295,10 +310,14 @@ pub fn taskExitCode(t: *Task) ?i32 {
 export fn threadTrampoline() callconv(.c) void {
     // The switch that got us here released the run-queue lock on the previous
     // CPU's behalf but left interrupts masked. A new thread starts with them on.
+    // Identify the thread before enabling interrupts. Once they are on it can
+    // be preempted and resumed on another CPU, whose own current task is not
+    // this one; reading `cpu().current` then ran another thread's entry with
+    // that thread's (long since consumed) argument.
+    const t = currentOf(cpu()) orelse unreachable;
     lock.release();
     io.sti();
 
-    const t = currentOf(cpu()) orelse unreachable;
     t.entry(t.arg);
     exit(0);
 }
@@ -700,6 +719,9 @@ pub fn exit(code: i32) noreturn {
 
     const c = cpu();
     std.debug.assert(currentOf(c) == t);
+    // Once reaped, a task still linked as a waiter or sleeper would be a
+    // dangling pointer that a later wake queues again.
+    if (t.on_wait_list or t.wake_at_ns != 0 or t.on_run_queue) schedulerBug("exiting while still linked", t);
     t.exit_code = code;
     t.state = .zombie;
     if (process) |p| {
@@ -709,6 +731,11 @@ pub fn exit(code: i32) noreturn {
             if (!p.exiting) p.exit_code = code;
             p.exited = true;
             orphanChildrenLocked(p.pid);
+            _ = wakeChannelLocked(@intFromPtr(p), std.math.maxInt(usize));
+        } else if (t.isLeader() and p.exited) {
+            // The last thread published the exit while this leader was still
+            // on its way here; the leader only now becomes collectable, and a
+            // parent that looked in between is asleep on the process channel.
             _ = wakeChannelLocked(@intFromPtr(p), std.math.maxInt(usize));
         }
     } else {
@@ -772,8 +799,10 @@ pub fn startAp() noreturn {
     unreachable;
 }
 
+/// Safe to call with interrupts enabled (see percpu.currentTask).
 pub fn currentTask() ?*Task {
-    return currentOf(cpu());
+    const p = percpu.currentTask() orelse return null;
+    return @ptrCast(@alignCast(p));
 }
 
 /// The user program the running thread belongs to; null for kernel tasks.

@@ -90,6 +90,9 @@ def main():
                     or "[FAIL] concurrent user VM" in guest.log(),
                     "a detach waits for an access that began before it", 60)
         assert "[FAIL] concurrent user VM" not in guest.log(), guest.log()[-2000:]
+        guest.until(lambda: "[pass] current task: " in guest.log() or "[FAIL] current task" in guest.log(),
+                    "current-thread identity across migration", 60)
+        assert "[pass] current task: 1600 reads after resuming name the reader" in guest.log(), guest.log()[-2000:]
         log = guest.log()
         assert log.count("vm-probe: PASS mapping, subranges, sparse reservation, protection, reuse and capacity") == 3
         assert "[FAIL]" not in log and "vm-probe: FAIL" not in log

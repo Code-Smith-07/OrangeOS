@@ -1043,9 +1043,10 @@ A recurrence on 2026-09-25 (four vCPUs, during `thread-probe`) located it:
 `class` whose value was a kernel-stack address. That points at a heap object
 freed twice, or written after free, with its memory reused in between, most
 likely a page-backed object (process record, address space or IPC message,
-8 KiB blocks) whose pages became part of a kernel stack. The root cause is
-still open. Heap headers now carry a live magic that is checked and cleared
-on free, and freed payloads are poisoned in safety builds. An invalid free
+8 KiB blocks) whose pages became part of a kernel stack. (The root cause was
+found later the same day: §11.36.) Heap headers now carry a live magic that
+is checked and cleared on free, and freed payloads are poisoned in safety
+builds. An invalid free
 prints the object, the header and the freeing caller. Panics and CPU exceptions
 also print a lock-free frame-pointer backtrace on emergency serial. Five
 consecutive four-vCPU runs and one two-vCPU run of the full runtime suite
@@ -1439,6 +1440,58 @@ and shared libraries. This covers the C++ runtime requirement in §11.25 and
 the runtime row in the source inventory. It does not cover the rest of
 Chromium's build: its own pinned libc++ revision, GN target configuration,
 and the platform layer.
+
+### 11.36 Root cause of the intermittent kernel panic: per-CPU reads under preemption
+
+The heap diagnostics of §11.26 caught the panic again, on four vCPUs during
+later filesystem work. `spawnThread` sliced a `SpawnRequest` path with a
+length of `0xDFDFDFDFDFDFDFDF`, which is the heap's free poison, so the request had
+already been freed. The run log showed it was not a new spawn: the parent
+had not yet printed the line it prints before spawning again. A running
+thread had executed another thread's entry function.
+
+The kernel read "the current task" in two steps: `percpu.this()`, which
+finds the CPU through GS, then that block's `current`. `threadTrampoline`
+did this *after* enabling interrupts. A new thread preempted between the two
+steps and resumed on another CPU got the first CPU's current task. That was
+typically a program leader, whose `entry(arg)` is `spawnThread` with a
+request it freed long ago. It then used the freed request, and before the
+poison existed it freed it again. That second free is the corrupted
+slab-class panic of §11.25/§11.26.
+
+The same two-step pattern let `execNode` write TSS `rsp0` and the per-CPU
+syscall stack with interrupts enabled, which could land on another CPU's
+entry.
+
+Fixes:
+- `percpu.currentTask()` reads `current` with one GS-relative load, so the
+  answer is always the thread executing it, and `sched.currentTask()` (74
+  call sites) uses it.
+- The trampoline identifies its thread before `sti`.
+- The redundant stack writes in `execNode` are removed; every switch-in
+  already sets both.
+- `percpu.this()` is documented as valid only with interrupts masked or
+  inside a preempt guard.
+
+The remaining users of `percpu.this()` were audited and all run with
+interrupts masked or pinned.
+
+Diagnostics kept:
+- the scheduler panics with the task's state if a task is queued twice,
+  dequeued while not ready, or exits still linked as a waiter or sleeper;
+- freed slab objects keep the freeing caller in their first word;
+- a spawn request is validated before use.
+
+While tracing, a lost wakeup was also fixed. A program leader that finished
+after its last thread had published the exit did not wake a parent already
+asleep on the process channel.
+
+`kernel/sched/current_test.zig` runs in the runtime suite. Eight workers ×
+200 rounds note their CPU block, sleep, and read both the block and
+`currentTask()`. Saved blocks go stale after migrations, which shows the
+hazard is real, and every `currentTask()` read names the reader. The race
+window itself is a few instructions wide and is not reproduced
+deterministically; the fix is a single-instruction load by construction.
 
 ## 12. Security updates and distribution
 

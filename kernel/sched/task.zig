@@ -165,6 +165,8 @@ pub const Task = struct {
     wait_channel: usize = 0,
     wait_next: ?*Task = null,
     on_wait_list: bool = false,
+    /// Linked on a run queue. A task is on at most one, at most once.
+    on_run_queue: bool = false,
     /// Set only when a timed wait expired, not when its channel was signalled.
     wait_timed_out: bool = false,
 
