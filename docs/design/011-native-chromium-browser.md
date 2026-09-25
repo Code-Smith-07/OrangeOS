@@ -1,6 +1,8 @@
 # OrangeOS native Chromium browser architecture
 
-Status: **Phase 1 preparation and Phase 2 runtime work in progress; no browser engine is installed or qualified**.
+Status (updated 2026-09-25): **Phase 1 reference build done; Phase 2 runtime
+largely built; no browser engine is installed or qualified.** The platform
+target is decided (§2.1). What remains is in §11.0.
 Created: 2026-09-23. Owner requirement: a smooth, full-featured browser running
 entirely inside OrangeOS, within a 4 GiB desktop profile, with excellent video
 playback and hardware-dependent 8K support.
@@ -64,27 +66,71 @@ The runtime libraries and SDK must be reusable by other upstream applications.
 Source portability is the initial objective; running existing Linux Chrome
 binaries unchanged requires a separate Linux ABI project and is not promised.
 
+### 2.1 Platform target decision (2026-09-25)
+
+**Decision (owner-approved):** build Chromium from source as
+`target_os = "linux"` against OrangeOS's musl, statically linked. It runs on
+OrangeOS through the userland compatibility layer that already carries C and
+C++ programs: musl 1.2.5 with its `syscall_arch.h` replaced, and
+`userland/libs/musl-orange/orange.zig` translating each Linux-numbered request
+into native OrangeOS calls.
+
+The alternative was a new `target_os = "orangeos"` platform inside Chromium.
+It was rejected for the first engine milestone:
+
+| | Linux + musl (chosen) | New OrangeOS platform |
+|---|---|---|
+| Chromium source changes | Small, localized patch set: musl fixes (as Alpine carries), disabled Linux-only features, the Peel Ozone backend | New platform code across `base`, IPC, networking, crash handling and sandbox |
+| Reuse | Rust's x86_64 musl target; third-party libraries' existing Linux builds | Everything configured anew |
+| Per-release maintenance | Rebase a small patch set | Rebase a large platform layer |
+| Where the effort goes | OrangeOS kernel features plus the translation layer | The same kernel features, plus Chromium platform code |
+| Main risk | Translation fidelity: subtle Linux behaviours | Sheer size |
+
+The kernel features needed (pipes, readiness, shared memory, sockets,
+process launch, signals, entropy) are the same either way. The choice decides
+whether adaptation lives in Chromium or in OrangeOS's compatibility layer.
+
+Rules that keep this honest:
+- **No Linux kernel code, and no Linux syscall ABI in the kernel.** Linux
+  numbers exist only in userland, inside the translation layer, as with
+  FreeBSD's Linux compatibility or Windows WSL1.
+- **No fabricated success.** A Linux request with no OrangeOS meaning returns
+  an error (`ENOSYS`, `EOPNOTSUPP`, ...), never a pretend success; a feature
+  Chromium cannot do without is implemented for real or disabled at build
+  time with a recorded patch.
+- **Linux-only subsystems are disabled explicitly.** seccomp/namespace
+  sandbox, `/proc`-based crash reporting, D-Bus and `inotify` are turned off
+  with build flags or patches, and each is listed in the patch inventory. The
+  sandbox is replaced by an OrangeOS design before any release (Phase 5).
+- **OrangeOS identity is kept** where it is visible: the Ozone platform is
+  Peel, and the browser reports OrangeOS in its user agent.
+- **Native replacements over time.** A subsystem where emulating Linux would
+  be fragile or dishonest (sandbox, IPC transport, display) moves to native
+  OrangeOS code. musl itself could later be replaced by an OrangeOS libc
+  behind the same boundary.
+
 ## 3. Current baseline and blockers
 
-Baseline checked against the repository on 2026-09-24:
+Baseline checked against the repository on 2026-09-25 (the 2026-09-24 table
+this replaces predates §11.27–§11.38):
 
-| Area | Present | Required before browser qualification |
+| Area | Present | Still required before browser qualification |
 |---|---|---|
-| CPU/runtime | Static freestanding Zig/C ELF; x87/SSE2 isolation; C ABI probes | libc/libc++, user threads, TLS, synchronization, upstream library tests |
-| Virtual memory | 8 GiB arena; anonymous sparse reserve/commit/decommit with 4 GiB reservations, 64 MiB commit calls and page-aligned subranges in `kernel/mm/user_vm.zig` | File/shared mappings, executable W^X/JIT transitions, concurrent VM and cross-CPU TLB correctness |
-| Process lifecycle | Fault containment, private page reclamation, waited-child and orphan task/stack reaping; 64 concurrent registry slots; per-task read-only file descriptors; task-tagged UDP/TCP socket slots | IPC ownership, quotas, descriptor inheritance, synchronized network readiness and larger concurrent process stress |
-| Networking | DNS and blocking TCP | Precise EOF/error semantics, async readiness, cancellation, entropy, authenticated TLS and trust updates |
-| Storage | Existing CitrusFS and read-only user file interfaces | Durable writable profiles, transactions/locking, larger installation image and cache quotas |
-| Graphics | CPU framebuffer and Peel compositor | Chromium Ozone adapter; atomic buffer ownership; presentation feedback; accelerated device/backend |
-| Audio | HDA tone/stop/position API in `kernel/drivers/audio/hda.zig` | Continuous PCM service, mixer, timing, underrun recovery and browser audio adapter |
-| Video | No qualified browser decoder path | Software codec integration, sandboxed hardware decode, shared video surfaces and A/V synchronization |
-| Preview | x86-64 QEMU, default 3 GiB/2 vCPUs; explicit 4 GiB browser profile; Cocoa fullscreen | Qualified GPU/device backend and reproducible media test harness |
+| CPU/runtime | musl 1.2.5 and LLVM libc++/libc++abi/libunwind for C/C++ (§11.34–§11.35); user threads, TLS, futex waits (§11.31); x87/SSE2 isolation | Signals, environment, POSIX process launch; upstream library test suites |
+| Virtual memory | Sparse reserve/commit in a 16 TiB arena, up to 16,384 regions, W^X/JIT transitions, cross-CPU shootdowns and safe concurrent changes (§11.30, §11.33, §11.38) | `MAP_FIXED`/hints within reservations, aligned reservations, `madvise`/`mremap`, file and shared mappings |
+| Process lifecycle | Process records shared by threads; 1,024 tasks, 256 programs, 512 threads each; fault containment and full reclamation; per-process descriptors, sockets and IPC ownership | Descriptor inheritance, argv/environment transfer, quotas, peer-death notification |
+| IPC | Named ports and shared-memory objects | Pipes, socketpair/Unix sockets with descriptor passing, readiness (`poll`/`epoll`), `eventfd` |
+| Networking | DNS, blocking TCP/UDP, safe for concurrent threads (§11.32) | BSD socket API through musl, nonblocking I/O, interrupt-driven receive, TLS roots, entropy |
+| Storage | Read-only CitrusFS root; writable in-memory `/tmp` (§11.37) | Durable writable profile volume, locking, quotas, crash recovery |
+| Graphics | CPU framebuffer and Peel compositor | Peel Ozone backend with software surfaces; later a qualified GPU backend |
+| Audio | HDA tone/stop/position API | Continuous PCM service, mixer, browser audio adapter |
+| Video | No qualified browser decoder path | Software codec integration, then hardware decode surfaces |
+| Preview | x86-64 QEMU (TCG) on Apple Silicon, 3 GiB/2 vCPUs default, 4 GiB browser profile | Qualified GPU/device backend and a reproducible media harness |
 
-The current 32 MiB root image is not a browser installation volume. Its layout,
-installer and persistent storage must be expanded deliberately, preserving user
-data and rollback. The new virtual reservation capacity cannot be treated as
-4 GiB of physical RAM, nor as a browser runtime merely by changing QEMU's `-m`
-option.
+The current 48 MiB desktop root image is not a browser installation volume.
+Its layout, installer and persistent storage must be expanded deliberately,
+preserving user data and rollback. The 4 GiB profile is guest RAM; virtual
+reservations are not physical memory.
 
 ## 4. Deployment and resource profiles
 
@@ -364,9 +410,10 @@ GPU and power/thermal information where available. No invented benchmark numbers
 
 ## 11. Ordered implementation phases and exit gates
 
-Phase 1 is **in progress**, with the resource-profile/preflight slice below
-implemented. Some Phase 2 groundwork is already recorded in
-[008-browser.md](008-browser.md); no full phase exit gate has passed. Independent investigations may
+Phase 1's reference build succeeded (§11.5) and the platform target is decided
+(§2.1). Most Phase 2 runtime work is built and tested (§11.10–§11.38), and the
+remaining work is listed in §11.0. Earlier groundwork is recorded in
+[008-browser.md](008-browser.md). No full phase exit gate has passed yet. Independent investigations may
 overlap, but a later gate cannot waive an earlier security/correctness blocker.
 
 | Phase | Deliverable | Exit gate |
@@ -387,6 +434,47 @@ work. Each phase produces commands, logs, screenshots where relevant, measuremen
 known limitations and a local commit. Store sanitized durable evidence, not only
 temporary-directory paths. Keep real-world media qualification separate from
 mock backend tests and from a successful compilation.
+
+### 11.0 Current status and remaining work
+
+A living checklist, updated with each milestone (last: 2026-09-25). "Done"
+means built and tested in the guest on two and four vCPUs; the sections
+named hold the evidence.
+
+**A. Runtime and kernel (Phase 2)**
+
+| # | Item | Status |
+|---|---|---|
+| A1 | Browser-scale task table and per-program thread capacity | Done (§11.38) |
+| A2 | Pipes, `socketpair`/Unix sockets with descriptor passing, `poll`/`epoll`, `eventfd` | In progress |
+| A3 | POSIX process launch (`posix_spawn`: argv, environment, inherited descriptors), `chdir`, `*at()` relative to directory descriptors | To do |
+| A4 | Shared memory by descriptor (`memfd`, `mmap(MAP_SHARED)`), file mappings | To do |
+| A5 | V8/PartitionAlloc memory: `MAP_FIXED` and hints within reservations, alignment, `madvise(DONTNEED)`, `mremap` | Region capacity and arena size done (§11.38); the rest to do |
+| A6 | Entropy: `getrandom`, `/dev/urandom` | To do |
+| A7 | Minimal signals: `sigaction`, `kill`, `SIGCHLD`, crash handlers | To do |
+
+**B. Platform services (Phase 3)**
+
+| # | Item | Status |
+|---|---|---|
+| B8 | BSD sockets through musl (`socket`/`connect`/`send`/`recv`, nonblocking, readiness); interrupt-driven receive; musl DNS resolver | To do |
+| B9 | TLS root store for BoringSSL | To do |
+| B10 | Font files and a font manager | To do |
+| B11 | Persistent writable profile volume (`/tmp` suffices for bring-up) | `/tmp` done (§11.37); persistence to do |
+| B12 | Audio service | Deferred past bring-up |
+
+**C. Engine port (Phase 4)**
+
+| # | Item | Status |
+|---|---|---|
+| C13 | Platform target | Decided: Linux + musl (§2.1) |
+| C14 | Cross-build sysroot (musl, libc++, Rust musl target) and a static `content_shell` for OrangeOS | To do |
+| C15 | First run: headless Ozone, local fixture inside OrangeOS | To do |
+| C16 | Peel Ozone backend: window, software surface, keyboard/mouse | To do |
+| C17 | Browser installation volume (engine binary, resources) | To do |
+
+**D. After first light:** Phase 5–10 as in the table above (sandbox and
+browser shell, GPU, media, compatibility, releases).
 
 ### 11.1 Phase 1a: resource profiles and preflight
 
@@ -1631,8 +1719,14 @@ neither official Chrome availability nor protected 8K streaming is implied.
 
 ## 13. Risks and decisions still required
 
-- **Port breadth:** Chromium assumes a mature platform. Phase 1 may conclude a
-  prerequisite is larger than expected; report it rather than substituting a mock.
+- **Port breadth:** Chromium assumes a mature platform. A prerequisite may turn
+  out larger than expected; report it rather than substituting a mock.
+- **Translation fidelity (from §2.1):** Chromium's Linux code relies on exact
+  Linux behaviour: error codes, partial I/O, readiness edge cases, descriptor
+  semantics. Each translated call needs tests of those edges, and anything not
+  honestly implementable must fail visibly.
+- **musl support in Chromium:** upstream does not test musl. Keep the patch set
+  small, documented, and aligned with what Alpine carries.
 - **MacBook acceleration:** installed QEMU/Cocoa capabilities and guest drivers
   may not support the required acceleration. Functional progress continues, but
   accelerated/8K acceptance cannot be declared without a real exposed device.
