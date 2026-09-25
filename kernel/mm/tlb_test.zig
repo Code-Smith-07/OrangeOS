@@ -17,6 +17,7 @@ pub fn run(_: ?*anyopaque) void {
     @import("vm_concurrency_test.zig").run() catch |err| {
         console.print("[FAIL] concurrent user VM: {s}\n", .{@errorName(err)});
     };
+    @import("../sched/current_test.zig").run();
     // Only now start PID 1 and its userland probes (see kmain).
     _ = @import("../sched/process.zig").spawnInit() catch |err| {
         console.print("[FAIL] could not spawn init after kernel probes: {s}\n", .{@errorName(err)});

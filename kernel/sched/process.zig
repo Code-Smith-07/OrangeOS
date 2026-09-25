@@ -8,8 +8,6 @@ const vmm = @import("../mm/vmm.zig");
 const pmm = @import("../mm/pmm.zig");
 const elf = @import("../lib/elf.zig");
 const user = @import("../arch/x86_64/user.zig");
-const gdt = @import("../arch/x86_64/gdt.zig");
-const percpu = @import("../arch/x86_64/percpu.zig");
 const task_mod = @import("task.zig");
 const sched = @import("sched.zig");
 const console = @import("../console.zig");
@@ -118,13 +116,12 @@ pub fn execNode(node: *const vfs.Node, path: []const u8) Error!noreturn {
         ) catch return Error.OutOfMemory;
     }
 
-    // Point the CPU at this thread's kernel stack for the transition back.
-    // Both matter: the TSS supplies rsp0 on an interrupt from ring 3, and the
-    // per-CPU block supplies it on a syscall, which does not switch stacks.
-    const t = sched.currentTask() orelse return Error.OutOfMemory;
-    const kstack_top = task_mod.kstackTop(t);
-    gdt.setKernelStack(kstack_top);
-    percpu.setKernelStack(kstack_top);
+    // The CPU already points at this thread's kernel stack for the transition
+    // back: every switch to a thread loads its stack top into the TSS (rsp0,
+    // for interrupts from ring 3) and the per-CPU block (for syscalls). It
+    // must not be written here, with interrupts on: a thread preempted and
+    // moved between finding "this CPU" and the store would overwrite another
+    // CPU's entry stack with its own.
 
     // Per-spawn detail is noise once a shell is driving the system. Build with
     // -Dverbose-exec to get it back.
@@ -196,6 +193,13 @@ fn spawnPathInternal(path: []const u8, pty: ?*@import("../ipc/object.zig").Objec
 /// Thread body for a spawned program.
 fn spawnThread(arg: ?*anyopaque) void {
     const req: *SpawnRequest = @ptrCast(@alignCast(arg.?));
+    if (req.path_len > vfs.MAX_PATH) {
+        // A freed request: the heap left the freeing caller in its first word.
+        const words: *const [4]u64 = @ptrCast(@alignCast(req));
+        var line: [160]u8 = undefined;
+        console.emergencyWrite(std.fmt.bufPrint(&line, "SPAWN request 0x{x} already freed by 0x{x}; words 0x{x} 0x{x}\n", .{ @intFromPtr(req), words[0], words[1], words[2] }) catch "SPAWN request freed\n");
+        @panic("spawn request used after free");
+    }
     const node = req.node;
     var path: [vfs.MAX_PATH]u8 = undefined;
     const path_len = req.path_len;

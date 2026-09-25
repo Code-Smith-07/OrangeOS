@@ -7,6 +7,7 @@
 //!
 //! Field offsets are referenced from assembly, so the layout is load-bearing.
 
+const std = @import("std");
 const IA32_GS_BASE: u32 = 0xC000_0101;
 const IA32_KERNEL_GS_BASE: u32 = 0xC000_0102;
 
@@ -120,7 +121,21 @@ pub inline fn cpuIndex() usize {
     ));
 }
 
-/// This CPU's own block.
+/// The task running on this CPU, in one GS-relative load. Code that may be
+/// preempted must use this, never `this().current`: `this()` resolves the
+/// CPU first, and a thread moved to another CPU before the second load reads
+/// the *old* CPU's current task. A single instruction cannot be split, and at
+/// the instant it executes the answer is the thread executing it.
+pub inline fn currentTask() ?*anyopaque {
+    const offset = std.fmt.comptimePrint("{d}", .{@offsetOf(PerCpu, "current")});
+    const value = asm volatile ("movq %%gs:" ++ offset ++ ", %[out]"
+        : [out] "=r" (-> u64),
+    );
+    return @ptrFromInt(value);
+}
+
+/// This CPU's own block. Only meaningful while this thread cannot migrate:
+/// with interrupts masked or inside a preempt.Guard.
 pub inline fn this() *PerCpu {
     return &blocks[cpuIndex()];
 }
