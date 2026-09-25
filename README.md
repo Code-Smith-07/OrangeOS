@@ -167,8 +167,10 @@ senders on two and four vCPUs. Descriptors, handles, stdio and device/socket
 ownership now belong to a process record shared by its threads. User VM
 changes are now safe while other CPUs run the same address space: they shoot
 down every resident CPU and wait for in-flight kernel copies before freeing
-anything, checked by mutation-tested concurrency probes. Thread creation
-itself is the next step.
+anything, checked by mutation-tested concurrency probes. Programs can now
+create real threads sharing their address space, with join, private TLS, a
+futex mutex, and program exit or a fault in any thread ending every thread.
+This is a thread foundation, not yet pthreads or a libc.
 This is groundwork for shared threads, not pthread support or a complete C++
 standard library. Configurable orphan-process stress and emergency panic
 diagnostics track a still-unexplained intermittent kernel bounds panic.

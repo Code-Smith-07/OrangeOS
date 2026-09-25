@@ -107,6 +107,22 @@ def main():
         guest.until(lambda: "runtime: PASS freestanding C++ language ABI" in guest.log(),
                     "four concurrent native C++ ABI probes", 90)
         assert guest.log().count("cxx-abi-probe: PASS") == 4
+        guest.until(lambda: "runtime: PASS multi-threaded programs" in guest.log(),
+                    "eight multi-threaded programs, two at a time", 180)
+        thread_masks = [int(mask, 16) for mask in re.findall(r"thread-probe: PASS pid=\d+ threads=5 cpus=([0-9a-f]+)", guest.log())]
+        assert len(thread_masks) == 8, thread_masks
+        combined_threads = 0
+        for mask in thread_masks:
+            combined_threads |= mask
+        assert combined_threads.bit_count() >= min(cores, 2), thread_masks
+        print(f"PASS threads share memory, mutex and VM across CPUs; CPU masks={thread_masks}", flush=True)
+        guest.until(lambda: "runtime: PASS program exit ends futex, port, console, wait, sleeping and spinning threads" in guest.log(),
+                    "program exit ends every blocked, sleeping and spinning thread", 90)
+        guest.until(lambda: "runtime: PASS a faulting thread ends its whole program" in guest.log(),
+                    "a faulting thread ends its program", 60)
+        assert guest.log().count("[app fault]") == 8, guest.log().count("[app fault]")
+        guest.until(lambda: "runtime: PASS a program outlives its first thread" in guest.log(),
+                    "the last thread's status becomes the program's", 60)
         guest.until(lambda: "runtime: PASS 96 child reaps, slot reuse and wait ownership" in guest.log(),
                     "96 child reaps, slot reuse and wait ownership", 90)
         guest.until(lambda: "runtime: PASS full task table rejects spawn and recovers after reaping" in guest.log(),

@@ -23,6 +23,8 @@ pub const Error = error{
     QueueEmpty,
     MessageTooLarge,
     TooManyHandles,
+    /// The calling program is exiting; a blocked call gives up.
+    Interrupted,
 };
 
 pub const MAX_NAME = 32;

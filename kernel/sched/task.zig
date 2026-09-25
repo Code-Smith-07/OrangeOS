@@ -84,6 +84,9 @@ pub const Process = struct {
     /// Set under the scheduler lock once every resource has been released, so
     /// a parent never reaps a program whose teardown is still running.
     exited: bool = false,
+    /// Set under the scheduler lock when any thread ends the whole program.
+    /// No thread can be added afterwards; the first exit code wins.
+    exiting: bool = false,
     exit_code: i32 = 0,
 
     /// When set, fd 0/1/2 route to this PTY's slave end instead of the serial
@@ -168,6 +171,16 @@ pub const Task = struct {
     /// The user program this thread belongs to, with one reference held for
     /// the lifetime of this record. Null for kernel tasks.
     process: ?*Process = null,
+    /// Set (under the scheduler lock) when the program is exiting. The thread
+    /// leaves at its next return towards user mode or attempt to block.
+    kill_pending: bool = false,
+    /// User word cleared and woken when this thread exits, so a joiner can
+    /// wait on it and then free the thread's stack. Zero means none.
+    exit_word: u64 = 0,
+    /// Where a newly created user thread enters ring 3.
+    user_entry: u64 = 0,
+    user_stack: u64 = 0,
+    user_arg: u64 = 0,
 
     /// One owned reference, detached at exit before this task becomes a zombie.
     /// Null kernel tasks use the kernel PML4. Kernel test workers may borrow a

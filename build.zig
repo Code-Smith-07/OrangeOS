@@ -137,7 +137,7 @@ pub fn build(b: *std.Build) void {
         .stack_protector = false,
         .stack_check = false,
         .sanitize_c = false,
-        .single_threaded = true,
+        .single_threaded = false,
     });
 
     const libpeel_mod = b.createModule(.{
@@ -149,7 +149,7 @@ pub fn build(b: *std.Build) void {
         .stack_protector = false,
         .stack_check = false,
         .sanitize_c = false,
-        .single_threaded = true,
+        .single_threaded = false,
     });
     libpeel_mod.addImport("pulp", pulp_mod);
     pulp_mod.addOptions("ui_options", ui_options);
@@ -164,7 +164,7 @@ pub fn build(b: *std.Build) void {
         .stack_protector = false,
         .stack_check = false,
         .sanitize_c = false,
-        .single_threaded = true,
+        .single_threaded = false,
     });
     segment_mod.addImport("pulp", pulp_mod);
     segment_mod.addImport("libpeel", libpeel_mod);
@@ -199,6 +199,10 @@ pub fn build(b: *std.Build) void {
         .{ .name = "tls-probe", .path = "userland/bin/tls-probe/main.zig" },
         .{ .name = "futex-probe", .path = "userland/bin/futex-probe/main.zig" },
         .{ .name = "futex-waiter", .path = "userland/bin/futex-waiter/main.zig" },
+        .{ .name = "thread-probe", .path = "userland/bin/thread-probe/main.zig" },
+        .{ .name = "thread-exit-probe", .path = "userland/bin/thread-exit-probe/main.zig" },
+        .{ .name = "thread-fault-probe", .path = "userland/bin/thread-fault-probe/main.zig" },
+        .{ .name = "thread-last-probe", .path = "userland/bin/thread-last-probe/main.zig" },
         .{ .name = "fault-null", .path = "userland/bin/fault-null/main.zig" },
         .{ .name = "fault-ro", .path = "userland/bin/fault-ro/main.zig" },
         .{ .name = "fault-nx", .path = "userland/bin/fault-nx/main.zig" },
@@ -233,7 +237,7 @@ pub fn build(b: *std.Build) void {
             .stack_protector = false,
             .stack_check = false,
             .sanitize_c = false,
-            .single_threaded = true,
+            .single_threaded = false,
         });
         mod.addImport("pulp", pulp_mod);
         mod.addImport("host_protocol", host_protocol_mod);

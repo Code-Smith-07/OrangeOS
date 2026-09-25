@@ -68,6 +68,9 @@ pub const Nr = enum(u64) {
     tls_get_base = 17,
     user_wait = 18,
     user_wake = 19,
+    thread_create = 40,
+    thread_exit = 41,
+    gettid = 45,
     sleep_ms = 61,
     open = 20,
     close = 21,
@@ -120,6 +123,8 @@ const EMFILE: i64 = -24;
 const EISDIR: i64 = -21;
 const ENAMETOOLONG: i64 = -36;
 const EIO: i64 = -5;
+/// The calling program is exiting; a blocked call gave up.
+const EINTR: i64 = -4;
 
 var syscall_count: u64 = 0;
 
@@ -148,6 +153,9 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .tls_get_base => sysTlsGetBase(),
         .user_wait => sysUserWait(frame.rdi, frame.rsi, frame.rdx),
         .user_wake => sysUserWake(frame.rdi, frame.rsi),
+        .thread_create => sysThreadCreate(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
+        .thread_exit => sysThreadExit(@bitCast(frame.rdi)),
+        .gettid => sysGettid(),
         .sleep_ms => sysSleepMs(frame.rdi),
         // Fourth argument is in r10, not rcx: the syscall instruction
         // clobbers rcx with the return address.
@@ -191,6 +199,8 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
     };
 
     frame.rax = @bitCast(result);
+    // A thread of an exiting program never returns to user mode.
+    if (sched.killPending()) sched.exit(0);
 }
 
 const snapshot_sync = @import("../sync/spinlock.zig");
@@ -350,8 +360,55 @@ fn sysHostIo(op: u64, ptr: u64, len: u64) i64 {
     return result;
 }
 
+/// End the whole program: every thread, with this status.
 fn sysExit(code: i64) i64 {
+    sched.exitGroup(@truncate(code));
+}
+
+fn isUserAddress(value: u64) bool {
+    return value >= 0x1000 and value < validate.USER_MAX;
+}
+
+/// Start a thread in the calling program: `entry(arg)` on `stack`, with
+/// `tls` as its FS base. A nonzero `exit_word` must be a writable, aligned
+/// u32; the kernel stores 0 there and wakes it when the thread exits, which
+/// is what a joiner waits for before freeing the stack.
+fn sysThreadCreate(entry: u64, stack: u64, arg: u64, tls: u64, exit_word: u64) i64 {
+    if (!isUserAddress(entry) or !isUserAddress(stack) or stack % 8 != 0) return EINVAL;
+    if (tls >= validate.USER_MAX) return EINVAL;
+    if (exit_word != 0) {
+        if (exit_word % 4 != 0) return EINVAL;
+        validate.check(vmm.currentCr3(), exit_word, 4, true) catch return EFAULT;
+    }
+    const tid = process.createThread(.{
+        .entry = entry,
+        .stack = stack,
+        .arg = arg,
+        .fs_base = tls,
+        .exit_word = exit_word,
+    }) catch |e| return switch (e) {
+        error.ProcessExiting => EINTR,
+        error.OutOfMemory => EAGAIN,
+        error.NotUserThread => EIO,
+    };
+    return @intCast(tid);
+}
+
+/// End only the calling thread. The program continues while it has others.
+fn sysThreadExit(code: i64) i64 {
+    const t = sched.currentTask() orelse return EIO;
+    if (t.exit_word != 0) {
+        // After this store the thread never touches its user stack again, so
+        // a woken joiner may unmap it at once. A word the program already
+        // unmapped is ignored.
+        _ = user_wait.storeAndWake(t.pageTable(), t.exit_word, 0, 64) catch 0;
+    }
     sched.exit(@truncate(code));
+}
+
+fn sysGettid() i64 {
+    const t = sched.currentTask() orelse return EIO;
+    return @intCast(t.tid);
 }
 
 fn sysWrite(fd: u64, buf: u64, len: u64) i64 {
@@ -428,6 +485,7 @@ fn sysRead(fd: u64, buf: u64, len: u64) i64 {
             const chan = pty_mod.waitChannel(&obj.data.pty);
             var n: usize = 0;
             while (n == 0) {
+                if (sched.killPending()) return EINTR;
                 // Register before reading, so a write arriving in between
                 // cancels the wait instead of being missed.
                 sched.prepareWait(chan);
@@ -452,6 +510,7 @@ fn sysRead(fd: u64, buf: u64, len: u64) i64 {
         const chan = serial.waitChannel();
         var n: usize = 0;
         while (n == 0) {
+            if (sched.killPending()) return EINTR;
             sched.prepareWait(chan);
             while (n < want) {
                 const c = serial.readByte() orelse break;
@@ -530,6 +589,7 @@ fn sysWait(pid: u64, flags: u64) i64 {
     defer io.cli();
 
     while (true) {
+        if (sched.killPending()) return EINTR;
         // Join the child's exit channel before checking its state. If the
         // exit lands between the check and commitWait, its wake removes us
         // from the queue and commitWait returns without sleeping.
@@ -641,6 +701,7 @@ fn ipcErrno(e: ipc.Error) i64 {
         ipc.Error.MessageTooLarge => EMSGSIZE,
         ipc.Error.TooManyHandles => EMFILE,
         ipc.Error.OutOfMemory => -12,
+        ipc.Error.Interrupted => EINTR,
     };
 }
 
@@ -873,7 +934,8 @@ fn sysPtyCreate() i64 {
 fn sysPtyRead(h: u64, buf: u64, len: u64) i64 {
     if (len == 0) return 0;
     const proc = sched.currentProcess() orelse return EIO;
-    const obj = proc.handles.getPty(@bitCast(h)) catch |e| return ipcErrno(e);
+    const obj = proc.handles.acquire(@bitCast(h), .pty) catch |e| return ipcErrno(e);
+    defer ipc_object.release(obj);
 
     var kbuf: [1024]u8 = undefined;
     const want = @min(len, kbuf.len);
@@ -889,7 +951,8 @@ fn sysPtyRead(h: u64, buf: u64, len: u64) i64 {
 fn sysPtyWrite(h: u64, buf: u64, len: u64) i64 {
     if (len == 0) return 0;
     const proc = sched.currentProcess() orelse return EIO;
-    const obj = proc.handles.getPty(@bitCast(h)) catch |e| return ipcErrno(e);
+    const obj = proc.handles.acquire(@bitCast(h), .pty) catch |e| return ipcErrno(e);
+    defer ipc_object.release(obj);
 
     var kbuf: [1024]u8 = undefined;
     const want = @min(len, kbuf.len);
@@ -904,7 +967,8 @@ fn sysSpawnPty(path_ptr: u64, path_len: u64, h: u64) i64 {
     if (path_len == 0 or path_len > vfs.MAX_PATH) return ENAMETOOLONG;
 
     const proc = sched.currentProcess() orelse return EIO;
-    const obj = proc.handles.getPty(@bitCast(h)) catch |e| return ipcErrno(e);
+    const obj = proc.handles.acquire(@bitCast(h), .pty) catch |e| return ipcErrno(e);
+    defer ipc_object.release(obj);
 
     const pml4 = vmm.currentCr3();
     var path: [vfs.MAX_PATH]u8 = undefined;

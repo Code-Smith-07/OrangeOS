@@ -1205,6 +1205,64 @@ thread on process exit or fault, and locking the per-process handle and
 descriptor tables. `protect` still rejects executable mappings, so W^X/JIT
 transitions for V8 remain open.
 
+### 11.31 Shared-address-space user threads
+
+Programs can now run several threads in one address space:
+
+| Call | Behaviour |
+|---|---|
+| 40 `thread_create(entry, stack, arg, tls, exit_word)` | New thread of the calling program: `entry(arg)` in ring 3 on `stack`, FS base `tls`. Validates user ranges and a writable, aligned exit word. Refused (`EINTR`) once the program is exiting; `EAGAIN` when no task slot is free. |
+| 41 `thread_exit(status)` | Ends the calling thread. Its exit word is atomically set to 0 and woken first, after which the thread never touches its user stack, so a joiner may unmap it immediately. |
+| 45 `gettid()` | The calling thread's id; the first thread's id is the pid. |
+| 0 `exit(status)` | Now ends the **whole program**. |
+
+Group exit marks the process `exiting` under the scheduler lock, records the
+first status, flags every other thread and makes blocked ones runnable. A
+flagged thread leaves at its next return towards ring 3 (end of every
+syscall, and every interrupt that returns to user mode, which is how a thread
+spinning in user code notices within a tick) or when it tries to block:
+`commitWait`, timed waits and `sleepMs` refuse to sleep with a kill pending,
+and the console/PTY read, port receive and child-wait loops return `EINTR`.
+Creation checks `exiting` under the same lock, so no thread escapes. A ring-3
+fault in any thread now ends its program. The last thread to leave releases
+the program's resources; if the program was not ended by a group exit, its
+status is the last thread's. Other threads' records are collected by the
+reaper; a parent's `wait` sees the program only after its last thread.
+
+The per-process handle table now takes its own lock, and every lookup
+returns a retained reference that the caller releases — a blocked port
+receive keeps its port alive even if another thread closes the handle. The
+descriptor table is locked too, but never across disk I/O: a read snapshots
+its descriptor, reads, then advances the offset only if the slot's open
+generation is unchanged. Concurrent reads of one descriptor behave like
+`pread` from the same offset.
+
+Pulp adds `Thread.spawn/join` (a private stack mapping with the exit word at
+its top; join waits on the word and then unmaps the stack), `threadExit`,
+`gettid` and a three-state futex `Mutex`. Userland modules are now built
+with `single_threaded = false`, so their atomics use system scope rather than
+LLVM's single-thread scope; an audit of every built program found no TLS
+segment and no `%fs:` access other than `tls-probe`'s explicit ones.
+
+Verified on 2026-09-25:
+
+| Check | Result |
+|---|---|
+| `thread-probe` ×8, two at a time: remote-TLB check across 64 user munmap/mmap rounds with a spinning reader thread; 4 workers × 4096 mutex + atomic increments; private FS TLS; concurrent map/protect/unmap churn; join | Exact counts, distinct tids, every probe spread over both CPUs (all four at 4 vCPUs) |
+| `thread-exit-probe` ×8: threads blocked on a futex, a port, the console and a child, one sleeping, one spinning | Program exits with 42 each time; nothing hangs |
+| `thread-fault-probe` ×4: a worker faults while the first thread waits forever | Program ends with 142 |
+| `thread-last-probe` ×8: first thread exits with 7, another with 9 later | Parent sees 9, only after the last thread |
+| Full runtime suite, 3 GiB, two and four vCPUs | All checks passed (37 at four vCPUs) |
+| Desktop interaction suite, 3 GiB and 4 GiB profiles; simulated-host sound/display bridge; kernel/app codegen audit | Passed |
+
+Still missing before a pthread/libc port can rely on this: condition
+variables and other pthread primitives, cancellation, signals, per-thread
+stacks with guard pages, and a thread-safe allocator in the runtime. The
+kernel network stack has **no locking at all** — concurrent network calls on
+two CPUs can already race today, even from separate programs — and needs
+serialization before multi-threaded network clients. The task registry is
+still 64 slots shared by all threads.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,

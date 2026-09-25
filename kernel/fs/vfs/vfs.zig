@@ -9,6 +9,7 @@ const std = @import("std");
 const block = @import("../../drivers/block/block.zig");
 const citrusfs = @import("../citrusfs/citrusfs.zig");
 const console = @import("../../console.zig");
+const spinlock = @import("../../sync/spinlock.zig");
 
 pub const Error = error{
     NotMounted,
@@ -44,14 +45,21 @@ pub const OpenFile = struct {
     used: bool = false,
     node: Node = undefined,
     offset: u64 = 0,
+    /// Advanced on every open of this slot, so a read that ran without the
+    /// table lock can tell whether its descriptor was closed and reused.
+    generation: u32 = 0,
 };
 
-/// Descriptors are owned by one task. The VFS only supplies immutable nodes;
-/// offsets and open slots must not be visible to unrelated processes.
+/// Descriptors are owned by one process and shared by its threads. The VFS
+/// only supplies immutable nodes; offsets and open slots must not be visible
+/// to unrelated processes. The lock is never held across disk I/O.
 pub const FileTable = struct {
+    lock: spinlock.SpinLock = .{},
     entries: [MAX_OPEN]OpenFile = [_]OpenFile{.{}} ** MAX_OPEN,
 
     pub fn clear(self: *FileTable) void {
+        const state = spinlock.acquireIrqSave(&self.lock);
+        defer spinlock.releaseIrqRestore(&self.lock, state);
         for (&self.entries) |*entry| entry.used = false;
     }
 };
@@ -115,40 +123,59 @@ pub fn readAt(node: *const Node, offset: u64, buf: []u8) Error!usize {
 pub const FD_BASE: i32 = 3;
 
 pub fn open(table: *FileTable, path: []const u8) Error!i32 {
+    // Path resolution reads the disk; it runs before taking the table lock.
     const node = try resolve(path);
 
-    var i: usize = 0;
-    while (i < MAX_OPEN) : (i += 1) {
-        if (table.entries[i].used) continue;
-        table.entries[i] = .{ .used = true, .node = node, .offset = 0 };
+    const state = spinlock.acquireIrqSave(&table.lock);
+    defer spinlock.releaseIrqRestore(&table.lock, state);
+    for (&table.entries, 0..) |*entry, i| {
+        if (entry.used) continue;
+        entry.* = .{ .used = true, .node = node, .offset = 0, .generation = entry.generation +% 1 };
         return @as(i32, @intCast(i)) + FD_BASE;
     }
     return Error.TooManyOpen;
 }
 
 pub fn close(table: *FileTable, fd: i32) Error!void {
+    const state = spinlock.acquireIrqSave(&table.lock);
+    defer spinlock.releaseIrqRestore(&table.lock, state);
     const i = try checkFd(table, fd);
     table.entries[i].used = false;
 }
 
+/// Read at the descriptor's offset and advance it. Two threads reading one
+/// descriptor at once may both read from the same offset, like pread; the
+/// offset only ever moves forward to the end of a completed read.
 pub fn read(table: *FileTable, fd: i32, buf: []u8) Error!usize {
-    const i = try checkFd(table, fd);
-    const f = &table.entries[i];
-    const n = try readAt(&f.node, f.offset, buf);
-    f.offset += n;
+    const snapshot = blk: {
+        const state = spinlock.acquireIrqSave(&table.lock);
+        defer spinlock.releaseIrqRestore(&table.lock, state);
+        const i = try checkFd(table, fd);
+        break :blk .{ .index = i, .file = table.entries[i] };
+    };
+    const n = try readAt(&snapshot.file.node, snapshot.file.offset, buf);
+    const state = spinlock.acquireIrqSave(&table.lock);
+    defer spinlock.releaseIrqRestore(&table.lock, state);
+    const entry = &table.entries[snapshot.index];
+    if (entry.used and entry.generation == snapshot.file.generation) entry.offset = snapshot.file.offset + n;
     return n;
 }
 
 pub fn seek(table: *FileTable, fd: i32, offset: u64) Error!void {
+    const state = spinlock.acquireIrqSave(&table.lock);
+    defer spinlock.releaseIrqRestore(&table.lock, state);
     const i = try checkFd(table, fd);
     table.entries[i].offset = offset;
 }
 
 pub fn statSize(table: *FileTable, fd: i32) Error!u64 {
+    const state = spinlock.acquireIrqSave(&table.lock);
+    defer spinlock.releaseIrqRestore(&table.lock, state);
     const i = try checkFd(table, fd);
     return table.entries[i].node.size();
 }
 
+/// Caller holds the table lock.
 fn checkFd(table: *const FileTable, fd: i32) Error!usize {
     if (fd < FD_BASE) return Error.BadFd; // 0/1/2 are the standard streams
     const i: i32 = fd - FD_BASE;

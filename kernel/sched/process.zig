@@ -128,6 +128,23 @@ fn spawnThread(arg: ?*anyopaque) void {
     };
 }
 
+/// Kernel-side start of a thread created by `thread_create`. The scheduler
+/// has already loaded the program's CR3, this thread's TLS base and kernel
+/// stack. A thread created just before its program began exiting leaves
+/// without ever running user code.
+fn userThreadEntry(_: ?*anyopaque) void {
+    const t = sched.currentTask() orelse unreachable;
+    if (sched.killPending()) sched.exit(0);
+    user.enterWithArg(t.user_entry, t.user_stack, t.user_arg);
+}
+
+/// Create a thread in the calling program. Returns its tid.
+pub fn createThread(start: sched.UserThreadStart) !u32 {
+    const creator = sched.currentTask() orelse return error.NotUserThread;
+    const t = try sched.spawnUserThread(creator, userThreadEntry, start);
+    return t.tid;
+}
+
 /// Start PID 1. Only this boot-created process holds service-manager
 /// authority, which is what lets it grant the host bridge to one agent.
 pub fn spawnInit() !*task_mod.Task {

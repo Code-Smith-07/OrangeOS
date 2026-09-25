@@ -54,12 +54,50 @@ comptime {
         \\    swapgs
         \\    iretq
         \\.size enterUserMode, . - enterUserMode
+        \\
+        \\.global enterUserModeWithArg
+        \\.type enterUserModeWithArg, @function
+        \\enterUserModeWithArg:
+        \\    # As enterUserMode, plus r9 = the value delivered in rdi (the
+        \\    # first C argument of the user entry function).
+        \\    pushq %rcx
+        \\    pushq %rsi
+        \\    pushq %r8
+        \\    pushq %rdx
+        \\    pushq %rdi
+        \\    movq %r9, %rdi
+        \\
+        \\    xorq %rax, %rax
+        \\    xorq %rbx, %rbx
+        \\    xorq %rcx, %rcx
+        \\    xorq %rdx, %rdx
+        \\    xorq %rsi, %rsi
+        \\    xorq %rbp, %rbp
+        \\    xorq %r8,  %r8
+        \\    xorq %r9,  %r9
+        \\    xorq %r10, %r10
+        \\    xorq %r11, %r11
+        \\    xorq %r12, %r12
+        \\    xorq %r13, %r13
+        \\    xorq %r14, %r14
+        \\    xorq %r15, %r15
+        \\
+        \\    swapgs
+        \\    iretq
+        \\.size enterUserModeWithArg, . - enterUserModeWithArg
     );
 }
 
 extern fn enterUserMode(rip: u64, rsp: u64, cs: u64, ss: u64, rflags: u64) callconv(.c) noreturn;
+extern fn enterUserModeWithArg(rip: u64, rsp: u64, cs: u64, ss: u64, rflags: u64, arg: u64) callconv(.c) noreturn;
 
 /// Drop to ring 3 at `entry` with `stack`. Never returns.
 pub fn enter(entry: u64, stack: u64) noreturn {
     enterUserMode(entry, stack, USER_CODE_SEL, USER_DATA_SEL, USER_RFLAGS);
+}
+
+/// Drop to ring 3 at `entry` with `stack`, passing `arg` in rdi. Every other
+/// general register is cleared. Never returns.
+pub fn enterWithArg(entry: u64, stack: u64, arg: u64) noreturn {
+    enterUserModeWithArg(entry, stack, USER_CODE_SEL, USER_DATA_SEL, USER_RFLAGS, arg);
 }
