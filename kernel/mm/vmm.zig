@@ -56,17 +56,31 @@ inline fn indexOf(virt: u64, level: u6) usize {
     return @intCast((virt >> (12 + 9 * level)) & 0x1FF);
 }
 
+// A user page table can be walked by the kernel on one CPU (validating a
+// syscall buffer) while a thread of the same program edits it on another.
+// Entries are therefore read and written whole, never as a torn or cached
+// value; the hardware walker reads them atomically too.
+inline fn loadEntry(entry: *const u64) u64 {
+    return @atomicLoad(u64, entry, .monotonic);
+}
+
+inline fn storeEntry(entry: *u64, value: u64) void {
+    @atomicStore(u64, entry, value, .monotonic);
+}
+
 /// Walk to the next level, allocating a table if it isn't there yet.
 fn nextTable(table: *[512]u64, index: usize, flags: u64) Error!*[512]u64 {
-    if (table[index] & PRESENT == 0) {
+    const entry = loadEntry(&table[index]);
+    if (entry & PRESENT == 0) {
         const phys = pmm.allocPageZeroed() catch return Error.OutOfMemory;
-        table[index] = phys | PRESENT | WRITABLE | flags;
+        storeEntry(&table[index], phys | PRESENT | WRITABLE | flags);
         return tableAt(phys);
     }
     // Intermediate entries must permit anything a leaf below might need; the
     // leaf's own flags do the actual restricting.
-    table[index] |= flags & (WRITABLE | USER);
-    return tableAt(table[index]);
+    const widened = entry | (flags & (WRITABLE | USER));
+    if (widened != entry) storeEntry(&table[index], widened);
+    return tableAt(widened);
 }
 
 /// Map one 4 KiB page.
@@ -78,7 +92,7 @@ pub fn mapPage(pml4_phys: u64, virt: u64, phys: u64, flags: u64) Error!void {
     const pd = try nextTable(pdpt, indexOf(virt, 2), inter);
     const pt = try nextTable(pd, indexOf(virt, 1), inter);
 
-    pt[indexOf(virt, 0)] = (phys & ADDR_MASK) | flags | PRESENT;
+    storeEntry(&pt[indexOf(virt, 0)], (phys & ADDR_MASK) | flags | PRESENT);
 }
 
 /// Map one 2 MiB page. The PD entry becomes a leaf.
@@ -119,21 +133,21 @@ pub fn mapRangeHuge(pml4_phys: u64, virt: u64, phys: u64, size: usize, flags: u6
 /// Resolve a virtual address to physical, or null if unmapped.
 pub fn translate(pml4_phys: u64, virt: u64) ?u64 {
     const pml4 = tableAt(pml4_phys);
-    const e3 = pml4[indexOf(virt, 3)];
+    const e3 = loadEntry(&pml4[indexOf(virt, 3)]);
     if (e3 & PRESENT == 0) return null;
 
     const pdpt = tableAt(e3);
-    const e2 = pdpt[indexOf(virt, 2)];
+    const e2 = loadEntry(&pdpt[indexOf(virt, 2)]);
     if (e2 & PRESENT == 0) return null;
     if (e2 & HUGE != 0) return (e2 & ADDR_MASK) | (virt & 0x3FFF_FFFF);
 
     const pd = tableAt(e2);
-    const e1 = pd[indexOf(virt, 1)];
+    const e1 = loadEntry(&pd[indexOf(virt, 1)]);
     if (e1 & PRESENT == 0) return null;
     if (e1 & HUGE != 0) return (e1 & ADDR_MASK) | (virt & 0x1F_FFFF);
 
     const pt = tableAt(e1);
-    const e0 = pt[indexOf(virt, 0)];
+    const e0 = loadEntry(&pt[indexOf(virt, 0)]);
     if (e0 & PRESENT == 0) return null;
     return (e0 & ADDR_MASK) | (virt & 0xFFF);
 }
@@ -142,21 +156,21 @@ pub fn translate(pml4_phys: u64, virt: u64) ?u64 {
 /// Used to verify that W^X actually took effect rather than assuming it did.
 pub fn leafFlags(pml4_phys: u64, virt: u64) ?u64 {
     const pml4 = tableAt(pml4_phys);
-    const e3 = pml4[indexOf(virt, 3)];
+    const e3 = loadEntry(&pml4[indexOf(virt, 3)]);
     if (e3 & PRESENT == 0) return null;
 
     const pdpt = tableAt(e3);
-    const e2 = pdpt[indexOf(virt, 2)];
+    const e2 = loadEntry(&pdpt[indexOf(virt, 2)]);
     if (e2 & PRESENT == 0) return null;
     if (e2 & HUGE != 0) return e2 & ~ADDR_MASK;
 
     const pd = tableAt(e2);
-    const e1 = pd[indexOf(virt, 1)];
+    const e1 = loadEntry(&pd[indexOf(virt, 1)]);
     if (e1 & PRESENT == 0) return null;
     if (e1 & HUGE != 0) return e1 & ~ADDR_MASK;
 
     const pt = tableAt(e1);
-    const e0 = pt[indexOf(virt, 0)];
+    const e0 = loadEntry(&pt[indexOf(virt, 0)]);
     if (e0 & PRESENT == 0) return null;
     return e0 & ~ADDR_MASK;
 }
@@ -187,6 +201,12 @@ pub fn invalidatePage(virt: u64) void {
         : [v] "r" (virt),
         : "memory"
     );
+}
+
+/// Drop every non-global translation on this CPU by reloading CR3. Cheaper
+/// than invalidating a long range one page at a time.
+pub fn flushLocal() void {
+    loadCr3(currentCr3());
 }
 
 /// Enable NX. Without this, setting bit 63 on a PTE causes a reserved-bit
@@ -388,38 +408,55 @@ pub fn allocAndMap(pml4_phys: u64, virt: u64, flags: u64) Error!u64 {
 }
 
 fn emptyTable(table: *const [512]u64) bool {
-    for (table) |entry| if (entry & PRESENT != 0) return false;
+    for (table) |*entry| if (loadEntry(entry) & PRESENT != 0) return false;
     return true;
 }
 
-/// Reclaim empty lower-half page tables. Never follows huge-page mappings or
-/// shared upper-half kernel entries. Callers own this single-threaded space.
+/// Reclaim empty lower-half page tables immediately. Only for an address
+/// space no other CPU can be walking: a table freed here while another CPU
+/// still caches the entry that pointed to it would be read after reuse.
 pub fn pruneEmptyTables(pml4_phys: u64, virt: u64) void {
-    if (virt >= 0x0000_8000_0000_0000) return;
+    var tables: [3]u64 = undefined;
+    const count = unlinkEmptyTables(pml4_phys, virt, &tables);
+    for (tables[0..count]) |phys| pmm.freePage(phys);
+}
+
+/// Unlink the empty page tables on `virt`'s path, deepest first, and return
+/// their frames in `out` instead of freeing them. A shared address space must
+/// invalidate the range on every CPU using it before freeing these, because
+/// paging-structure caches may still hold the unlinked upper-level entries.
+/// Never follows huge-page mappings or the shared kernel half.
+pub fn unlinkEmptyTables(pml4_phys: u64, virt: u64, out: *[3]u64) usize {
+    if (virt >= 0x0000_8000_0000_0000) return 0;
+    var count: usize = 0;
     const pml4 = tableAt(pml4_phys);
     const e3 = &pml4[indexOf(virt, 3)];
-    if (e3.* & PRESENT == 0) return;
-    const pdpt = tableAt(e3.*);
+    const e3_value = loadEntry(e3);
+    if (e3_value & PRESENT == 0) return 0;
+    const pdpt = tableAt(e3_value);
     const e2 = &pdpt[indexOf(virt, 2)];
-    if (e2.* & PRESENT != 0 and e2.* & HUGE == 0) {
-        const pd = tableAt(e2.*);
+    const e2_value = loadEntry(e2);
+    if (e2_value & PRESENT != 0 and e2_value & HUGE == 0) {
+        const pd = tableAt(e2_value);
         const e1 = &pd[indexOf(virt, 1)];
-        if (e1.* & PRESENT != 0 and e1.* & HUGE == 0 and emptyTable(tableAt(e1.*))) {
-            const phys = e1.* & ADDR_MASK;
-            e1.* = 0;
-            pmm.freePage(phys);
+        const e1_value = loadEntry(e1);
+        if (e1_value & PRESENT != 0 and e1_value & HUGE == 0 and emptyTable(tableAt(e1_value))) {
+            storeEntry(e1, 0);
+            out[count] = e1_value & ADDR_MASK;
+            count += 1;
         }
         if (emptyTable(pd)) {
-            const phys = e2.* & ADDR_MASK;
-            e2.* = 0;
-            pmm.freePage(phys);
+            storeEntry(e2, 0);
+            out[count] = e2_value & ADDR_MASK;
+            count += 1;
         }
     }
     if (emptyTable(pdpt)) {
-        const phys = e3.* & ADDR_MASK;
-        e3.* = 0;
-        pmm.freePage(phys);
+        storeEntry(e3, 0);
+        out[count] = e3_value & ADDR_MASK;
+        count += 1;
     }
+    return count;
 }
 
 /// Clear a private lower-half leaf without freeing its page-table path. A
@@ -428,17 +465,17 @@ pub fn pruneEmptyTables(pml4_phys: u64, virt: u64) void {
 pub fn detachPage(pml4_phys: u64, virt: u64) ?u64 {
     if (virt >= 0x0000_8000_0000_0000) return null;
     const pml4 = tableAt(pml4_phys);
-    const e3 = pml4[indexOf(virt, 3)];
+    const e3 = loadEntry(&pml4[indexOf(virt, 3)]);
     if (e3 & PRESENT == 0) return null;
-    const e2 = tableAt(e3)[indexOf(virt, 2)];
+    const e2 = loadEntry(&tableAt(e3)[indexOf(virt, 2)]);
     if (e2 & PRESENT == 0 or e2 & HUGE != 0) return null;
-    const e1 = tableAt(e2)[indexOf(virt, 1)];
+    const e1 = loadEntry(&tableAt(e2)[indexOf(virt, 1)]);
     if (e1 & PRESENT == 0 or e1 & HUGE != 0) return null;
     const leaf = &tableAt(e1)[indexOf(virt, 0)];
-    if (leaf.* & PRESENT == 0) return null;
-    const phys = leaf.* & ADDR_MASK;
-    leaf.* = 0;
-    return phys;
+    const value = loadEntry(leaf);
+    if (value & PRESENT == 0) return null;
+    storeEntry(leaf, 0);
+    return value & ADDR_MASK;
 }
 
 /// Remove one 4 KiB mapping in a caller-owned, single-task address space.

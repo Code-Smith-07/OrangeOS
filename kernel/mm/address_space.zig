@@ -1,8 +1,22 @@
 //! Lifetime of a user page table and all mappings backed by it.
 //!
-//! References keep memory alive independently of task records. They do not
-//! authorize concurrent user execution: VM mutation and user-copy pinning must
-//! still be coordinated before exposing a shared-thread syscall.
+//! References keep memory alive independently of task records. Several tasks
+//! may execute in one space at once, so every page-table change and every
+//! kernel access to user memory follows the protocol below.
+//!
+//! Changes: `lockVm` pins the CPU and takes the space's VM lock with
+//! interrupts left as the caller had them. A change that can leave a stale
+//! translation on another CPU then calls `invalidateRange`, which requires
+//! interrupts enabled whenever another CPU is resident; while waiting for its
+//! acknowledgements the holder keeps servicing other CPUs' shootdowns. Frames
+//! and page tables detached by a change are freed only after the invalidation
+//! and after `drainAccesses`.
+//!
+//! Accesses: syscall copies walk the page tables in software and then read or
+//! write frames through the HHDM. `beginAccess`/`end` bracket that work so a
+//! concurrent unmap cannot free a frame or table mid-copy. Accesses never
+//! wait for the VM lock and never sleep, so a writer draining them always
+//! finishes.
 const std = @import("std");
 const heap = @import("heap.zig");
 const vmm = @import("vmm.zig");
@@ -21,6 +35,11 @@ pub const AddressSpace = struct {
     /// Conservative set of CPUs with this CR3 loaded (including kernel entry).
     /// Scheduler/exec transitions update it with IRQs disabled.
     active_cpus: u64 = 0,
+    /// Serializes page-table changes and the mapping metadata below.
+    vm_lock: spinlock.SpinLock = .{},
+    /// Access epoch and the in-flight access count for each epoch parity.
+    access_epoch: u64 = 0,
+    access_counts: [2]u32 = .{ 0, 0 },
     anonymous_vm: user_vm.State = .{},
     shm_next: u64 = SHM_REGION_BASE,
     // Each entry owns one reference, independently of the task's handle table.
@@ -47,7 +66,7 @@ pub const AddressSpace = struct {
         if (previous != 1) return;
         std.debug.assert(self.residentCpus() == 0);
         std.debug.assert(vmm.currentCr3() != self.pml4);
-        user_vm.releaseAll(&self.anonymous_vm, self.pml4);
+        user_vm.releaseAll(self);
         vmm.destroyAddressSpace(self.pml4);
         // Remove page-table references before returning borrowed SHM frames.
         for (self.mapped_shm) |mapping| {
@@ -68,6 +87,120 @@ pub const AddressSpace = struct {
         defer pin.release();
         const self_bit = @as(u64, 1) << @intCast(percpu.cpuIndex());
         return tlb.invalidateMask(self.pml4, address, self.residentCpus() & ~self_bit);
+    }
+
+    // ── Page-table changes ───────────────────────────────────────────────────
+
+    pub const VmGuard = struct {
+        space: *AddressSpace,
+        pin: preempt.Guard,
+
+        pub fn unlock(self: VmGuard) void {
+            self.space.vm_lock.release();
+            self.pin.release();
+        }
+    };
+
+    /// Pin this CPU and take the VM lock. While another CPU may be resident,
+    /// call with interrupts enabled: a holder waiting for acknowledgements
+    /// must not be blocked by a contender that cannot take IPIs.
+    pub fn lockVm(self: *AddressSpace) VmGuard {
+        const pin = preempt.acquire();
+        self.vm_lock.acquire();
+        return .{ .space = self, .pin = pin };
+    }
+
+    /// Invalidate `pages` pages here and on every CPU that may hold them.
+    /// Caller holds the VM lock. The resident set is sampled after the page
+    /// tables changed: a CPU that joins later loads CR3 afterwards, and that
+    /// load cannot return the translations just removed.
+    pub fn invalidateRange(self: *AddressSpace, address: u64, pages: usize) void {
+        std.debug.assert(percpu.this().preempt_depth != 0);
+        if (pages == 0) return;
+        const self_bit = @as(u64, 1) << @intCast(percpu.cpuIndex());
+        _ = tlb.invalidateRangeMask(self.pml4, address, pages, self.residentCpus() & ~self_bit);
+    }
+
+    // ── Kernel accesses to user memory ───────────────────────────────────────
+
+    pub const Access = struct {
+        space: *AddressSpace,
+        slot: usize,
+        pin: preempt.Guard,
+
+        pub fn end(self: Access) void {
+            _ = @atomicRmw(u32, &self.space.access_counts[self.slot], .Sub, 1, .release);
+            self.pin.release();
+        }
+    };
+
+    /// Publish an in-flight kernel access to this space's user memory. Every
+    /// frame or page table the access can reach stays allocated until `end`.
+    /// Short and non-sleeping: the CPU is pinned for the duration.
+    pub fn beginAccess(self: *AddressSpace) Access {
+        const pin = preempt.acquire();
+        while (true) {
+            const epoch = @atomicLoad(u64, &self.access_epoch, .seq_cst);
+            const slot: usize = @intCast(epoch & 1);
+            _ = @atomicRmw(u32, &self.access_counts[slot], .Add, 1, .seq_cst);
+            // A writer that flipped the epoch before this count was published
+            // might not wait for it, so the count only stands if the epoch is
+            // unchanged. The full value is compared: two flips restore the
+            // parity but not the number.
+            if (@atomicLoad(u64, &self.access_epoch, .seq_cst) == epoch)
+                return .{ .space = self, .slot = slot, .pin = pin };
+            _ = @atomicRmw(u32, &self.access_counts[slot], .Sub, 1, .release);
+        }
+    }
+
+    /// Wait until no access that began before this call is still running.
+    /// Caller holds the VM lock and has already detached and invalidated what
+    /// it is about to free. An access that begins after the flip walks the
+    /// changed tables and cannot reach the detached frames.
+    pub fn drainAccesses(self: *AddressSpace) void {
+        std.debug.assert(percpu.this().preempt_depth != 0);
+        const previous = @atomicRmw(u64, &self.access_epoch, .Add, 1, .seq_cst);
+        const slot: usize = @intCast(previous & 1);
+        while (@atomicLoad(u32, &self.access_counts[slot], .seq_cst) != 0) {
+            asm volatile ("pause");
+        }
+    }
+
+    // ── Borrowed-frame mappings (shared memory, framebuffer) ────────────────
+
+    /// Map `size` bytes of borrowed, physically contiguous frames at the next
+    /// shared-mapping address, leaving a guard page after them. Returns the
+    /// user address. `owner`, when given, is retained by the space for as long
+    /// as the mapping exists. New translations need no remote invalidation.
+    pub fn mapBorrowed(self: *AddressSpace, phys: u64, size: usize, flags: u64, owner: ?*object.Object) error{OutOfMemory}!u64 {
+        const guard = self.lockVm();
+        defer guard.unlock();
+        var slot: ?*?*object.Object = null;
+        if (owner != null) {
+            for (&self.mapped_shm) |*entry| {
+                if (entry.* == null) {
+                    slot = entry;
+                    break;
+                }
+            }
+            if (slot == null) return error.OutOfMemory;
+        }
+        const base = self.shm_next;
+        var off: usize = 0;
+        while (off < size) : (off += vmm.PAGE_SIZE) {
+            vmm.mapPage(self.pml4, base + off, phys + off, flags) catch {
+                // Include the failed page: mapPage may have linked empty
+                // tables on its path before running out of memory.
+                user_vm.detachLocked(self, base, off + vmm.PAGE_SIZE, false);
+                return error.OutOfMemory;
+            };
+        }
+        if (slot) |entry| {
+            object.retain(owner.?);
+            entry.* = owner;
+        }
+        self.shm_next = base + size + vmm.PAGE_SIZE;
+        return base;
     }
 };
 
@@ -90,4 +223,16 @@ pub fn switchTo(previous: ?*AddressSpace, next: ?*AddressSpace) void {
         const old = @atomicRmw(u64, &space.active_cpus, .And, ~bit, .seq_cst);
         std.debug.assert(old & bit != 0);
     }
+}
+
+/// Bracket a kernel access to the running task's user memory. `pml4` must be
+/// the page table the caller validated against; a kernel task or a page table
+/// the current task does not own has no concurrent user threads, so it gets
+/// no guard.
+pub fn beginCurrentAccess(pml4: u64) ?AddressSpace.Access {
+    const sched = @import("../sched/sched.zig");
+    const task = sched.currentTask() orelse return null;
+    const space = task.user_space orelse return null;
+    if (space.pml4 != pml4) return null;
+    return space.beginAccess();
 }

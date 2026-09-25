@@ -198,39 +198,13 @@ pub fn shmMap(h: i64, writable: bool) Error!u64 {
     const space = t.user_space orelse return Error.BadHandle;
     const obj = try (try currentTable()).getShm(h);
     const shm = &obj.data.shm;
-    var mapping_slot: ?*?*object.Object = null;
-    for (&space.mapped_shm) |*slot| {
-        if (slot.* == null) {
-            mapping_slot = slot;
-            break;
-        }
-    }
-    const slot = mapping_slot orelse return Error.OutOfMemory;
-    object.retain(obj);
-    errdefer object.release(obj);
 
-    const base = space.shm_next;
     var flags: u64 = vmm.PRESENT | vmm.USER | vmm.NO_EXECUTE;
     if (writable) flags |= vmm.WRITABLE;
-
-    var off: usize = 0;
-    while (off < shm.size) : (off += vmm.PAGE_SIZE) {
-        vmm.mapPage(space.pml4, base + off, shm.phys + off, flags) catch {
-            var undo: usize = 0;
-            while (undo < off) : (undo += vmm.PAGE_SIZE) {
-                _ = vmm.unmapPage(space.pml4, base + undo);
-                vmm.invalidatePage(base + undo);
-            }
-            return Error.OutOfMemory;
-        };
-        vmm.invalidatePage(base + off);
-    }
-
-    // Leave a guard page between mappings so an overrun faults instead of
-    // silently landing in the next object.
-    space.shm_next = base + shm.size + vmm.PAGE_SIZE;
-    slot.* = obj;
-    return base;
+    // The space retains its own reference for as long as the mapping exists,
+    // independently of the handle. Consecutive mappings are separated by a
+    // guard page so an overrun faults instead of landing in the next object.
+    return space.mapBorrowed(shm.phys, shm.size, flags, obj) catch Error.OutOfMemory;
 }
 
 pub fn shmSize(h: i64) Error!usize {

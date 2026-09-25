@@ -163,9 +163,12 @@ User page tables and mappings now have reference-counted lifetime independent
 of task records, with tests for retained mappings and final-release cleanup.
 The scheduler tracks CPUs using each address space, and CPU-pinned shootdown
 requests keep interrupts live. Kernel probes test remote remaps and contending
-senders on two and four vCPUs; shared user VM syscalls remain unfinished.
-Descriptors, handles, stdio and device/socket ownership now belong to a
-process record shared by its threads, rather than to a single task.
+senders on two and four vCPUs. Descriptors, handles, stdio and device/socket
+ownership now belong to a process record shared by its threads. User VM
+changes are now safe while other CPUs run the same address space: they shoot
+down every resident CPU and wait for in-flight kernel copies before freeing
+anything, checked by mutation-tested concurrency probes. Thread creation
+itself is the next step.
 This is groundwork for shared threads, not pthread support or a complete C++
 standard library. Configurable orphan-process stress and emergency panic
 diagnostics track a still-unexplained intermittent kernel bounds panic.

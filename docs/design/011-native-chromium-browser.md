@@ -1147,6 +1147,64 @@ single-thread behaviour, **not** user threads: no program can yet create a
 second thread, and handle/descriptor tables are not yet locked for
 concurrent threads.
 
+### 11.30 Thread-safe user VM changes and kernel user-memory access
+
+Every anonymous map/unmap/protect/reserve/commit/decommit, shared-memory and
+framebuffer mapping now goes through one protocol in
+`kernel/mm/address_space.zig`:
+
+1. Pin the CPU and take the address space's VM lock, with interrupts enabled
+   (the VM syscalls re-enable them after `SYSCALL` masks them), so a holder
+   waiting for acknowledgements never blocks a contender that cannot take
+   IPIs.
+2. Edit page tables with whole-entry atomic loads/stores; software walkers on
+   other CPUs never see a torn entry.
+3. Removals and permission changes invalidate the range here and on every CPU
+   in the space's residency mask. The shootdown now carries a page count; above
+   32 pages each target reloads CR3 instead of issuing INVLPG per page. A
+   purely local request no longer takes the global shootdown lock, so an
+   IRQ-masked exit path cannot spin behind a sender waiting for its ack.
+4. Emptied page tables are unlinked with the leaves, invalidated in the same
+   shootdown, and freed only afterwards — paging-structure caches may still
+   hold the unlinked upper-level entries until then.
+5. Before any detached frame or table is freed, `drainAccesses` waits for
+   kernel accesses already in flight. Syscall copies, pointer validation and
+   wait-word resolution bracket their page walk and HHDM copy with
+   `beginAccess`/`end`: a counter per epoch parity, re-checked against the full
+   epoch after publication so a reader delayed across two flips cannot be
+   missed. Accesses never wait for the VM lock or sleep, so draining always
+   ends.
+
+New translations need no remote shootdown (x86 does not cache non-present
+entries). The runtime probe `kernel/mm/vm_concurrency_test.zig` exercises the
+protocol with kernel workers attached to one user address space:
+
+| Probe | Result (2026-09-25) |
+|---|---|
+| Anonymous unmap/remap, 8 and 48 pages, pinned remote reader reading through its TLB | 64 rounds each, no stale value |
+| Sparse decommit/commit, 8 pages, same reader | 64 rounds, no stale value |
+| Deterministic detach of test-owned frames at a fixed address, poisoned as soon as the detach returns (8 and 48 pages) | 64 rounds each; the pinned remote TLB never read poison |
+| Kernel copies (`copyFromUser`/`copyToUser`) racing 192 detaches of poisoned-on-detach frames | ~1.9–2.9k successful copies and ~13–15k clean faults per run; no poisoned read, no overwritten poison |
+| Drain handshake: an access parked across a detach | 8 rounds; every detach waited for the in-flight access before its frame was reused |
+
+The probes were mutation-tested. Removing the remote shootdown failed the
+48-page anonymous probe with `StaleTranslation` (the 8-page anonymous probe
+alone can pass by allocator luck, which is why the deterministic probes
+exist). Skipping the access drain passed the free-running copy race — QEMU
+runs both vCPUs round-robin on one host thread, so a short copy rarely
+overlaps a detach — and was caught deterministically by the handshake probe
+(`AccessOutlivedDetach`).
+
+Also verified: the full runtime suite on 3 GiB with two and four vCPUs (the
+four-vCPU run passed all 32 checks), and the desktop interaction suite on
+both the 3 GiB desktop and 4 GiB browser profiles, which exercises Peel's
+framebuffer and shared-memory window mappings through the new locked path.
+
+Remaining before user threads: a thread create/exit/join ABI, killing every
+thread on process exit or fault, and locking the per-process handle and
+descriptor tables. `protect` still rejects executable mappings, so W^X/JIT
+transitions for V8 remain open.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,

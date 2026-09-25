@@ -14,6 +14,9 @@ pub fn run(_: ?*anyopaque) void {
     @import("residency_test.zig").run() catch |err| {
         console.print("[FAIL] address-space residency: {s}\n", .{@errorName(err)});
     };
+    @import("vm_concurrency_test.zig").run() catch |err| {
+        console.print("[FAIL] concurrent user VM: {s}\n", .{@errorName(err)});
+    };
 }
 
 fn legacyProbe() void {

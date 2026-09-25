@@ -225,47 +225,47 @@ fn testWriteXorExecute() void {
 
 fn testUserVm() void {
     const vm = @import("user_vm.zig");
+    const spaces = @import("address_space.zig");
     const baseline = pmm.stats().free_pages;
-    const space = vmm.createAddressSpace() catch {
+    const space = spaces.AddressSpace.create() catch {
         check("user VM: address space", false);
         return;
     };
-    var state: vm.State = .{};
     const after_root = pmm.stats().free_pages;
     var ok = true;
     for (0..64) |_| {
-        const address = vm.map(&state, space, 65537, 3) catch {
+        const address = vm.map(space, 65537, 3) catch {
             ok = false;
             break;
         };
-        vm.protect(&state, space, address, 65537, 0) catch {
+        vm.protect(space, address, 65537, 0) catch {
             ok = false;
             break;
         };
-        if (vmm.leafFlags(space, address).? & vmm.USER != 0) ok = false;
-        vm.protect(&state, space, address, 65537, 1) catch {
+        if (vmm.leafFlags(space.pml4, address).? & vmm.USER != 0) ok = false;
+        vm.protect(space, address, 65537, 1) catch {
             ok = false;
             break;
         };
-        if (vmm.leafFlags(space, address).? & vmm.WRITABLE != 0) ok = false;
-        vm.unmap(&state, space, address, 65537) catch {
+        if (vmm.leafFlags(space.pml4, address).? & vmm.WRITABLE != 0) ok = false;
+        vm.unmap(space, address, 65537) catch {
             ok = false;
             break;
         };
-        if (vmm.translate(space, address) != null or pmm.stats().free_pages != after_root) ok = false;
+        if (vmm.translate(space.pml4, address) != null or pmm.stats().free_pages != after_root) ok = false;
     }
     check("user VM: 64 cycles return frames AND page tables", ok);
-    _ = vm.map(&state, space, 1048576, 3) catch {
+    _ = vm.map(space, 1048576, 3) catch {
         check("user VM: exit setup", false);
         return;
     };
-    _ = vm.map(&state, space, 4096, 0) catch {
+    _ = vm.map(space, 4096, 0) catch {
         check("user VM: protected exit setup", false);
         return;
     };
-    vm.releaseAll(&state, space);
+    vm.releaseAll(space);
     check("user VM: exit cleanup frees protected and writable memory", pmm.stats().free_pages == after_root);
-    vmm.destroyAddressSpace(space);
+    space.release();
     check("user VM: address-space teardown conserves every page", pmm.stats().free_pages == baseline);
 
     const mixed = vmm.createAddressSpace() catch return;
@@ -281,123 +281,123 @@ fn testUserVm() void {
 
 fn testUserVmSubranges() void {
     const vm = @import("user_vm.zig");
+    const spaces = @import("address_space.zig");
     const baseline = pmm.stats().free_pages;
-    const space = vmm.createAddressSpace() catch {
+    const space = spaces.AddressSpace.create() catch {
         check("user VM: subrange address space", false);
         return;
     };
-    var state: vm.State = .{};
     var ok = true;
-    const address = vm.map(&state, space, 3 * vmm.PAGE_SIZE, 3) catch {
+    const address = vm.map(space, 3 * vmm.PAGE_SIZE, 3) catch {
         check("user VM: subrange setup", false);
-        vmm.destroyAddressSpace(space);
+        space.release();
         return;
     };
-    vm.protect(&state, space, address + vmm.PAGE_SIZE, vmm.PAGE_SIZE, 1) catch {
+    vm.protect(space, address + vmm.PAGE_SIZE, vmm.PAGE_SIZE, 1) catch {
         ok = false;
     };
-    if (vmm.leafFlags(space, address).? & vmm.WRITABLE == 0 or
-        vmm.leafFlags(space, address + vmm.PAGE_SIZE).? & vmm.WRITABLE != 0 or
-        vmm.leafFlags(space, address + 2 * vmm.PAGE_SIZE).? & vmm.WRITABLE == 0) ok = false;
-    vm.unmap(&state, space, address + vmm.PAGE_SIZE, vmm.PAGE_SIZE) catch {
+    if (vmm.leafFlags(space.pml4, address).? & vmm.WRITABLE == 0 or
+        vmm.leafFlags(space.pml4, address + vmm.PAGE_SIZE).? & vmm.WRITABLE != 0 or
+        vmm.leafFlags(space.pml4, address + 2 * vmm.PAGE_SIZE).? & vmm.WRITABLE == 0) ok = false;
+    vm.unmap(space, address + vmm.PAGE_SIZE, vmm.PAGE_SIZE) catch {
         ok = false;
     };
-    if (vmm.translate(space, address) == null or
-        vmm.translate(space, address + vmm.PAGE_SIZE) != null or
-        vmm.translate(space, address + 2 * vmm.PAGE_SIZE) == null) ok = false;
-    if (vm.protect(&state, space, address, 3 * vmm.PAGE_SIZE, 1)) |_| {
+    if (vmm.translate(space.pml4, address) == null or
+        vmm.translate(space.pml4, address + vmm.PAGE_SIZE) != null or
+        vmm.translate(space.pml4, address + 2 * vmm.PAGE_SIZE) == null) ok = false;
+    if (vm.protect(space, address, 3 * vmm.PAGE_SIZE, 1)) |_| {
         ok = false;
     } else |err| {
         if (err != error.Invalid) ok = false;
     }
-    const hole = vm.map(&state, space, vmm.PAGE_SIZE, 3) catch 0;
+    const hole = vm.map(space, vmm.PAGE_SIZE, 3) catch 0;
     if (hole != address + vmm.PAGE_SIZE) ok = false;
-    vm.releaseAll(&state, space);
-    const edges = vm.map(&state, space, 3 * vmm.PAGE_SIZE, 3) catch 0;
+    vm.releaseAll(space);
+    const edges = vm.map(space, 3 * vmm.PAGE_SIZE, 3) catch 0;
     if (edges == 0) {
         ok = false;
     } else {
-        vm.unmap(&state, space, edges, vmm.PAGE_SIZE) catch {
+        vm.unmap(space, edges, vmm.PAGE_SIZE) catch {
             ok = false;
         };
-        vm.unmap(&state, space, edges + 2 * vmm.PAGE_SIZE, vmm.PAGE_SIZE) catch {
+        vm.unmap(space, edges + 2 * vmm.PAGE_SIZE, vmm.PAGE_SIZE) catch {
             ok = false;
         };
-        if (vmm.translate(space, edges) != null or
-            vmm.translate(space, edges + vmm.PAGE_SIZE) == null or
-            vmm.translate(space, edges + 2 * vmm.PAGE_SIZE) != null) ok = false;
+        if (vmm.translate(space.pml4, edges) != null or
+            vmm.translate(space.pml4, edges + vmm.PAGE_SIZE) == null or
+            vmm.translate(space.pml4, edges + 2 * vmm.PAGE_SIZE) != null) ok = false;
     }
-    vm.releaseAll(&state, space);
-    vmm.destroyAddressSpace(space);
+    vm.releaseAll(space);
+    space.release();
     check("user VM: subranges, hole reuse and frame conservation", ok and pmm.stats().free_pages == baseline);
 }
 
 fn testUserVmSparse() void {
     const vm = @import("user_vm.zig");
+    const spaces = @import("address_space.zig");
     const baseline = pmm.stats().free_pages;
-    const space = vmm.createAddressSpace() catch {
+    const space = spaces.AddressSpace.create() catch {
         check("user VM: sparse address space", false);
         return;
     };
-    var state: vm.State = .{};
     const after_root = pmm.stats().free_pages;
     var ok = true;
     const span = 1024 * 1024 * 1024;
-    const address = vm.reserve(&state, space, span) catch {
+    const address = vm.reserve(space, span) catch {
         check("user VM: sparse reservation setup", false);
-        vmm.destroyAddressSpace(space);
+        space.release();
         return;
     };
-    if (pmm.stats().free_pages != after_root or vmm.translate(space, address + span - vmm.PAGE_SIZE) != null) ok = false;
+    if (pmm.stats().free_pages != after_root or vmm.translate(space.pml4, address + span - vmm.PAGE_SIZE) != null) ok = false;
     const page = address + 8 * 1024 * 1024;
-    vm.commit(&state, space, page, vmm.PAGE_SIZE, 3) catch {
+    vm.commit(space, page, vmm.PAGE_SIZE, 3) catch {
         ok = false;
     };
-    if (vmm.translate(space, page)) |phys| {
+    if (vmm.translate(space.pml4, page)) |phys| {
         const bytes: [*]u8 = @ptrFromInt(pmm.physToVirt(phys));
         if (bytes[0] != 0) ok = false;
         bytes[0] = 0x5a;
     } else ok = false;
-    if (vm.commit(&state, space, page, vmm.PAGE_SIZE, 3)) |_| {
+    if (vm.commit(space, page, vmm.PAGE_SIZE, 3)) |_| {
         ok = false;
     } else |err| {
         if (err != error.Invalid) ok = false;
     }
-    if (vm.protect(&state, space, page + vmm.PAGE_SIZE, vmm.PAGE_SIZE, 1)) |_| {
+    if (vm.protect(space, page + vmm.PAGE_SIZE, vmm.PAGE_SIZE, 1)) |_| {
         ok = false;
     } else |err| {
         if (err != error.Invalid) ok = false;
     }
-    if (vm.protect(&state, space, page, 2 * vmm.PAGE_SIZE, 1)) |_| {
+    if (vm.protect(space, page, 2 * vmm.PAGE_SIZE, 1)) |_| {
         ok = false;
     } else |err| {
-        if (err != error.Invalid or vmm.leafFlags(space, page).? & vmm.WRITABLE == 0) ok = false;
+        if (err != error.Invalid or vmm.leafFlags(space.pml4, page).? & vmm.WRITABLE == 0) ok = false;
     }
-    vm.decommit(&state, space, page, vmm.PAGE_SIZE) catch {
+    vm.decommit(space, page, vmm.PAGE_SIZE) catch {
         ok = false;
     };
-    if (vmm.translate(space, page) != null or pmm.stats().free_pages != after_root) ok = false;
-    vm.commit(&state, space, page, vmm.PAGE_SIZE, 1) catch {
+    if (vmm.translate(space.pml4, page) != null or pmm.stats().free_pages != after_root) ok = false;
+    vm.commit(space, page, vmm.PAGE_SIZE, 1) catch {
         ok = false;
     };
-    if (vmm.translate(space, page)) |phys| {
+    if (vmm.translate(space.pml4, page)) |phys| {
         const bytes: [*]u8 = @ptrFromInt(pmm.physToVirt(phys));
-        if (bytes[0] != 0 or vmm.leafFlags(space, page).? & vmm.WRITABLE != 0) ok = false;
+        if (bytes[0] != 0 or vmm.leafFlags(space.pml4, page).? & vmm.WRITABLE != 0) ok = false;
     } else ok = false;
     const split = address + 16 * 1024 * 1024;
-    vm.unmap(&state, space, split, vmm.PAGE_SIZE) catch {
+    vm.unmap(space, split, vmm.PAGE_SIZE) catch {
         ok = false;
     };
-    if (vm.commit(&state, space, split, vmm.PAGE_SIZE, 3)) |_| {
+    if (vm.commit(space, split, vmm.PAGE_SIZE, 3)) |_| {
         ok = false;
     } else |err| {
         if (err != error.Invalid) ok = false;
     }
-    vm.commit(&state, space, split + vmm.PAGE_SIZE, vmm.PAGE_SIZE, 3) catch {
+    vm.commit(space, split + vmm.PAGE_SIZE, vmm.PAGE_SIZE, 3) catch {
         ok = false;
     };
-    vm.releaseAll(&state, space);
-    vmm.destroyAddressSpace(space);
+    vm.releaseAll(space);
+    space.release();
     check("user VM: sparse reserve, commit, decommit and cleanup", ok and pmm.stats().free_pages == baseline);
 }
 
@@ -420,8 +420,8 @@ fn testAddressSpaceLifetime() !void {
         errdefer space.release();
         const image = try vmm.allocAndMap(space.pml4, 0x400000, vmm.PRESENT | vmm.USER | vmm.WRITABLE | vmm.NO_EXECUTE);
         @as(*u64, @ptrFromInt(pmm.physToVirt(image))).* = 0x12345678;
-        const private = try vm.map(&space.anonymous_vm, space.pml4, vmm.PAGE_SIZE, 3);
-        try vm.protect(&space.anonymous_vm, space.pml4, private, vmm.PAGE_SIZE, 0);
+        const private = try vm.map(space, vmm.PAGE_SIZE, 3);
+        try vm.protect(space, private, vmm.PAGE_SIZE, 0);
         const shm = try object.createShm("", vmm.PAGE_SIZE);
         // Transfer the creator's reference into the mapping table, then mimic
         // a second handle being retained and closed while the mapping survives.
