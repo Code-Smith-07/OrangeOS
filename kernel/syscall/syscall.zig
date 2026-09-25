@@ -71,6 +71,11 @@ pub const Nr = enum(u64) {
     thread_create = 40,
     thread_exit = 41,
     gettid = 45,
+    set_exit_word = 46,
+    seek = 24,
+    stat = 25,
+    fstat = 26,
+    clock_ns = 63,
     sleep_ms = 61,
     open = 20,
     close = 21,
@@ -156,6 +161,11 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .thread_create => sysThreadCreate(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
         .thread_exit => sysThreadExit(@bitCast(frame.rdi)),
         .gettid => sysGettid(),
+        .set_exit_word => sysSetExitWord(frame.rdi),
+        .seek => sysSeek(frame.rdi, frame.rsi, frame.rdx),
+        .stat => sysStat(frame.rdi, frame.rsi, frame.rdx),
+        .fstat => sysFstat(frame.rdi, frame.rsi),
+        .clock_ns => sysClockNs(frame.rdi),
         .sleep_ms => sysSleepMs(frame.rdi),
         // Fourth argument is in r10, not rcx: the syscall instruction
         // clobbers rcx with the return address.
@@ -409,6 +419,63 @@ fn sysThreadExit(code: i64) i64 {
 fn sysGettid() i64 {
     const t = sched.currentTask() orelse return EIO;
     return @intCast(t.tid);
+}
+
+/// Change the word cleared and woken when the calling thread exits (0 for
+/// none), as C runtimes' set_tid_address does. Returns the caller's tid.
+fn sysSetExitWord(address: u64) i64 {
+    const t = sched.currentTask() orelse return EIO;
+    if (address != 0 and (address % 4 != 0 or !isUserAddress(address))) return EINVAL;
+    t.exit_word = address;
+    return @intCast(t.tid);
+}
+
+/// What `stat`/`fstat` report. Kinds: 1 regular file, 2 directory, 3 the
+/// console or a terminal (descriptors 0-2).
+const FileStatus = extern struct {
+    size: u64,
+    kind: u32,
+    reserved: u32 = 0,
+};
+
+fn copyStatus(pointer: u64, status: FileStatus) i64 {
+    validate.copyToUser(vmm.currentCr3(), pointer, std.mem.asBytes(&status), @sizeOf(FileStatus)) catch return EFAULT;
+    return 0;
+}
+
+fn sysSeek(fd: u64, offset: u64, whence: u64) i64 {
+    if (fd > std.math.maxInt(i32)) return EBADF;
+    if (whence > 2) return EINVAL;
+    const proc = sched.currentProcess() orelse return EIO;
+    const position = vfs.seekFrom(&proc.files, @intCast(fd), @bitCast(offset), @enumFromInt(whence)) catch |e| return vfsErrno(e);
+    return @intCast(position);
+}
+
+fn sysStat(path_ptr: u64, path_len: u64, out: u64) i64 {
+    if (path_len == 0 or path_len > vfs.MAX_PATH) return ENAMETOOLONG;
+    var path: [vfs.MAX_PATH]u8 = undefined;
+    validate.copyFromUser(vmm.currentCr3(), &path, path_ptr, @intCast(path_len)) catch return EFAULT;
+    const node = vfs.resolve(path[0..@intCast(path_len)]) catch |e| return vfsErrno(e);
+    return copyStatus(out, .{ .size = node.size(), .kind = if (node.isDir()) 2 else 1 });
+}
+
+fn sysFstat(fd: u64, out: u64) i64 {
+    if (fd <= 2) return copyStatus(out, .{ .size = 0, .kind = 3 });
+    if (fd > std.math.maxInt(i32)) return EBADF;
+    const proc = sched.currentProcess() orelse return EIO;
+    const status = vfs.statFd(&proc.files, @intCast(fd)) catch |e| return vfsErrno(e);
+    return copyStatus(out, .{ .size = status.size, .kind = if (status.directory) 2 else 1 });
+}
+
+/// Nanoseconds on clock 0 (monotonic, since boot) or 1 (wall, since the
+/// Unix epoch).
+fn sysClockNs(clock: u64) i64 {
+    const time = @import("../time/time.zig");
+    return switch (clock) {
+        0 => @intCast(time.monotonicNs()),
+        1 => if (time.unixNanos()) |ns| @intCast(ns) else EIO,
+        else => EINVAL,
+    };
 }
 
 fn sysWrite(fd: u64, buf: u64, len: u64) i64 {

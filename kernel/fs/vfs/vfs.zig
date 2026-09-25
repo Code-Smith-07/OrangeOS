@@ -168,6 +168,36 @@ pub fn seek(table: *FileTable, fd: i32, offset: u64) Error!void {
     table.entries[i].offset = offset;
 }
 
+pub const Whence = enum(u32) { set = 0, current = 1, end = 2 };
+
+/// lseek semantics: move relative to the start, the current offset or the
+/// end, and return the new offset. Negative results are rejected.
+pub fn seekFrom(table: *FileTable, fd: i32, offset: i64, whence: Whence) Error!u64 {
+    const state = spinlock.acquireIrqSave(&table.lock);
+    defer spinlock.releaseIrqRestore(&table.lock, state);
+    const i = try checkFd(table, fd);
+    const entry = &table.entries[i];
+    const base: i128 = switch (whence) {
+        .set => 0,
+        .current => entry.offset,
+        .end => entry.node.size(),
+    };
+    const target = base + offset;
+    if (target < 0 or target > std.math.maxInt(i64)) return Error.BadFd;
+    entry.offset = @intCast(target);
+    return entry.offset;
+}
+
+pub const Status = struct { size: u64, directory: bool };
+
+pub fn statFd(table: *FileTable, fd: i32) Error!Status {
+    const state = spinlock.acquireIrqSave(&table.lock);
+    defer spinlock.releaseIrqRestore(&table.lock, state);
+    const i = try checkFd(table, fd);
+    const node = &table.entries[i].node;
+    return .{ .size = node.size(), .directory = node.isDir() };
+}
+
 pub fn statSize(table: *FileTable, fd: i32) Error!u64 {
     const state = spinlock.acquireIrqSave(&table.lock);
     defer spinlock.releaseIrqRestore(&table.lock, state);

@@ -1338,6 +1338,14 @@ the virtual range. Invalid arguments return `-EINVAL`, exhaustion `-ENOMEM`.
 Process exit releases all owned regions. There is no `brk` syscall yet. Other
 table entries remain design targets where absent from `kernel/syscall/syscall.zig`.
 
+Program entry (2026-09-25): the kernel enters a new program at its ELF entry
+with rsp at a zero return slot, above which sits a SysV initial stack —
+`argc` (1), `argv[0]` (the executable path), an empty `envp`, and an auxiliary
+vector with `AT_PHDR`/`AT_PHENT`/`AT_PHNUM` (a copy of the program headers),
+`AT_PAGESZ`, `AT_ENTRY`, zero ids, `AT_SECURE` 0 and `AT_EXECFN`. C programs
+link musl 1.2.5, whose Linux-numbered calls are translated in userland by
+`userland/libs/musl-orange/orange.zig`; no Linux number reaches the kernel.
+
 | #  | Name | Signature | Phase |
 |----|------|-----------|-------|
 | | **── Process ──** | | |
@@ -1365,9 +1373,9 @@ table entries remain design targets where absent from `kernel/syscall/syscall.zi
 | 21 | `close` | `(fd) → !void` | P5 |
 | 22 | `read` | `(fd, buf, len) → count` | P5 |
 | 23 | `write` | `(fd, buf, len) → count` | P5 |
-| 24 | `seek` | `(fd, off, whence) → off` | P5 |
-| 25 | `stat` | `(path, *statbuf) → !void` | P5 |
-| 26 | `fstat` | `(fd, *statbuf) → !void` | P5 |
+| 24 | `seek` | `(fd, off, whence) → off` (implemented; whence 0/1/2 = set/current/end) | P5 |
+| 25 | `stat` | `(path_ptr, path_len, *status) → !void` (implemented; status is `{size: u64, kind: u32, reserved: u32}`, kind 1 file, 2 directory, 3 console) | P5 |
+| 26 | `fstat` | `(fd, *status) → !void` (implemented; fds 0–2 report a console) | P5 |
 | 27 | `dup` / `dup2` | `(fd[, newfd]) → fd` | P5 |
 | 28 | `pipe` | `(*[2]fd) → !void` | P5 |
 | 29 | `ioctl` | `(fd, req, arg) → !isize` | P5 |
@@ -1388,6 +1396,7 @@ table entries remain design targets where absent from `kernel/syscall/syscall.zi
 | 43 | `futex_wait` | `(*u32, expected, timeout) → !void` — superseded by call 18 | P4 |
 | 44 | `futex_wake` | `(*u32, count) → count` — superseded by call 19 | P4 |
 | 45 | `gettid` | `() → tid`; the first thread's tid is the pid (implemented) | P4 runtime |
+| 46 | `set_exit_word` | `(aligned_u32_ptr) → tid` — sets the calling thread's exit word, as `set_tid_address` does (implemented) | P4 runtime |
 | | **── IPC ──** | | |
 | 50 | `port_create` | `(name, flags) → handle` | P6 |
 | 51 | `port_connect` | `(name) → handle` | P6 |
@@ -1400,6 +1409,7 @@ table entries remain design targets where absent from `kernel/syscall/syscall.zi
 | | **── Time ──** | | |
 | 60 | `clock_gettime` | `(clockid, *timespec) → !void` | P3 |
 | 61 | `nanosleep` | `(*timespec, *rem) → !void` | P4 |
+| 63 | `clock_ns` | `(clock) → ns` — 0 monotonic since boot, 1 wall-clock Unix time (implemented) | P4 runtime |
 | | **── Device / Graphics ──** | | |
 | 70 | `fb_acquire` | `(*fbinfo) → handle` | P7 |
 | 71 | `fb_map` | `(h) → ptr` | P7 |

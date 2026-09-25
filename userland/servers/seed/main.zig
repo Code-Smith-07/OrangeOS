@@ -145,6 +145,13 @@ export fn _start() callconv(.c) noreturn {
             }
         }
         pulp.puts("runtime: PASS W^X code generation across threads\n");
+        const c_program = pulp.spawn("/bin/musl-probe") catch pulp.exit(175);
+        const c_code = pulp.wait(c_program) catch pulp.exit(176);
+        if (c_code != 0) {
+            pulp.print("runtime: FAIL musl C program exit {d}\n", .{c_code});
+            pulp.exit(177);
+        }
+        pulp.puts("runtime: PASS C program on musl\n");
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.
         for (0..2) |_| {
