@@ -11,17 +11,75 @@
 const std = @import("std");
 const vmm = @import("vmm.zig");
 const pmm = @import("pmm.zig");
+const heap = @import("heap.zig");
 const AddressSpace = @import("address_space.zig").AddressSpace;
 
 pub const BASE: u64 = 0x0000_4000_0000_0000;
-pub const LIMIT: usize = 8 * 1024 * 1024 * 1024;
+/// 16 TiB for anonymous memory, below the shared-mapping region at 96 TiB.
+/// Reservations cost no memory, so allocators that reserve large pools up
+/// front (V8's pointer-compression cage, PartitionAlloc's pools) fit.
+pub const LIMIT: usize = 16 * 1024 * 1024 * 1024 * 1024;
 pub const MAX_MAPPING: usize = 64 * 1024 * 1024;
-pub const MAX_RESERVATION: usize = 4 * 1024 * 1024 * 1024;
-pub const MAX_MAPPINGS = 128;
-pub const Region = struct { address: u64 = 0, size: usize = 0, sparse: bool = false };
-/// Region metadata. Guarded by the owning AddressSpace's VM lock.
+pub const MAX_RESERVATION: usize = 64 * 1024 * 1024 * 1024;
+/// Regions per address space. Every thread's stack is one; a browser process
+/// holds thousands (Linux's default limit is 65530).
+pub const MAX_MAPPINGS = 16384;
+pub const Region = struct {
+    address: u64 = 0,
+    size: usize = 0,
+    sparse: bool = false,
+
+    fn end(self: Region) u64 {
+        return self.address + self.size;
+    }
+};
+
+/// Region metadata: sorted by address, never overlapping, grown on demand
+/// from the kernel heap. Guarded by the owning AddressSpace's VM lock.
+/// The array is always larger than the heap's slab classes, so it is whole
+/// pages that go straight back to the page allocator, and it is freed as
+/// soon as the last region goes: page accounting stays exact.
 pub const State = struct {
-    regions: [MAX_MAPPINGS]Region = [_]Region{.{}} ** MAX_MAPPINGS,
+    items: [*]Region = undefined,
+    len: usize = 0,
+    capacity: usize = 0,
+
+    pub fn slice(self: *const State) []Region {
+        return self.items[0..self.len];
+    }
+
+    /// Make room for one more region.
+    fn ensureSpare(self: *State) Error!void {
+        if (self.len < self.capacity) return;
+        if (self.capacity >= MAX_MAPPINGS) return error.OutOfMemory;
+        const grown: usize = @min(@max(128, self.capacity * 2), MAX_MAPPINGS);
+        const raw = heap.alloc(grown * @sizeOf(Region)) catch return error.OutOfMemory;
+        const items: [*]Region = @ptrCast(@alignCast(raw));
+        if (self.capacity != 0) {
+            @memcpy(items[0..self.len], self.items[0..self.len]);
+            heap.free(@ptrCast(self.items));
+        }
+        self.items = items;
+        self.capacity = grown;
+    }
+
+    fn insertAt(self: *State, index: usize, region: Region) void {
+        std.debug.assert(self.len < self.capacity and index <= self.len);
+        std.mem.copyBackwards(Region, self.items[index + 1 .. self.len + 1], self.items[index..self.len]);
+        self.items[index] = region;
+        self.len += 1;
+    }
+
+    fn removeAt(self: *State, index: usize) void {
+        std.mem.copyForwards(Region, self.items[index .. self.len - 1], self.items[index + 1 .. self.len]);
+        self.len -= 1;
+        if (self.len == 0) self.deinit();
+    }
+
+    fn deinit(self: *State) void {
+        if (self.capacity != 0) heap.free(@ptrCast(self.items));
+        self.* = .{};
+    }
 };
 pub const Error = error{ Invalid, Unsupported, OutOfMemory };
 
@@ -53,44 +111,41 @@ fn flagsFor(prot: u64) Error!u64 {
     };
 }
 
-fn emptySlot(state: *State) Error!*Region {
-    for (&state.regions) |*r| if (r.size == 0) {
-        return r;
-    };
-    return error.OutOfMemory;
-}
+const Fit = struct { address: u64, index: usize };
 
-fn firstFit(state: *State, size: usize) Error!u64 {
-    // First fit reuses released addresses, including holes between live regions.
-    var base = BASE;
-    while (true) {
-        if (base + size > BASE + LIMIT) return error.OutOfMemory;
-        var next = base;
-        for (state.regions) |r| {
-            if (r.size != 0 and base < r.address + r.size and base + size > r.address)
-                next = @max(next, r.address + r.size);
-        }
-        if (next == base) break;
-        base = next;
+/// The lowest free range of `size` bytes, so released addresses (including
+/// holes between live regions) are reused, and where its region belongs in
+/// the sorted table. One pass over the regions.
+fn firstFit(state: *const State, size: usize) Error!Fit {
+    var candidate = BASE;
+    for (state.slice(), 0..) |r, i| {
+        if (r.address >= candidate + size) return .{ .address = candidate, .index = i };
+        candidate = @max(candidate, r.end());
     }
-    return base;
+    if (candidate + size > BASE + LIMIT) return error.OutOfMemory;
+    return .{ .address = candidate, .index = state.len };
 }
 
 fn checkUnmapped(pml4: u64, base: u64, size: usize) Error!void {
     // Never overwrite image/device/shared mappings, even for an unusual ELF.
-    var off: usize = 0;
-    while (off < size) : (off += vmm.PAGE_SIZE) {
-        if (vmm.translate(pml4, base + off) != null) return error.Invalid;
-    }
+    if (vmm.anyMapped(pml4, base, size)) return error.Invalid;
 }
 
-fn findContaining(state: *State, address: u64, length: u64, max: usize) Error!*Region {
+/// Index of the region wholly containing [address, address + length).
+fn findContaining(state: *const State, address: u64, length: u64, max: usize) Error!usize {
     const size = try sizeOf(length, max);
     if (address % vmm.PAGE_SIZE != 0) return error.Invalid;
     const end = std.math.add(u64, address, size) catch return error.Invalid;
-    for (&state.regions) |*r| {
-        if (r.size != 0 and address >= r.address and end <= r.address + r.size) return r;
+    // The last region starting at or below the address.
+    var low: usize = 0;
+    var high: usize = state.len;
+    while (low < high) {
+        const middle = low + (high - low) / 2;
+        if (state.items[middle].address <= address) low = middle + 1 else high = middle;
     }
+    if (low == 0) return error.Invalid;
+    const r = state.items[low - 1];
+    if (end <= r.end()) return low - 1;
     return error.Invalid;
 }
 
@@ -157,12 +212,12 @@ pub fn map(space: *AddressSpace, length: u64, prot: u64) Error!u64 {
     const guard = space.lockVm();
     defer guard.unlock();
     const state = &space.anonymous_vm;
-    const region = try emptySlot(state);
-    const base = try firstFit(state, size);
-    try checkUnmapped(space.pml4, base, size);
-    try populateLocked(space, base, size, flags);
-    region.* = .{ .address = base, .size = size };
-    return base;
+    try state.ensureSpare();
+    const fit = try firstFit(state, size);
+    try checkUnmapped(space.pml4, fit.address, size);
+    try populateLocked(space, fit.address, size, flags);
+    state.insertAt(fit.index, .{ .address = fit.address, .size = size });
+    return fit.address;
 }
 
 /// Reserve virtual addresses without allocating page tables or physical frames.
@@ -171,11 +226,11 @@ pub fn reserve(space: *AddressSpace, length: u64) Error!u64 {
     const guard = space.lockVm();
     defer guard.unlock();
     const state = &space.anonymous_vm;
-    const region = try emptySlot(state);
-    const base = try firstFit(state, size);
-    try checkUnmapped(space.pml4, base, size);
-    region.* = .{ .address = base, .size = size, .sparse = true };
-    return base;
+    try state.ensureSpare();
+    const fit = try firstFit(state, size);
+    try checkUnmapped(space.pml4, fit.address, size);
+    state.insertAt(fit.index, .{ .address = fit.address, .size = size, .sparse = true });
+    return fit.address;
 }
 
 /// Release a page-aligned subrange. A middle removal splits one owned region
@@ -185,28 +240,21 @@ pub fn unmap(space: *AddressSpace, address: u64, length: u64) Error!void {
     const guard = space.lockVm();
     defer guard.unlock();
     const state = &space.anonymous_vm;
-    const region = try findContaining(state, address, length, MAX_RESERVATION);
-    const old_end = region.address + region.size;
+    const index = try findContaining(state, address, length, MAX_RESERVATION);
+    const region = state.items[index];
+    const old_end = region.end();
     const end = address + size;
-    var right: ?*Region = null;
-    if (address > region.address and end < old_end) {
-        for (&state.regions) |*r| {
-            if (r.size == 0) {
-                right = r;
-                break;
-            }
-        }
-        if (right == null) return error.OutOfMemory;
-    }
+    const splits = address > region.address and end < old_end;
+    if (splits) try state.ensureSpare();
 
     detachLocked(space, address, size, true);
     if (address == region.address and end == old_end) {
-        region.* = .{};
+        state.removeAt(index);
     } else if (address == region.address) {
-        region.* = .{ .address = end, .size = @intCast(old_end - end), .sparse = region.sparse };
+        state.items[index] = .{ .address = end, .size = @intCast(old_end - end), .sparse = region.sparse };
     } else {
-        region.size = @intCast(address - region.address);
-        if (right) |slot| slot.* = .{ .address = end, .size = @intCast(old_end - end), .sparse = region.sparse };
+        state.items[index].size = @intCast(address - region.address);
+        if (splits) state.insertAt(index + 1, .{ .address = end, .size = @intCast(old_end - end), .sparse = region.sparse });
     }
 }
 
@@ -239,8 +287,8 @@ pub fn commit(space: *AddressSpace, address: u64, length: u64, prot: u64) Error!
     const size = try sizeOf(length, MAX_MAPPING);
     const guard = space.lockVm();
     defer guard.unlock();
-    const region = try findContaining(&space.anonymous_vm, address, length, MAX_MAPPING);
-    if (!region.sparse) return error.Invalid;
+    const index = try findContaining(&space.anonymous_vm, address, length, MAX_MAPPING);
+    if (!space.anonymous_vm.items[index].sparse) return error.Invalid;
     try checkUnmapped(space.pml4, address, size);
     try populateLocked(space, address, size, flags);
 }
@@ -250,8 +298,8 @@ pub fn decommit(space: *AddressSpace, address: u64, length: u64) Error!void {
     const size = try sizeOf(length, MAX_MAPPING);
     const guard = space.lockVm();
     defer guard.unlock();
-    const region = try findContaining(&space.anonymous_vm, address, length, MAX_MAPPING);
-    if (!region.sparse) return error.Invalid;
+    const index = try findContaining(&space.anonymous_vm, address, length, MAX_MAPPING);
+    if (!space.anonymous_vm.items[index].sparse) return error.Invalid;
     detachLocked(space, address, size, true);
 }
 
@@ -260,8 +308,6 @@ pub fn decommit(space: *AddressSpace, address: u64, length: u64) Error!void {
 pub fn releaseAll(space: *AddressSpace) void {
     const guard = space.lockVm();
     defer guard.unlock();
-    for (&space.anonymous_vm.regions) |*r| {
-        if (r.size != 0) detachLocked(space, r.address, r.size, true);
-        r.* = .{};
-    }
+    for (space.anonymous_vm.slice()) |r| detachLocked(space, r.address, r.size, true);
+    space.anonymous_vm.deinit();
 }

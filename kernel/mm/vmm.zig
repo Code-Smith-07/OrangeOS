@@ -152,6 +152,37 @@ pub fn translate(pml4_phys: u64, virt: u64) ?u64 {
     return (e0 & ADDR_MASK) | (virt & 0xFFF);
 }
 
+/// Whether any page in [virt, virt + size) is mapped. Absent tables are
+/// skipped whole, so checking a many-GiB reservation costs a few lookups per
+/// populated 2 MiB block rather than one per page.
+pub fn anyMapped(pml4_phys: u64, virt: u64, size: u64) bool {
+    const end = virt + size;
+    var address = virt;
+    const pml4 = tableAt(pml4_phys);
+    while (address < end) {
+        const e3 = loadEntry(&pml4[indexOf(address, 3)]);
+        if (e3 & PRESENT == 0) {
+            address = (address | ((1 << 39) - 1)) + 1;
+            continue;
+        }
+        const e2 = loadEntry(&tableAt(e3)[indexOf(address, 2)]);
+        if (e2 & PRESENT == 0) {
+            address = (address | ((1 << 30) - 1)) + 1;
+            continue;
+        }
+        if (e2 & HUGE != 0) return true;
+        const e1 = loadEntry(&tableAt(e2)[indexOf(address, 1)]);
+        if (e1 & PRESENT == 0) {
+            address = (address | ((1 << 21) - 1)) + 1;
+            continue;
+        }
+        if (e1 & HUGE != 0) return true;
+        if (loadEntry(&tableAt(e1)[indexOf(address, 0)]) & PRESENT != 0) return true;
+        address += PAGE_SIZE;
+    }
+    return false;
+}
+
 /// Return the leaf page-table entry flags for `virt`, or null if unmapped.
 /// Used to verify that W^X actually took effect rather than assuming it did.
 pub fn leafFlags(pml4_phys: u64, virt: u64) ?u64 {

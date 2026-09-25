@@ -166,6 +166,13 @@ export fn _start() callconv(.c) noreturn {
             pulp.exit(183);
         }
         pulp.puts("runtime: PASS writable files in /tmp\n");
+        const capacity_program = pulp.spawn("/bin/thread-capacity") catch pulp.exit(184);
+        const capacity_code = pulp.wait(capacity_program) catch pulp.exit(185);
+        if (capacity_code != 0) {
+            pulp.print("runtime: FAIL thread capacity exit {d}\n", .{capacity_code});
+            pulp.exit(186);
+        }
+        pulp.puts("runtime: PASS 511 threads in one program\n");
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.
         for (0..2) |_| {
@@ -283,16 +290,17 @@ export fn _start() callconv(.c) noreturn {
             }
         }
         pulp.puts("runtime: TCP probes finished\n");
-        // More than the registry's 64 concurrent slots must be possible over
+        // More concurrent programs than the table admits must be possible over
         // the machine's lifetime once each child has been waited/reaped.
-        for (0..96) |_| {
+        for (0..300) |_| {
             const child = pulp.spawn("/bin/reap-probe") catch pulp.exit(102);
             if ((pulp.wait(child) catch pulp.exit(103)) != 0) pulp.exit(104);
             if (pulp.syscall2(pulp.NR.wait, @bitCast(child), 1) != -10) pulp.exit(105);
         }
         if (pulp.syscall2(pulp.NR.wait, 1, 1) != -10) pulp.exit(106);
-        pulp.puts("runtime: PASS 96 child reaps, slot reuse and wait ownership\n");
-        var children: [64]i64 = undefined;
+        pulp.puts("runtime: PASS 300 child reaps, slot reuse and wait ownership\n");
+        // The kernel admits 256 programs alive or awaiting collection.
+        var children: [300]i64 = undefined;
         var child_count: usize = 0;
         while (child_count < children.len) {
             const child = pulp.spawn("/bin/reap-probe") catch |err| {
@@ -302,7 +310,7 @@ export fn _start() callconv(.c) noreturn {
             children[child_count] = child;
             child_count += 1;
         }
-        if (child_count < 32 or child_count == children.len) pulp.exit(108);
+        if (child_count < 200 or child_count >= 256) pulp.exit(108);
         for (children[0..child_count]) |child| {
             if ((pulp.wait(child) catch pulp.exit(109)) != 0) pulp.exit(110);
         }

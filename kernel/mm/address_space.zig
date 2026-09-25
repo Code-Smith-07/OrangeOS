@@ -18,7 +18,7 @@
 //! wait for the VM lock and never sleep, so a writer draining them always
 //! finishes.
 const std = @import("std");
-const heap = @import("heap.zig");
+const pmm = @import("pmm.zig");
 const vmm = @import("vmm.zig");
 const user_vm = @import("user_vm.zig");
 const object = @import("../ipc/object.zig");
@@ -46,8 +46,12 @@ pub const AddressSpace = struct {
     mapped_shm: [128]?*object.Object = [_]?*object.Object{null} ** 128,
 
     pub fn create() error{OutOfMemory}!*AddressSpace {
-        const self = try heap.create(AddressSpace);
-        errdefer heap.destroy(self);
+        // One page per space, straight from the page allocator: teardown then
+        // returns exactly the pages creation took (tests rely on that).
+        comptime std.debug.assert(@sizeOf(AddressSpace) <= pmm.PAGE_SIZE);
+        const phys = pmm.allocPage() catch return error.OutOfMemory;
+        errdefer pmm.freePage(phys);
+        const self: *AddressSpace = @ptrFromInt(pmm.physToVirt(phys));
         self.* = .{ .pml4 = try vmm.createAddressSpace() };
         return self;
     }
@@ -72,7 +76,7 @@ pub const AddressSpace = struct {
         for (self.mapped_shm) |mapping| {
             if (mapping) |obj| object.release(obj);
         }
-        heap.destroy(self);
+        pmm.freePage(pmm.virtToPhys(@intFromPtr(self)));
     }
 
     pub fn residentCpus(self: *const AddressSpace) u64 {

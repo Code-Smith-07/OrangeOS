@@ -320,6 +320,7 @@ pub fn build(b: *std.Build) void {
     const c_programs = [_]CProgram{
         .{ .name = "musl-probe", .sources = &.{"userland/bin/musl-probe/probe.c"} },
         .{ .name = "file-probe", .sources = &.{"userland/bin/file-probe/probe.c"} },
+        .{ .name = "thread-capacity", .sources = &.{"userland/bin/thread-capacity/probe.c"} },
     };
     for (c_programs) |program| {
         const mod = b.createModule(.{

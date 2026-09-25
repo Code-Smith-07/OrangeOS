@@ -1331,12 +1331,18 @@ is 0, 1 or 3 (none,
 read, read/write) or 5 (read/execute; 4 means the same); writable and
 executable together returns `-ENOTSUP` (W^X). Lengths round to
 4096 bytes; unmap/protect support page-aligned subranges within one owned
-region. The arena is 8 GiB with at most 128 live regions, 64 MiB per eager
-mapping or commit operation, and 4 GiB per sparse reservation. Reserving
-allocates no physical pages; decommit reclaims committed pages while retaining
-the virtual range. Invalid arguments return `-EINVAL`, exhaustion `-ENOMEM`.
+region. The arena is 16 TiB with at most 16,384 live regions per program
+(kept sorted, in a table that grows by whole pages), 64 MiB per eager mapping
+or commit operation, and 64 GiB per sparse reservation. Reserving
+allocates no frames or page tables; decommit reclaims committed pages while
+retaining the virtual range. Invalid arguments return `-EINVAL`, exhaustion `-ENOMEM`.
 Process exit releases all owned regions. There is no `brk` syscall yet. Other
 table entries remain design targets where absent from `kernel/syscall/syscall.zig`.
+
+Tasks (2026-09-25): the kernel registry holds 1,024 threads and awaiting-
+collection records, at most 256 programs, and at most 512 live threads per
+program; `spawn` fails with `-ENOMEM` and `thread_create` with `-EAGAIN` beyond
+them.
 
 Filesystems (2026-09-25): the CitrusFS root is read-only; a tmpfs mounted at
 `/tmp` holds writable files and directories in memory, up to a quarter of
