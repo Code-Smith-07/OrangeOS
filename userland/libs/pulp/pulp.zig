@@ -608,9 +608,11 @@ pub inline fn syscall6(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5:
         : "rcx", "r11", "memory"
     );
 }
-pub const MemoryProtection = enum(u64) { none = 0, read = 1, read_write = 3 };
+/// Writable and executable at once is refused (W^X): write code under
+/// `read_write`, then switch the pages to `read_execute` before running them.
+pub const MemoryProtection = enum(u64) { none = 0, read = 1, read_write = 3, read_execute = 5 };
 /// Allocate zeroed anonymous memory. Length is rounded up to a page. Each
-/// allocation is independently releasable; executable memory is unsupported.
+/// allocation is independently releasable.
 pub fn mapMemory(length: usize, protection: MemoryProtection) Error![]align(4096) u8 {
     const result = syscall6(NR.mmap, 0, length, @intFromEnum(protection), 0x22, std.math.maxInt(u64), 0);
     if (result < 0) return errno(result);

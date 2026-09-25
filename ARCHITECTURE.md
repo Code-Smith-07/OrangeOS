@@ -1324,10 +1324,12 @@ We use the `syscall`/`sysret` instruction pair, not `int 0x80`.
 Roughly 80 calls at Phase 8. Numbers are stable once assigned — **never reuse a
 retired number.**
 
-Implemented memory subset (2026-09-24): calls 10–12 accept anonymous private
-memory only (`addr=0`, `flags=0x22`, `fd=-1`, `off=0`); calls 13–15 reserve,
-commit and decommit sparse anonymous memory. Protection is 0, 1 or 3 (none,
-read, read/write); executable mappings return `-ENOTSUP`. Lengths round to
+Implemented memory subset (2026-09-24, W^X 2026-09-25): calls 10–12 accept
+anonymous private memory only (`addr=0`, `flags=0x22`, `fd=-1`, `off=0`);
+calls 13–15 reserve, commit and decommit sparse anonymous memory. Protection
+is 0, 1 or 3 (none,
+read, read/write) or 5 (read/execute; 4 means the same); writable and
+executable together returns `-ENOTSUP` (W^X). Lengths round to
 4096 bytes; unmap/protect support page-aligned subranges within one owned
 region. The arena is 8 GiB with at most 128 live regions, 64 MiB per eager
 mapping or commit operation, and 4 GiB per sparse reservation. Reserving

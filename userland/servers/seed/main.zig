@@ -125,6 +125,7 @@ export fn _start() callconv(.c) noreturn {
             .{ .path = "/bin/fault-ro", .code = 142 },
             .{ .path = "/bin/fault-nx", .code = 142 },
             .{ .path = "/bin/fault-opcode", .code = 134 },
+            .{ .path = "/bin/fault-wx", .code = 142 },
         };
         for (faults) |fault| {
             const child = pulp.spawn(fault.path) catch pulp.exit(93);
@@ -134,7 +135,16 @@ export fn _start() callconv(.c) noreturn {
                 pulp.exit(95);
             }
         }
-        pulp.puts("runtime: PASS null, read-only, NX and invalid-opcode containment\n");
+        pulp.puts("runtime: PASS null, read-only, NX, W^X and invalid-opcode containment\n");
+        for (0..2) |_| {
+            const child = pulp.spawn("/bin/jit-probe") catch pulp.exit(172);
+            const code = pulp.wait(child) catch pulp.exit(173);
+            if (code != 0) {
+                pulp.print("runtime: FAIL JIT probe exit {d}\n", .{code});
+                pulp.exit(174);
+            }
+        }
+        pulp.puts("runtime: PASS W^X code generation across threads\n");
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.
         for (0..2) |_| {
