@@ -25,7 +25,8 @@ def fixture_disk():
     (fixture / "binary.bin").write_bytes(bytes(range(256)))
     fs = work / "citrus.img"
     disk = work / "disk.img"
-    subprocess.run(["python3", str(ROOT / "tools/mkcitrusfs/mkcitrusfs.py"), str(fs), str(root), "32"], check=True)
+    # The desktop profile's filesystem size (scripts/mkdisk.sh FS_MIB).
+    subprocess.run(["python3", str(ROOT / "tools/mkcitrusfs/mkcitrusfs.py"), str(fs), str(root), "48"], check=True)
     shutil.copyfile(ROOT / "build/disk.img", disk)
     with disk.open("r+b") as dst, fs.open("rb") as src:
         dst.seek(22528 * 512)
