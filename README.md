@@ -176,8 +176,10 @@ can be flipped to read/execute under W^X for JIT code. C programs now build
 against musl 1.2.5 and run natively: stdio, malloc, clocks, file reads, TLS and
 POSIX threads, with musl's Linux calls translated in userland onto OrangeOS
 calls. C++20 programs link libc++, libc++abi and libunwind, with exceptions,
-RTTI, iostreams, `std::format`, thread-safe statics and `std::thread`. There
-is no writable filesystem or dynamic linking yet. Configurable orphan-process stress and emergency panic
+RTTI, iostreams, `std::format`, thread-safe statics and `std::thread`. `/tmp`
+is a writable in-memory filesystem (create, write, truncate, rename, unlink
+while open, directory listing); the disk itself stays read-only, and there is
+no dynamic linking yet. Configurable orphan-process stress and emergency panic
 diagnostics track a still-unexplained intermittent kernel bounds panic.
 The modern browser engine, HTTPS and remaining runtime work are still tracked
 in the [browser runtime ledger](docs/design/008-browser.md). The new

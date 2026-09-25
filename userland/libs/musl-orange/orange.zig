@@ -34,6 +34,15 @@ const OR = struct {
     const seek = 24;
     const stat = 25;
     const fstat = 26;
+    const mkdir = 30;
+    const rmdir = 31;
+    const unlink = 32;
+    const rename = 33;
+    const ftruncate = 120;
+    const readdir_fd = 121;
+    const statfs = 122;
+    const pread = 123;
+    const pwrite = 124;
     const thread_create = 40;
     const thread_exit = 41;
     const gettid = 45;
@@ -103,6 +112,8 @@ const SYS = struct {
     const rt_sigaction = 13;
     const rt_sigprocmask = 14;
     const ioctl = 16;
+    const pread64 = 17;
+    const pwrite64 = 18;
     const readv = 19;
     const writev = 20;
     const access = 21;
@@ -115,6 +126,21 @@ const SYS = struct {
     const uname = 63;
     const fcntl = 72;
     const getcwd = 79;
+    const rename = 82;
+    const mkdir = 83;
+    const rmdir = 84;
+    const unlink = 87;
+    const fsync = 74;
+    const fdatasync = 75;
+    const truncate = 76;
+    const ftruncate = 77;
+    const statfs = 137;
+    const sync = 162;
+    const getdents64 = 217;
+    const mkdirat = 258;
+    const unlinkat = 263;
+    const renameat = 264;
+    const renameat2 = 316;
     const gettimeofday = 96;
     const getuid = 102;
     const getgid = 104;
@@ -146,12 +172,15 @@ const E = struct {
     const NOMEM = 12;
     const ACCES = 13;
     const FAULT = 14;
+    const EXIST = 17;
     const NOTDIR = 20;
     const INVAL = 22;
     const NOTTY = 25;
     const SPIPE = 29;
     const ROFS = 30;
     const NOSYS = 38;
+    const NAMETOOLONG = 36;
+    const OPNOTSUPP = 95;
     const TIMEDOUT = 110;
 };
 
@@ -161,10 +190,26 @@ fn err(code: i64) i64 {
 
 const AT_FDCWD: i64 = -100;
 const AT_EMPTY_PATH: u64 = 0x1000;
+const AT_REMOVEDIR: u64 = 0x200;
 const O_ACCMODE: u64 = 3;
+const O_WRONLY: u64 = 1;
+const O_RDWR: u64 = 2;
 const O_CREAT: u64 = 0o100;
+const O_EXCL: u64 = 0o200;
 const O_TRUNC: u64 = 0o1000;
 const O_APPEND: u64 = 0o2000;
+const O_DIRECTORY: u64 = 0o200000;
+/// O_TMPFILE without its O_DIRECTORY bit.
+const O_TMPFILE_ONLY: u64 = 0o20000000;
+
+/// Native open() flags.
+const OPEN_READ: u64 = 1;
+const OPEN_WRITE: u64 = 2;
+const OPEN_CREATE: u64 = 4;
+const OPEN_EXCLUSIVE: u64 = 8;
+const OPEN_TRUNCATE: u64 = 16;
+const OPEN_APPEND: u64 = 32;
+const OPEN_DIRECTORY: u64 = 64;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -184,7 +229,42 @@ fn absolute(path: []const u8, buffer: []u8) ?[]const u8 {
     return buffer[0 .. path.len + 1];
 }
 
-const Status = extern struct { size: u64, kind: u32, reserved: u32 };
+/// A path argument of an *at() call as an absolute path, or a negative
+/// errno. Directory descriptors other than AT_FDCWD are not supported for
+/// relative paths yet.
+fn pathAt(dirfd: i64, address: u64, buffer: *[256]u8) union(enum) { path: []const u8, errno: i64 } {
+    const path = cString(address) orelse return .{ .errno = err(E.FAULT) };
+    if (path.len == 0) return .{ .errno = err(E.NOENT) };
+    if (path[0] != '/' and dirfd != AT_FDCWD) return .{ .errno = err(E.NOSYS) };
+    if (path.len >= buffer.len) return .{ .errno = err(E.NAMETOOLONG) };
+    return .{ .path = absolute(path, buffer) orelse return .{ .errno = err(E.NAMETOOLONG) } };
+}
+
+fn pathCall(nr: u64, dirfd: i64, address: u64) i64 {
+    var buffer: [256]u8 = undefined;
+    return switch (pathAt(dirfd, address, &buffer)) {
+        .path => |path| raw2(nr, @intFromPtr(path.ptr), path.len),
+        .errno => |code| code,
+    };
+}
+
+fn renamePath(from_dirfd: i64, from: u64, to_dirfd: i64, to: u64) i64 {
+    var source_buffer: [256]u8 = undefined;
+    var target_buffer: [256]u8 = undefined;
+    const source = switch (pathAt(from_dirfd, from, &source_buffer)) {
+        .path => |path| path,
+        .errno => |code| return code,
+    };
+    const target = switch (pathAt(to_dirfd, to, &target_buffer)) {
+        .path => |path| path,
+        .errno => |code| return code,
+    };
+    return raw(OR.rename, @intFromPtr(source.ptr), source.len, @intFromPtr(target.ptr), target.len, 0);
+}
+
+/// `mode` is the descriptor's access (fstat) or, for a path (stat), whether
+/// its filesystem is writable: native OPEN_READ/WRITE/APPEND bits.
+const Status = extern struct { size: u64, kind: u32, mode: u32 };
 
 const S_IFREG: u32 = 0o100000;
 const S_IFDIR: u32 = 0o040000;
@@ -393,6 +473,8 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
     return switch (n) {
         SYS.read => raw3(OR.read, a, b, @min(c, 4096)),
         SYS.write => raw3(OR.write, a, b, @min(c, 4096)),
+        SYS.pread64 => raw(OR.pread, a, b, @min(c, 4096), d, 0),
+        SYS.pwrite64 => raw(OR.pwrite, a, b, @min(c, 4096), d, 0),
         SYS.readv => vectored(OR.read, a, b, c),
         SYS.writev => vectored(OR.write, a, b, c),
         SYS.open => openPath(AT_FDCWD, a, b),
@@ -435,6 +517,33 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
             };
             break :blk 0;
         },
+        SYS.mkdir => pathCall(OR.mkdir, AT_FDCWD, a),
+        SYS.mkdirat => pathCall(OR.mkdir, a1, b),
+        SYS.rmdir => pathCall(OR.rmdir, AT_FDCWD, a),
+        SYS.unlink => pathCall(OR.unlink, AT_FDCWD, a),
+        SYS.unlinkat => if (c & ~AT_REMOVEDIR != 0) err(E.INVAL) else pathCall(if (c & AT_REMOVEDIR != 0) OR.rmdir else OR.unlink, a1, b),
+        SYS.rename => renamePath(AT_FDCWD, a, AT_FDCWD, b),
+        SYS.renameat => renamePath(a1, b, a3, d),
+        // RENAME_NOREPLACE and RENAME_EXCHANGE are not offered.
+        SYS.renameat2 => if (e != 0) err(E.INVAL) else renamePath(a1, b, a3, d),
+        SYS.ftruncate => raw2(OR.ftruncate, a, b),
+        SYS.truncate => blk: {
+            const fd = openPath(AT_FDCWD, a, O_WRONLY);
+            if (fd < 0) break :blk fd;
+            const r = raw2(OR.ftruncate, @intCast(fd), b);
+            _ = raw1(OR.close, @intCast(fd));
+            break :blk r;
+        },
+        // Nothing to flush: /tmp lives in memory and the root is read-only.
+        // The descriptor is still checked.
+        SYS.fsync, SYS.fdatasync => blk: {
+            var status: Status = undefined;
+            const r = raw2(OR.fstat, a, @intFromPtr(&status));
+            break :blk if (r < 0) r else 0;
+        },
+        SYS.sync => 0,
+        SYS.getdents64 => getdents(a, b, c),
+        SYS.statfs => statfs(a, b),
         SYS.access => accessPath(AT_FDCWD, a, b),
         SYS.faccessat => accessPath(a1, b, c),
         SYS.mmap => mmap(a, b, c, d, a5, f),
@@ -535,20 +644,109 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
 }
 
 fn openPath(dirfd: i64, path_address: u64, flags: u64) i64 {
-    const path = cString(path_address) orelse return err(E.FAULT);
-    // The root filesystem is read-only.
-    if (flags & O_ACCMODE != 0 or flags & (O_CREAT | O_TRUNC | O_APPEND) != 0) return err(E.ROFS);
-    if (path.len > 0 and path[0] != '/' and dirfd != AT_FDCWD) return err(E.NOSYS);
+    // Anonymous O_TMPFILE files are not offered; callers fall back to a
+    // named file they unlink.
+    if (flags & O_TMPFILE_ONLY != 0) return err(E.OPNOTSUPP);
+    var native: u64 = switch (flags & O_ACCMODE) {
+        O_WRONLY => OPEN_WRITE,
+        O_RDWR => OPEN_READ | OPEN_WRITE,
+        else => OPEN_READ,
+    };
+    if (flags & O_CREAT != 0) native |= OPEN_CREATE;
+    if (flags & O_EXCL != 0) native |= OPEN_EXCLUSIVE;
+    if (flags & O_TRUNC != 0) native |= OPEN_TRUNCATE;
+    if (flags & O_APPEND != 0) native |= OPEN_APPEND;
+    if (flags & O_DIRECTORY != 0) native |= OPEN_DIRECTORY;
+    // The mode is ignored: no filesystem has permissions yet.
     var buffer: [256]u8 = undefined;
-    const full = absolute(path, &buffer) orelse return err(E.NOENT);
-    return raw2(OR.open, @intFromPtr(full.ptr), full.len);
+    return switch (pathAt(dirfd, path_address, &buffer)) {
+        .path => |path| raw3(OR.open, @intFromPtr(path.ptr), path.len, native),
+        .errno => |code| code,
+    };
 }
 
 fn accessPath(dirfd: i64, path_address: u64, mode: u64) i64 {
     var status: Status = undefined;
     const r = statusOf(dirfd, path_address, 0, &status);
     if (r < 0) return r;
-    if (mode & 2 != 0) return err(E.ROFS); // W_OK on a read-only filesystem
+    // W_OK: only a writable filesystem allows writing.
+    if (mode & 2 != 0 and status.mode & OPEN_WRITE == 0) return err(E.ROFS);
+    return 0;
+}
+
+/// Native directory entry (readdir_fd) and Linux's linux_dirent64.
+const NativeDirEntry = extern struct { inode: u32, type: u8, name_len: u8, name: [128]u8 };
+const DIRENT_HEADER = 19; // d_ino, d_off, d_reclen, d_type
+const DIRENT_MAX = std.mem.alignForward(usize, DIRENT_HEADER + 128 + 1, 8);
+
+fn getdents(fd: u64, out: u64, len: u64) i64 {
+    // Ask only for as many entries as are sure to fit: the kernel advances
+    // the directory position past every entry it returns.
+    const max = @min(len / DIRENT_MAX, 32);
+    if (max == 0) return err(E.INVAL);
+    var entries: [32]NativeDirEntry = undefined;
+    const count = raw3(OR.readdir_fd, fd, @intFromPtr(&entries), max);
+    if (count < 0) return count;
+    const position = raw3(OR.seek, fd, 0, 1); // SEEK_CUR: the next entry's index
+    const bytes: [*]u8 = @ptrFromInt(out);
+    var used: usize = 0;
+    for (entries[0..@intCast(count)], 0..) |entry, i| {
+        const record = std.mem.alignForward(usize, DIRENT_HEADER + entry.name_len + 1, 8);
+        const at = bytes + used;
+        std.mem.writeInt(u64, at[0..8], entry.inode, .little);
+        const next: i64 = if (position < 0) @intCast(i + 1) else position - count + @as(i64, @intCast(i)) + 1;
+        std.mem.writeInt(i64, at[8..16], next, .little);
+        std.mem.writeInt(u16, at[16..18], @intCast(record), .little);
+        at[18] = switch (entry.type) { // DT_DIR, DT_REG, DT_UNKNOWN
+            2 => 4,
+            1 => 8,
+            else => 0,
+        };
+        @memcpy(at[DIRENT_HEADER .. DIRENT_HEADER + entry.name_len], entry.name[0..entry.name_len]);
+        @memset(at[DIRENT_HEADER + entry.name_len .. record], 0);
+        used += record;
+    }
+    return @intCast(used);
+}
+
+/// Linux `struct statfs` for x86-64.
+const LinuxStatfs = extern struct {
+    type: u64,
+    bsize: u64,
+    blocks: u64,
+    bfree: u64,
+    bavail: u64,
+    files: u64 = 0,
+    ffree: u64 = 0,
+    fsid: [2]i32 = .{ 0, 0 },
+    namelen: u64 = 128,
+    frsize: u64,
+    flags: u64,
+    spare: [4]u64 = [_]u64{0} ** 4,
+};
+const FsStatus = extern struct { total_bytes: u64, free_bytes: u64, read_only: u32, reserved: u32 };
+
+fn statfs(path_address: u64, out: u64) i64 {
+    var buffer: [256]u8 = undefined;
+    const path = switch (pathAt(AT_FDCWD, path_address, &buffer)) {
+        .path => |p| p,
+        .errno => |code| return code,
+    };
+    var status: FsStatus = undefined;
+    const r = raw3(OR.statfs, @intFromPtr(path.ptr), path.len, @intFromPtr(&status));
+    if (r < 0) return r;
+    const result: *LinuxStatfs = @ptrFromInt(out);
+    result.* = .{
+        // TMPFS_MAGIC for a writable (in-memory) filesystem; the root
+        // filesystem has no Linux magic number of its own.
+        .type = if (status.read_only != 0) 0x4f524e47 else 0x01021994,
+        .bsize = 4096,
+        .blocks = status.total_bytes / 4096,
+        .bfree = status.free_bytes / 4096,
+        .bavail = status.free_bytes / 4096,
+        .frsize = 4096,
+        .flags = if (status.read_only != 0) 1 else 0, // ST_RDONLY
+    };
     return 0;
 }
 
@@ -598,7 +796,15 @@ fn fcntl(fd: u64, command: u64) i64 {
     return switch (command) {
         1 => 0, // F_GETFD
         2 => 0, // F_SETFD: descriptors are never inherited, so close-on-exec holds
-        3 => if (fd <= 2) 2 else 0, // F_GETFL: O_RDWR for stdio, O_RDONLY for files
+        3 => blk: { // F_GETFL: the access mode the descriptor was opened with
+            var status: Status = undefined;
+            const r = raw2(OR.fstat, fd, @intFromPtr(&status));
+            if (r < 0) break :blk r;
+            const read = status.mode & OPEN_READ != 0;
+            const write = status.mode & OPEN_WRITE != 0;
+            const access: i64 = if (read and write) O_RDWR else if (write) O_WRONLY else 0;
+            break :blk access | (if (status.mode & OPEN_APPEND != 0) @as(i64, O_APPEND) else 0);
+        },
         4 => 0, // F_SETFL
         else => err(E.INVAL),
     };

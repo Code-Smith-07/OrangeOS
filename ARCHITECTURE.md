@@ -1338,6 +1338,12 @@ the virtual range. Invalid arguments return `-EINVAL`, exhaustion `-ENOMEM`.
 Process exit releases all owned regions. There is no `brk` syscall yet. Other
 table entries remain design targets where absent from `kernel/syscall/syscall.zig`.
 
+Filesystems (2026-09-25): the CitrusFS root is read-only; a tmpfs mounted at
+`/tmp` holds writable files and directories in memory, up to a quarter of
+physical memory. Paths are normalized (`.`, `..`, repeated slashes) before
+they reach a filesystem. Changes aimed at the root return `-EROFS`, or
+`-EEXIST` where something already exists.
+
 Program entry (2026-09-25): the kernel enters a new program at its ELF entry
 with rsp at a zero return slot, above which sits a SysV initial stack —
 `argc` (1), `argv[0]` (the executable path), an empty `envp`, and an auxiliary
@@ -1369,26 +1375,31 @@ link musl 1.2.5, whose Linux-numbered calls are translated in userland by
 | 18 | `user_wait` | `(aligned_u32_ptr, expected, timeout_ms) → !void`; 0 timeout means indefinite | P4 runtime |
 | 19 | `user_wake` | `(aligned_u32_ptr, max_count) → woken` | P4 runtime |
 | | **── File I/O ──** | | |
-| 20 | `open` | `(path, flags, mode) → fd` | P5 |
+| 20 | `open` | `(path_ptr, path_len, flags) → fd` (implemented; flags 1 read, 2 write, 4 create, 8 exclusive, 16 truncate, 32 append, 64 directory; neither 1 nor 2 means read-only) | P5 |
 | 21 | `close` | `(fd) → !void` | P5 |
 | 22 | `read` | `(fd, buf, len) → count` | P5 |
-| 23 | `write` | `(fd, buf, len) → count` | P5 |
+| 23 | `write` | `(fd, buf, len) → count` — call 1 in the implementation; files opened for writing as well as the console (implemented) | P5 |
 | 24 | `seek` | `(fd, off, whence) → off` (implemented; whence 0/1/2 = set/current/end) | P5 |
-| 25 | `stat` | `(path_ptr, path_len, *status) → !void` (implemented; status is `{size: u64, kind: u32, reserved: u32}`, kind 1 file, 2 directory, 3 console) | P5 |
-| 26 | `fstat` | `(fd, *status) → !void` (implemented; fds 0–2 report a console) | P5 |
+| 25 | `stat` | `(path_ptr, path_len, *status) → !void` (implemented; status is `{size: u64, kind: u32, mode: u32}`, kind 1 file, 2 directory, 3 console; mode has bit 2 when the filesystem is writable) | P5 |
+| 26 | `fstat` | `(fd, *status) → !void` (implemented; fds 0–2 report a console; mode is the descriptor's open access: 1 read, 2 write, 32 append) | P5 |
 | 27 | `dup` / `dup2` | `(fd[, newfd]) → fd` | P5 |
 | 28 | `pipe` | `(*[2]fd) → !void` | P5 |
 | 29 | `ioctl` | `(fd, req, arg) → !isize` | P5 |
 | | **── Directories ──** | | |
-| 30 | `mkdir` | `(path, mode) → !void` | P5 |
-| 31 | `rmdir` | `(path) → !void` | P5 |
-| 32 | `unlink` | `(path) → !void` | P5 |
-| 33 | `rename` | `(old, new) → !void` | P5 |
+| 30 | `mkdir` | `(path_ptr, path_len) → !void` (implemented, /tmp only) | P5 |
+| 31 | `rmdir` | `(path_ptr, path_len) → !void` (implemented, /tmp only) | P5 |
+| 32 | `unlink` | `(path_ptr, path_len) → !void` (implemented; an open file stays usable until closed) | P5 |
+| 33 | `rename` | `(old_ptr, old_len, new_ptr, new_len) → !void` (implemented; replaces a file or empty directory; `-EXDEV` across filesystems) | P5 |
 | 34 | `readdir` | `(path_ptr, path_len, out, max) → count` (current read-only ABI; max 32 per call) | P5 |
 | 35 | `chdir` | `(path) → !void` | P5 |
 | 36 | `getcwd` | `(buf, len) → !usize` | P5 |
 | 37 | `mount` | `(src, dst, fstype, flags) → !void` | P5 |
 | 38 | `readdir_page` | `(path_ptr, path_len, out, max, skip) → count` (implemented; ordinal continuation, max 32 per call) | P5 |
+| 120 | `ftruncate` | `(fd, length) → !void` (implemented; growing leaves a hole that reads as zeros) | P5 runtime |
+| 121 | `readdir_fd` | `(fd, out, max) → count` — entries of an open directory from its position, which advances; seek to 0 restarts (implemented) | P5 runtime |
+| 122 | `statfs` | `(path_ptr, path_len, *{total_bytes, free_bytes, read_only: u32, reserved: u32}) → !void` (implemented) | P5 runtime |
+| 123 | `pread` | `(fd, buf, len, offset) → count` — leaves the descriptor offset alone (implemented) | P5 runtime |
+| 124 | `pwrite` | `(fd, buf, len, offset) → count` (implemented) | P5 runtime |
 | | **── Threads ──** | | |
 | 40 | `thread_create` | `(entry, stack, arg, tls_base, exit_word) → tid` (implemented; `entry(arg)` in ring 3, kernel stores 0 to `exit_word` and wakes it at thread exit) | P4 runtime |
 | 41 | `thread_exit` | `(status) noreturn` — ends the calling thread; the last thread's status becomes the program's (implemented) | P4 runtime |

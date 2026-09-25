@@ -1444,7 +1444,7 @@ and the platform layer.
 ### 11.36 Root cause of the intermittent kernel panic: per-CPU reads under preemption
 
 The heap diagnostics of §11.26 caught the panic again, on four vCPUs during
-later filesystem work. `spawnThread` sliced a `SpawnRequest` path with a
+the tmpfs work (§11.37). `spawnThread` sliced a `SpawnRequest` path with a
 length of `0xDFDFDFDFDFDFDFDF`, which is the heap's free poison, so the request had
 already been freed. The run log showed it was not a new spawn: the parent
 had not yet printed the line it prints before spawning again. A running
@@ -1492,6 +1492,73 @@ asleep on the process channel.
 hazard is real, and every `currentTask()` read names the reader. The race
 window itself is a few instructions wide and is not reproduced
 deterministically; the fix is a single-instruction load by construction.
+
+### 11.37 Writable in-memory /tmp
+
+The kernel now mounts a tmpfs at `/tmp` beside the read-only CitrusFS root:
+`kernel/fs/tmpfs/tmpfs.zig`. It holds directories as trees of inodes and
+files as arrays of physical frames, where a zero entry is a hole that reads
+as zeros. Data pages count against a quota of a quarter of physical memory,
+so filling `/tmp` cannot starve the kernel. One lock covers the
+filesystem, held for one lookup, one metadata change, or one copy of at most
+a system call's 4 KiB buffer.
+
+Inodes count the handles held on them. Open descriptors, resolved nodes and
+a program being loaded all hold one. Unlinking removes an inode from the
+tree but frees it with its pages only when the last handle goes, so a
+program can keep using a file it has deleted. Chromium's temporary-file
+patterns rely on that.
+
+The VFS now carries a tagged `Node` (CitrusFS inode or tmpfs reference) with
+explicit release. It normalizes every path (`.`, `..`, repeated slashes)
+before dispatching it to a mount. Changes aimed at the root return `EROFS`,
+or `EEXIST` where something is already there. A rename across the mount
+returns `EXDEV`, and removing `/tmp` itself returns `EBUSY`.
+
+System calls:
+- `open` takes flags: read, write, create, exclusive, truncate, append and
+  directory.
+- `write` works on files.
+- New: `mkdir`, `rmdir`, `unlink`, `rename` (30–33), `ftruncate` (120),
+  `readdir_fd` (121, entries of an open directory from its position),
+  `statfs` (122), and `pread`/`pwrite` (123/124, which leave the descriptor
+  offset alone).
+- `fstat` reports a descriptor's access mode, and `stat` reports whether a
+  path's filesystem is writable.
+
+musl translates the Linux calls onto these: `open`/`openat` flags,
+`mkdir(at)`, `unlink(at)`, `rmdir`, `rename(at/2)`, `truncate`/`ftruncate`,
+`pread64`/`pwrite64`, `getdents64` for `opendir`/`readdir`, and `statfs` for
+`statvfs`. It also makes `access(W_OK)` and `fcntl(F_GETFL)` report the real
+state. `fsync` and `fdatasync` check the descriptor and succeed: nothing has
+a backing store to flush. The disk image gains an empty `/tmp` directory so
+listings of `/` show the mount point.
+
+Verified on 2026-09-25:
+- The kernel filesystem tests (`-Dfs-test`, 23 checks) cover path
+  normalization, refusals on the root, three pages plus a tail read across a
+  page boundary, exclusive create, `ENOTEMPTY`, reading a file after it was
+  unlinked, and every page returned after close.
+- `/bin/file-probe` runs in the full runtime suite (50 checks, two and four
+  vCPUs). It is C11 with `-Werror` and checks:
+  - a 20,000-line stdio file, append, and `pread`/`pwrite` with the
+    descriptor offset untouched;
+  - shrink then grow with a zero-filled regrown range;
+  - rename, including over an existing file, and reading after unlink;
+  - four threads each writing 64 KiB, and two threads appending 1,000
+    fixed-size records each to one `O_APPEND` file with no torn or reordered
+    record;
+  - `opendir` listing and `rewinddir`;
+  - the errors: `ENOTEMPTY`, `EISDIR`, `ENOTDIR`, `EEXIST` for `O_EXCL`,
+    `EROFS`, `EXDEV` and `EBUSY`;
+  - `statvfs` free space back to its starting value after cleanup.
+
+Not provided yet:
+- persistence: nothing in `/tmp` survives a reboot, and browser profiles need
+  a writable disk filesystem;
+- permissions and timestamps;
+- `*at()` calls relative to a directory descriptor other than `AT_FDCWD`;
+- file-backed `mmap`, `O_TMPFILE`, hard and symbolic links, and file locks.
 
 ## 12. Security updates and distribution
 

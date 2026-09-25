@@ -262,7 +262,7 @@ pub fn read(fd: u64, buf: []u8) Error!usize {
 }
 
 pub fn open(path: []const u8) Error!i64 {
-    const r = syscall2(NR.open, @intFromPtr(path.ptr), path.len);
+    const r = syscall3(NR.open, @intFromPtr(path.ptr), path.len, 0);
     if (r < 0) return errno(r);
     return r;
 }
