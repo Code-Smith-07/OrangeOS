@@ -121,19 +121,41 @@ var total_switches: u64 = 0;
 
 /// Live tasks and children awaiting collection. Slots return to the pool when
 /// a parent waits, so the limit is concurrent records, not lifetime launches.
-pub const MAX_TASKS = 64;
+/// A multi-process browser runs hundreds of threads; each costs a 32 KiB
+/// kernel stack, so the table itself is not the memory limit.
+pub const MAX_TASKS = 1024;
+/// Programs alive or awaiting collection. Leaves most of the table to
+/// threads, so runaway spawning cannot starve the programs already running.
+pub const MAX_PROCESSES = 256;
+/// Live threads in one program, so no single program takes the whole table.
+pub const MAX_THREADS_PER_PROCESS = 512;
 var all_tasks: [MAX_TASKS]?*Task = [_]?*Task{null} ** MAX_TASKS;
 var all_count: usize = 0;
+/// Program leaders in `all_tasks`.
+var process_records: usize = 0;
 
 /// Caller holds the scheduler lock.
 fn registerTask(t: *Task) bool {
+    const leader = isProgramLeader(t);
+    if (leader and process_records >= MAX_PROCESSES) return false;
     for (&all_tasks, 0..) |*slot, i| {
         if (slot.* != null) continue;
         slot.* = t;
         all_count = @max(all_count, i + 1);
+        if (leader) process_records += 1;
         return true;
     }
     return false;
+}
+
+fn isProgramLeader(t: *const Task) bool {
+    return t.process != null and t.isLeader();
+}
+
+/// Caller holds the scheduler lock; `slot` holds a finished record.
+fn forgetSlotLocked(slot: *?*Task) void {
+    if (isProgramLeader(slot.*.?)) process_records -= 1;
+    slot.* = null;
 }
 
 /// Iterate the live/reapable task registry. Used by the budget reporter to
@@ -213,7 +235,7 @@ pub fn exitChannel(t: *const Task) usize {
 fn unregisterLocked(t: *Task) bool {
     for (&all_tasks) |*slot| {
         if (slot.* == t) {
-            slot.* = null;
+            forgetSlotLocked(slot);
             return true;
         }
     }
@@ -283,7 +305,7 @@ fn takeOrphanZombie() ?*Task {
     for (&all_tasks) |*slot| {
         const t = slot.* orelse continue;
         if (t.parent_tid != 0 or !finishedLocked(t)) continue;
-        slot.* = null;
+        forgetSlotLocked(slot);
         return t;
     }
     return null;
@@ -421,7 +443,8 @@ pub fn spawnUserThread(
     t.user_arg = request.arg;
 
     const state = spinlock.acquireIrqSave(&lock);
-    if (p.exiting or !registerTask(t)) {
+    const at_limit = @atomicLoad(u32, &p.live_threads, .acquire) >= MAX_THREADS_PER_PROCESS;
+    if (p.exiting or at_limit or !registerTask(t)) {
         const exiting = p.exiting;
         spinlock.releaseIrqRestore(&lock, state);
         t.user_space = null;

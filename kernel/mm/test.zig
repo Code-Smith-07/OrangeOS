@@ -348,7 +348,10 @@ fn testUserVmSparse() void {
         space.release();
         return;
     };
-    if (pmm.stats().free_pages != after_root or vmm.translate(space.pml4, address + span - vmm.PAGE_SIZE) != null) ok = false;
+    // A reservation gets no frames or page tables; the only page it may take
+    // is the space's region table (one page holds 128 regions).
+    const after_reserve = pmm.stats().free_pages;
+    if (after_root - after_reserve > 1 or vmm.translate(space.pml4, address + span - vmm.PAGE_SIZE) != null) ok = false;
     const page = address + 8 * 1024 * 1024;
     vm.commit(space, page, vmm.PAGE_SIZE, 3) catch {
         ok = false;
@@ -376,7 +379,7 @@ fn testUserVmSparse() void {
     vm.decommit(space, page, vmm.PAGE_SIZE) catch {
         ok = false;
     };
-    if (vmm.translate(space.pml4, page) != null or pmm.stats().free_pages != after_root) ok = false;
+    if (vmm.translate(space.pml4, page) != null or pmm.stats().free_pages != after_reserve) ok = false;
     vm.commit(space, page, vmm.PAGE_SIZE, 1) catch {
         ok = false;
     };

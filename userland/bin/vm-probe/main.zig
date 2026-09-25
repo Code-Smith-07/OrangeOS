@@ -6,6 +6,9 @@ fn require(ok: bool, label: []const u8) void {
         pulp.exit(1);
     }
 }
+/// Too large for the program's stack.
+var slots: [2048][]align(4096) u8 = undefined;
+
 fn run() !void {
     const memory = try pulp.mapMemory(8193, .read_write);
     require(memory.len == 12288, "page rounding");
@@ -50,10 +53,16 @@ fn run() !void {
         @memset(reused, 0x7b);
         try pulp.unmapMemory(reused);
     }
-    var slots: [128][]align(4096) u8 = undefined;
-    for (&slots) |*slot| slot.* = try pulp.mapMemory(1, .read_write);
-    require(pulp.syscall6(10, 0, 4096, 3, 0x22, @bitCast(@as(i64, -1)), 0) == -12, "bounded mapping table");
-    for (slots) |slot| try pulp.unmapMemory(slot);
+    // Thousands of live mappings (every thread stack is one), each distinct.
+    for (&slots, 0..) |*slot, i| {
+        slot.* = try pulp.mapMemory(1, .read_write);
+        slot.*[0] = @truncate(i);
+    }
+    for (&slots, 0..) |*slot, i| require(slot.*[0] == @as(u8, @truncate(i)), "2048 distinct mappings");
+    for (&slots) |*slot| try pulp.unmapMemory(slot.*);
+    // A 32 GiB pool reservation, as V8 and PartitionAlloc make, costs nothing.
+    const pool = try pulp.reserveMemory(32 * 1024 * 1024 * 1024);
+    try pulp.releaseReservedMemory(pool);
     const reservation = try pulp.reserveMemory(1024 * 1024 * 1024);
     require(reservation.len == 1024 * 1024 * 1024, "large virtual reservation");
     require(pulp.syscall3(pulp.NR.write, 1, reservation.address, 1) == -14, "reserved memory inaccessible");
@@ -72,6 +81,14 @@ fn run() !void {
     require(pulp.syscall3(pulp.NR.vm_commit, reservation.address, 4096, 3) == -22, "released reservation unusable");
     // Exit cleanup owns this final mapping, even though the app forgets it.
     _ = try pulp.mapMemory(1024 * 1024, .read_write);
+    // The table is still bounded; exit cleanup owns what is left.
+    var reserved: usize = 0;
+    while (reserved < 20000) : (reserved += 1) {
+        const r = pulp.syscall1(pulp.NR.vm_reserve, 4096);
+        if (r == -12) break;
+        require(r > 0, "reservation");
+    }
+    require(reserved > 16000 and reserved < 16384, "bounded mapping table");
     pulp.puts("vm-probe: PASS mapping, subranges, sparse reservation, protection, reuse and capacity\n");
 }
 export fn _start() callconv(.c) noreturn {

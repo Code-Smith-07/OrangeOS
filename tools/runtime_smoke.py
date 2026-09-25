@@ -125,6 +125,9 @@ def main():
                     or "runtime: FAIL writable files" in guest.log(), "writable files in /tmp", 90)
         assert "file-probe: PASS stdio, pread/pwrite, truncate, rename, unlink-while-open, readdir, errors, 4 writers and 2 appenders, space returned" in guest.log(), guest.log()[-2000:]
         print("PASS writable tmpfs through musl: stdio, positioned I/O, truncate, rename, readdir, errors, concurrency, space returned", flush=True)
+        guest.until(lambda: "runtime: PASS 511 threads in one program" in guest.log() or "thread-capacity: FAIL" in guest.log()
+                    or "runtime: FAIL thread capacity" in guest.log(), "511 POSIX threads in one program, twice", 180)
+        assert "thread-capacity: PASS 2 waves of 511 concurrent threads, EAGAIN beyond, all joined" in guest.log(), guest.log()[-2000:]
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]
@@ -187,10 +190,10 @@ def main():
         assert guest.log().count("tcp-probe: PASS 2 threads each fetched 6000 verified bytes concurrently") == 2, guest.log()[-1500:]
         assert fixture.served == 4, fixture.served
         print("PASS two threads fetch verified payloads over concurrent TCP connections, twice", flush=True)
-        guest.until(lambda: "runtime: PASS 96 child reaps, slot reuse and wait ownership" in guest.log(),
-                    "96 child reaps, slot reuse and wait ownership", 90)
+        guest.until(lambda: "runtime: PASS 300 child reaps, slot reuse and wait ownership" in guest.log(),
+                    "300 child reaps, slot reuse and wait ownership", 240)
         guest.until(lambda: "runtime: PASS full task table rejects spawn and recovers after reaping" in guest.log(),
-                    "full task table rejects spawn and recovers after reaping", 90)
+                    "full task table rejects spawn and recovers after reaping", 240)
         parent_exits = args.orphan_waves * 12
         guest.until(lambda: f"runtime: PASS orphan children are collected across {parent_exits} parent exits" in guest.log(),
                     f"orphan cleanup across {parent_exits} exiting parents", max(90, args.orphan_waves * 2))

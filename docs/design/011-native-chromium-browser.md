@@ -1560,6 +1560,53 @@ Not provided yet:
 - `*at()` calls relative to a directory descriptor other than `AT_FDCWD`;
 - file-backed `mmap`, `O_TMPFILE`, hard and symbolic links, and file locks.
 
+### 11.38 Browser-scale thread and mapping capacity
+
+A multi-process browser runs hundreds of threads, and each thread stack is
+its own mapping. Both kernel tables were far below that.
+
+**Tasks.** The registry grows from 64 to 1,024 records (threads plus exited
+records awaiting collection). Each record costs a 32 KiB kernel stack, so
+the table itself is not the memory limit. Two caps keep one program from
+starving the others:
+- 256 programs alive or awaiting collection; `spawn` then fails with
+  `ENOMEM`;
+- 512 live threads per program; `thread_create` then fails with `EAGAIN`,
+  which musl's `pthread_create` reports unchanged.
+
+**Mappings.** The user-VM region table was a fixed array of 128 entries in
+every address space, searched by a first-fit loop that restarted after each
+overlap. Now:
+- the table is sorted, holds up to 16,384 regions, and grows in whole pages
+  (freed when the last region goes, so page accounting stays exact);
+- first fit is one pass over the gaps, and lookups are binary searches;
+- the arena grows from 8 GiB to 16 TiB, and one reservation from 4 GiB to
+  64 GiB, for V8's pointer cage and PartitionAlloc's pools;
+- a new range is checked against the page tables with `vmm.anyMapped`, which
+  skips absent tables whole, instead of one lookup per page, which would be
+  16 million lookups for a 64 GiB reservation.
+
+An `AddressSpace` is now about 1 KiB and takes exactly one page (it was an
+8 KiB block with the old array inside).
+
+Verified on 2026-09-25: full runtime suite (51 checks) on two and four vCPUs,
+plus the desktop and Files suites.
+- `/bin/thread-capacity` (C, pthreads with 16 KiB stacks) creates threads
+  until `EAGAIN`. It gets exactly 511 beside `main`, releases and joins all of
+  them, and does so twice.
+- `vm-probe` keeps 2,048 distinct one-page mappings live, reserves and
+  releases 32 GiB, and then fills the region table: it is still bounded,
+  with `ENOMEM` below 16,384.
+- The spawn tests now exceed the program cap over their lifetime (300 reaps)
+  and fill it concurrently (200–255 programs admitted, then refused, then
+  recovered).
+- A kernel memory test now allows the one region-table page, and still
+  requires no frames or page tables for a reservation.
+
+Still missing for V8 and PartitionAlloc: placement hints and `MAP_FIXED`
+within a program's own reservations, alignment of large reservations,
+`madvise(MADV_DONTNEED)` with zero-fill, and `mremap`.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,
