@@ -369,6 +369,89 @@ pub fn spawnProcess(
     return enqueueNew(t);
 }
 
+/// Where a new user thread starts, and what it gets from its creator.
+pub const UserThreadStart = struct {
+    entry: u64,
+    stack: u64,
+    arg: u64,
+    fs_base: u64,
+    exit_word: u64,
+};
+
+/// Start another thread of the calling user program. It shares the program's
+/// process record and address space and first runs `trampoline` in the
+/// kernel, which enters ring 3 at `request.entry`. Nobody waits on the record:
+/// the orphan reaper collects it after it exits. Refused once the program
+/// has begun exiting, so no thread can escape a group exit.
+pub fn spawnUserThread(
+    creator: *Task,
+    trampoline: *const fn (?*anyopaque) void,
+    request: UserThreadStart,
+) !*Task {
+    const p = creator.process orelse return error.NotUserThread;
+    const space = creator.user_space orelse return error.NotUserThread;
+    const t = try task_mod.create(creator.nameSlice(), trampoline, null, .normal, @intFromPtr(&threadTrampoline));
+    p.retain();
+    t.process = p;
+    space.retain();
+    t.user_space = space;
+    t.fs_base = request.fs_base;
+    t.exit_word = request.exit_word;
+    t.user_entry = request.entry;
+    t.user_stack = request.stack;
+    t.user_arg = request.arg;
+
+    const state = spinlock.acquireIrqSave(&lock);
+    if (p.exiting or !registerTask(t)) {
+        const exiting = p.exiting;
+        spinlock.releaseIrqRestore(&lock, state);
+        t.user_space = null;
+        space.release();
+        task_mod.destroy(t);
+        return if (exiting) error.ProcessExiting else error.OutOfMemory;
+    }
+    // The creator is a live thread, so this never revives a finished program.
+    _ = @atomicRmw(u32, &p.live_threads, .Add, 1, .acq_rel);
+    queues[@intFromEnum(t.priority)].push(t);
+    task_count += 1;
+    spinlock.releaseIrqRestore(&lock, state);
+    return t;
+}
+
+/// Whether the running thread must leave because its program is exiting.
+pub fn killPending() bool {
+    const t = currentTask() orelse return false;
+    return @atomicLoad(bool, &t.kill_pending, .acquire);
+}
+
+/// End every thread of the calling program; the caller exits immediately.
+/// Other threads are flagged under the scheduler lock and, if blocked, made
+/// runnable. Each then leaves at its next return towards user mode or
+/// attempt to block. The first exit code recorded wins.
+pub fn exitGroup(code: i32) noreturn {
+    const t = currentTask() orelse unreachable;
+    if (t.process) |p| {
+        const state = spinlock.acquireIrqSave(&lock);
+        if (!p.exiting) {
+            p.exiting = true;
+            p.exit_code = code;
+        }
+        for (all_tasks[0..all_count]) |candidate| {
+            const other = candidate orelse continue;
+            if (other == t or other.process != p) continue;
+            @atomicStore(bool, &other.kill_pending, true, .release);
+            if (other.state == .blocked) {
+                if (other.on_wait_list) unlinkWaiter(other);
+                if (other.wake_at_ns != 0) unlinkSleeper(other);
+                other.state = .ready;
+                queues[@intFromEnum(other.priority)].push(other);
+            }
+        }
+        spinlock.releaseIrqRestore(&lock, state);
+    }
+    exit(code);
+}
+
 /// Record the spawner as the owner that may collect this task, then publish
 /// it. On failure the unpublished task and anything it holds are released.
 fn enqueueNew(t: *Task) !*Task {
@@ -611,10 +694,7 @@ pub fn exit(code: i32) noreturn {
         const p = process.?;
         if (p.pty) |obj| ipc_object.release(obj);
         p.pty = null;
-        for (&p.handles.entries) |*entry| {
-            if (entry.*) |obj| ipc_object.release(obj);
-            entry.* = null;
-        }
+        p.handles.releaseAll();
     }
     lock.acquire();
 
@@ -624,7 +704,9 @@ pub fn exit(code: i32) noreturn {
     t.state = .zombie;
     if (process) |p| {
         if (last) {
-            p.exit_code = code;
+            // A program ended by exitGroup keeps the code it was ended with;
+            // otherwise the last thread's status becomes the program's.
+            if (!p.exiting) p.exit_code = code;
             p.exited = true;
             orphanChildrenLocked(p.pid);
             _ = wakeChannelLocked(@intFromPtr(p), std.math.maxInt(usize));
@@ -774,6 +856,13 @@ pub fn sleepMs(ms: u64) void {
         return;
     };
 
+    // A thread of an exiting program never starts a new sleep.
+    if (prev.kill_pending) {
+        lock.release();
+        if (was) io.sti();
+        return;
+    }
+
     prev.wake_at_ns = deadline;
     prev.sleep_next = sleepers;
     sleepers = prev;
@@ -890,6 +979,13 @@ pub fn commitWaitTimeout(timeout_ms: u64) void {
         if (was) io.sti();
         return;
     }
+    // The kill was published under this lock, so it cannot be missed here.
+    if (t.kill_pending) {
+        unlinkWaiter(t);
+        lock.release();
+        if (was) io.sti();
+        return;
+    }
 
     if (timeout_ms != 0) {
         t.wake_at_ns = time.monotonicNs() + timeout_ms * 1_000_000;
@@ -925,6 +1021,13 @@ pub fn commitWait() void {
 
     // The wake beat us here. Nothing to wait for.
     if (!t.on_wait_list) {
+        lock.release();
+        if (was) io.sti();
+        return;
+    }
+    // The kill was published under this lock, so it cannot be missed here.
+    if (t.kill_pending) {
+        unlinkWaiter(t);
         lock.release();
         if (was) io.sti();
         return;

@@ -30,6 +30,9 @@ pub const NR = struct {
     pub const tls_get_base: u64 = 17;
     pub const user_wait: u64 = 18;
     pub const user_wake: u64 = 19;
+    pub const thread_create: u64 = 40;
+    pub const thread_exit: u64 = 41;
+    pub const gettid: u64 = 45;
     pub const sleep_ms: u64 = 61;
     pub const open: u64 = 20;
     pub const close: u64 = 21;
@@ -171,6 +174,7 @@ fn errno(v: i64) Error {
 
 // ── Process ─────────────────────────────────────────────────────────────────
 
+/// End the whole program — every thread — with `code`.
 pub fn exit(code: u8) noreturn {
     _ = syscall1(NR.exit, code);
     unreachable;
@@ -188,8 +192,14 @@ pub fn waitInput(timeout_ms: u64) void {
     _ = syscall1(NR.input_wait, timeout_ms);
 }
 
+/// The program's id; every thread of one program sees the same value.
 pub fn getpid() i64 {
     return syscall0(NR.getpid);
+}
+
+/// The calling thread's id. The first thread's id is the program's pid.
+pub fn gettid() i64 {
+    return syscall0(NR.gettid);
 }
 
 pub fn yield() void {
@@ -679,6 +689,87 @@ pub fn wakeWord(word: *const u32, count: u32) Error!usize {
     if (result < 0) return errno(result);
     return @intCast(result);
 }
+
+// ── Threads ─────────────────────────────────────────────────────────────────
+
+/// End only the calling thread. When the last thread of a program ends this
+/// way, the program exits with its code.
+pub fn threadExit(code: u8) noreturn {
+    _ = syscall1(NR.thread_exit, code);
+    unreachable;
+}
+
+/// A thread of the calling program, running on a private stack mapping.
+pub const Thread = struct {
+    tid: i64,
+    stack: []align(4096) u8,
+    control: *Control,
+
+    /// Lives at the top of the thread's own stack mapping.
+    const Control = struct {
+        /// Nonzero while the thread runs. The kernel stores 0 and wakes it
+        /// once the thread will never touch its stack again.
+        exit_word: u32 = 1,
+        entry: *const fn (*anyopaque) void,
+        context: *anyopaque,
+    };
+
+    pub const default_stack_size: usize = 256 * 1024;
+
+    /// Run `entry(context)` on a new thread with a `stack_size`-byte stack and
+    /// FS base `tls` (0 for none). `context` must outlive the thread; join it.
+    pub fn spawn(entry: *const fn (*anyopaque) void, context: *anyopaque, stack_size: usize, tls: u64) Error!Thread {
+        const stack = try mapMemory(stack_size, .read_write);
+        errdefer unmapMemory(stack) catch {};
+        const top = @intFromPtr(stack.ptr) + stack.len;
+        const control_address = std.mem.alignBackward(usize, top - @sizeOf(Control), 16);
+        const control: *Control = @ptrFromInt(control_address);
+        control.* = .{ .entry = entry, .context = context };
+        // SysV entry state: rsp % 16 == 8, as if `call` had pushed a return
+        // address. Zero ends backtraces, and faults if the entry returns.
+        const rsp = control_address - 8;
+        @as(*u64, @ptrFromInt(rsp)).* = 0;
+        const result = syscall6(NR.thread_create, @intFromPtr(&threadStart), rsp, control_address, tls, @intFromPtr(&control.exit_word), 0);
+        if (result < 0) return errno(result);
+        return .{ .tid = result, .stack = stack, .control = control };
+    }
+
+    /// Wait until the thread has exited, then release its stack.
+    pub fn join(self: Thread) void {
+        while (true) {
+            const word = @atomicLoad(u32, &self.control.exit_word, .acquire);
+            if (word == 0) break;
+            waitWord(&self.control.exit_word, word, 0) catch {};
+        }
+        unmapMemory(self.stack) catch {};
+    }
+};
+
+fn threadStart(control_address: u64) callconv(.c) noreturn {
+    const control: *const Thread.Control = @ptrFromInt(control_address);
+    control.entry(control.context);
+    threadExit(0);
+}
+
+/// A mutex for threads of one program, or processes sharing the memory it is
+/// in. Blocks in the kernel only when contended. Not recursive.
+pub const Mutex = struct {
+    /// 0 unlocked, 1 locked, 2 locked with possible waiters.
+    state: u32 = 0,
+
+    pub fn lock(self: *Mutex) void {
+        if (@cmpxchgStrong(u32, &self.state, 0, 1, .acquire, .monotonic) == null) return;
+        while (@atomicRmw(u32, &self.state, .Xchg, 2, .acquire) != 0) {
+            waitWord(&self.state, 2, 0) catch {};
+        }
+    }
+
+    pub fn unlock(self: *Mutex) void {
+        if (@atomicRmw(u32, &self.state, .Xchg, 0, .release) == 2) {
+            _ = wakeWord(&self.state, 1) catch 0;
+        }
+    }
+};
 
 // ── Legacy scratch arena ────────────────────────────────────────────────────
 // Retained for existing small callers. Runtime ports should use mapMemory

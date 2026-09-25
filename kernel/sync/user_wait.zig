@@ -50,6 +50,20 @@ pub fn wait(pml4: u64, address: u64, expected: u32, timeout_ms: u64) Error!void 
     if (sched.waitTimedOut()) return error.Timeout;
 }
 
+/// Atomically store `value` into a user word, then wake up to `count`
+/// waiters on it. Used to publish a thread's exit to its joiner.
+pub fn storeAndWake(pml4: u64, address: u64, value: u32, count: usize) Error!usize {
+    const channel = blk: {
+        const access = address_space.beginCurrentAccess(pml4);
+        defer if (access) |a| a.end();
+        const word = try resolve(pml4, address);
+        validate.checkInAccess(pml4, address, @sizeOf(u32), true) catch return error.BadAddress;
+        @atomicStore(u32, @constCast(word.ptr), value, .release);
+        break :blk word.channel;
+    };
+    return sched.wakeChannelN(channel, count);
+}
+
 /// Return the number of registered waiters released, at most `count`.
 pub fn wake(pml4: u64, address: u64, count: usize) Error!usize {
     const channel = blk: {

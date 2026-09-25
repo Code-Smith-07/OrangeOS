@@ -63,9 +63,9 @@ var input_sink_lock: spinlock.SpinLock = .{};
 
 pub fn setInputSink(h: i64) Error!void {
     const table = try currentTable();
-    const obj = try table.getPort(h);
+    // The acquired reference becomes the sink's own.
+    const obj = try table.acquire(h, .port);
     const owner = sched.currentTask().?.ownerId();
-    object.retain(obj);
     const state = spinlock.acquireIrqSave(&input_sink_lock);
     const old = input_sink;
     input_sink = obj;
@@ -107,7 +107,8 @@ pub fn portSend(h: i64, opcode: u32, payload: []const u8) Error!u64 {
     if (payload.len > MAX_PAYLOAD) return Error.MessageTooLarge;
 
     const table = try currentTable();
-    const obj = try table.getPort(h);
+    const obj = try table.acquire(h, .port);
+    defer object.release(obj);
     const port = &obj.data.port;
 
     const msg = try object.allocMessage();
@@ -142,7 +143,10 @@ pub const Received = struct {
 /// until one arrives.
 pub fn portRecv(h: i64, out: []u8, blocking: bool) Error!Received {
     const table = try currentTable();
-    const obj = try table.getPort(h);
+    // Held across the wait: another thread closing the handle cannot free
+    // the port under a sleeping receiver.
+    const obj = try table.acquire(h, .port);
+    defer object.release(obj);
     const port = &obj.data.port;
 
     // The caller arrived through the syscall gate with IF clear. A blocking
@@ -167,6 +171,10 @@ pub fn portRecv(h: i64, out: []u8, blocking: bool) Error!Received {
         if (!blocking) {
             sched.cancelWait();
             return Error.QueueEmpty;
+        }
+        if (sched.killPending()) {
+            sched.cancelWait();
+            return Error.Interrupted;
         }
         sched.commitWait();
     }
@@ -196,7 +204,8 @@ pub fn shmOpen(name: []const u8) Error!i64 {
 pub fn shmMap(h: i64, writable: bool) Error!u64 {
     const t = sched.currentTask() orelse return Error.BadHandle;
     const space = t.user_space orelse return Error.BadHandle;
-    const obj = try (try currentTable()).getShm(h);
+    const obj = try (try currentTable()).acquire(h, .shm);
+    defer object.release(obj);
     const shm = &obj.data.shm;
 
     var flags: u64 = vmm.PRESENT | vmm.USER | vmm.NO_EXECUTE;
@@ -209,7 +218,8 @@ pub fn shmMap(h: i64, writable: bool) Error!u64 {
 
 pub fn shmSize(h: i64) Error!usize {
     const table = try currentTable();
-    const obj = try table.getShm(h);
+    const obj = try table.acquire(h, .shm);
+    defer object.release(obj);
     return obj.data.shm.size;
 }
 

@@ -198,9 +198,13 @@ pub fn installDefaults() void {
 /// The single Zig entry point for every trap.
 export fn isrDispatch(frame: *TrapFrame) callconv(.c) void {
     const vec: u8 = @truncate(frame.vector);
+    const sched = @import("../../sched/sched.zig");
 
     if (handlers[vec]) |h| {
         h(frame);
+        // A thread of an exiting program never returns to user mode. This is
+        // also how a thread spinning in ring 3 notices: its next timer tick.
+        if (frame.cs & 3 == 3 and sched.killPending()) sched.exit(0);
         return;
     }
 
@@ -213,10 +217,10 @@ export fn isrDispatch(frame: *TrapFrame) callconv(.c) void {
             else => false,
         };
         if (frame.cs & 3 == 3 and app_fault) {
-            const sched = @import("../../sched/sched.zig");
             if (sched.currentTask()) |t| {
                 console.print("[app fault] pid {d} tid {d} {s}: {s} at 0x{x}\n", .{ t.ownerId(), t.tid, t.nameSlice(), exception_names[vec], frame.rip });
-                sched.exit(128 + @as(i32, vec));
+                // One faulting thread ends its whole program.
+                sched.exitGroup(128 + @as(i32, vec));
             }
         }
         panic_mod.exception(frame);

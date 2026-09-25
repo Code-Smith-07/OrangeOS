@@ -183,6 +183,46 @@ export fn _start() callconv(.c) noreturn {
             if ((pulp.wait(pid) catch pulp.exit(149)) != 0) pulp.exit(150);
         }
         pulp.puts("runtime: PASS freestanding C++ language ABI\n");
+        // Two multi-threaded programs at once, four times over.
+        for (0..4) |_| {
+            var pids: [2]i64 = undefined;
+            for (&pids) |*pid| pid.* = pulp.spawn("/bin/thread-probe") catch pulp.exit(151);
+            for (pids) |pid| {
+                const code = pulp.wait(pid) catch pulp.exit(152);
+                if (code != 0) {
+                    pulp.print("runtime: FAIL thread probe {d} exit {d}\n", .{ pid, code });
+                    pulp.exit(153);
+                }
+            }
+        }
+        pulp.puts("runtime: PASS multi-threaded programs: remote TLB, mutex, private TLS, VM churn and join\n");
+        for (0..8) |_| {
+            const child = pulp.spawn("/bin/thread-exit-probe") catch pulp.exit(154);
+            const code = pulp.wait(child) catch pulp.exit(155);
+            if (code != 42) {
+                pulp.print("runtime: FAIL thread exit probe exit {d}\n", .{code});
+                pulp.exit(156);
+            }
+        }
+        pulp.puts("runtime: PASS program exit ends futex, port, console, wait, sleeping and spinning threads\n");
+        for (0..4) |_| {
+            const child = pulp.spawn("/bin/thread-fault-probe") catch pulp.exit(157);
+            const code = pulp.wait(child) catch pulp.exit(158);
+            if (code != 142) {
+                pulp.print("runtime: FAIL thread fault probe exit {d}\n", .{code});
+                pulp.exit(159);
+            }
+        }
+        pulp.puts("runtime: PASS a faulting thread ends its whole program\n");
+        for (0..8) |_| {
+            const child = pulp.spawn("/bin/thread-last-probe") catch pulp.exit(160);
+            const code = pulp.wait(child) catch pulp.exit(161);
+            if (code != 9) {
+                pulp.print("runtime: FAIL last-thread probe exit {d}\n", .{code});
+                pulp.exit(162);
+            }
+        }
+        pulp.puts("runtime: PASS a program outlives its first thread and exits with the last thread's status\n");
         // More than the registry's 64 concurrent slots must be possible over
         // the machine's lifetime once each child has been waited/reaped.
         for (0..96) |_| {

@@ -1339,7 +1339,7 @@ table entries remain design targets where absent from `kernel/syscall/syscall.zi
 | #  | Name | Signature | Phase |
 |----|------|-----------|-------|
 | | **── Process ──** | | |
-| 0 | `exit` | `(status: i32) noreturn` | P4 |
+| 0 | `exit` | `(status: i32) noreturn` — ends every thread of the program (implemented) | P4 |
 | 1 | `fork` | `() → pid` | P4 |
 | 2 | `exec` | `(path, argv, envp) → !noreturn` | P4 |
 | 3 | `wait` | `(pid, *status, flags) → pid` | P4 |
@@ -1380,11 +1380,12 @@ table entries remain design targets where absent from `kernel/syscall/syscall.zi
 | 37 | `mount` | `(src, dst, fstype, flags) → !void` | P5 |
 | 38 | `readdir_page` | `(path_ptr, path_len, out, max, skip) → count` (implemented; ordinal continuation, max 32 per call) | P5 |
 | | **── Threads ──** | | |
-| 40 | `thread_create` | `(entry, arg, stack) → tid` | P4 |
-| 41 | `thread_exit` | `(status) noreturn` | P4 |
-| 42 | `thread_join` | `(tid, *status) → !void` | P4 |
-| 43 | `futex_wait` | `(*u32, expected, timeout) → !void` | P4 |
-| 44 | `futex_wake` | `(*u32, count) → count` | P4 |
+| 40 | `thread_create` | `(entry, stack, arg, tls_base, exit_word) → tid` (implemented; `entry(arg)` in ring 3, kernel stores 0 to `exit_word` and wakes it at thread exit) | P4 runtime |
+| 41 | `thread_exit` | `(status) noreturn` — ends the calling thread; the last thread's status becomes the program's (implemented) | P4 runtime |
+| 42 | `thread_join` | `(tid, *status) → !void` — not implemented; join waits on the exit word with call 18 | P4 |
+| 43 | `futex_wait` | `(*u32, expected, timeout) → !void` — superseded by call 18 | P4 |
+| 44 | `futex_wake` | `(*u32, count) → count` — superseded by call 19 | P4 |
+| 45 | `gettid` | `() → tid`; the first thread's tid is the pid (implemented) | P4 runtime |
 | | **── IPC ──** | | |
 | 50 | `port_create` | `(name, flags) → handle` | P6 |
 | 51 | `port_connect` | `(name) → handle` | P6 |
