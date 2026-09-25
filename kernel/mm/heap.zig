@@ -10,6 +10,8 @@ const std = @import("std");
 const spinlock = @import("../sync/spinlock.zig");
 const pmm = @import("pmm.zig");
 const slab = @import("slab.zig");
+const console = @import("../console.zig");
+const fmt = @import("../lib/fmt.zig");
 
 pub const Error = error{OutOfMemory};
 
@@ -23,14 +25,23 @@ var initialized = false;
 /// Precedes every allocation. 16 bytes keeps the payload 16-byte aligned,
 /// which the SysV ABI requires for anything holding a wide type.
 const Header = extern struct {
+    /// LIVE while allocated. Freeing hands the block back to the slab or
+    /// buddy allocator, which keep their free-list links in these very bytes,
+    /// so a second free of the same object, or a free of a pointer the heap
+    /// never returned, is caught instead of corrupting a cache.
+    magic: u32,
     /// Index into SIZE_CLASSES, or SLAB_NONE for a direct buddy allocation.
-    class: u64,
+    class: u32,
     /// Buddy order, only meaningful for direct allocations.
     order: u64,
 };
 
-const SLAB_NONE: u64 = std.math.maxInt(u64);
+const LIVE: u32 = 0x4556_494C; // "LIVE"
+const SLAB_NONE: u32 = std.math.maxInt(u32);
 const HEADER_SIZE = @sizeOf(Header);
+/// Written over freed payloads in safety-checked builds: a later read through
+/// a stale pointer then trips a safety check or a non-canonical address.
+const POISON: u8 = 0xDF;
 
 pub fn init() void {
     const names = [_][]const u8{
@@ -78,7 +89,7 @@ fn allocUnlocked(size: usize) Error![*]u8 {
     if (classFor(total)) |ci| {
         const raw = caches[ci].alloc() catch return Error.OutOfMemory;
         const hdr: *Header = @ptrCast(@alignCast(raw));
-        hdr.* = .{ .class = ci, .order = 0 };
+        hdr.* = .{ .magic = LIVE, .class = @intCast(ci), .order = 0 };
         return raw + HEADER_SIZE;
     }
 
@@ -88,7 +99,7 @@ fn allocUnlocked(size: usize) Error![*]u8 {
     const phys = pmm.allocOrder(order) catch return Error.OutOfMemory;
     const virt = pmm.physToVirt(phys);
     const hdr: *Header = @ptrFromInt(virt);
-    hdr.* = .{ .class = SLAB_NONE, .order = order };
+    hdr.* = .{ .magic = LIVE, .class = SLAB_NONE, .order = order };
     return @as([*]u8, @ptrFromInt(virt)) + HEADER_SIZE;
 }
 
@@ -106,26 +117,40 @@ pub fn create(comptime T: type) Error!*T {
 }
 
 pub fn destroy(ptr: anytype) void {
-    free(@ptrCast(@alignCast(ptr)));
+    freeFrom(@ptrCast(@alignCast(ptr)), @returnAddress());
 }
 
 pub fn free(ptr: [*]u8) void {
-    const state = spinlock.acquireIrqSave(&lock);
-    defer spinlock.releaseIrqRestore(&lock, state);
-    freeUnlocked(ptr);
+    freeFrom(ptr, @returnAddress());
 }
 
-fn freeUnlocked(ptr: [*]u8) void {
+fn freeFrom(ptr: [*]u8, caller: usize) void {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    freeUnlocked(ptr, caller);
+}
+
+fn freeUnlocked(ptr: [*]u8, caller: usize) void {
     const raw = ptr - HEADER_SIZE;
     const hdr: *Header = @ptrCast(@alignCast(raw));
+    if (hdr.magic != LIVE or (hdr.class != SLAB_NONE and hdr.class >= SIZE_CLASSES.len)) {
+        @branchHint(.cold);
+        const words: *const [2]u64 = @ptrCast(hdr);
+        var line: [160]u8 = undefined;
+        console.emergencyWrite(fmt.bufPrint(&line, "HEAP invalid free: object 0x{x:0>16} header 0x{x:0>16} 0x{x:0>16} caller 0x{x:0>16}\n", .{ @intFromPtr(ptr), words[0], words[1], caller }));
+        @panic("heap: free of an object that is not live (double free or foreign pointer)");
+    }
+    hdr.magic = 0;
 
     if (hdr.class == SLAB_NONE) {
+        if (std.debug.runtime_safety) @memset(ptr[0 .. (pmm.PAGE_SIZE << @intCast(hdr.order)) - HEADER_SIZE], POISON);
         const phys = pmm.virtToPhys(@intFromPtr(raw));
         pmm.freeOrder(phys, @intCast(hdr.order));
         return;
     }
 
-    caches[@intCast(hdr.class)].free(raw);
+    if (std.debug.runtime_safety) @memset(ptr[0 .. SIZE_CLASSES[hdr.class] - HEADER_SIZE], POISON);
+    caches[hdr.class].free(raw);
 }
 
 pub const Stats = struct {

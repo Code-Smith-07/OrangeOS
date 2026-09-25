@@ -69,6 +69,11 @@ pub fn exception(frame: *isr.TrapFrame) noreturn {
     const vec: u8 = @truncate(frame.vector);
     const name = if (vec < isr.EXCEPTION_COUNT) isr.exception_names[vec] else "unknown";
 
+    // As in panicFn: serial evidence first, without locks.
+    var line: [160]u8 = undefined;
+    console.emergencyWrite(fmt.bufPrint(&line, "\nCPU EXCEPTION {d} ({s}) error 0x{x} rip 0x{x:0>16} cr2 0x{x:0>16} rsp 0x{x:0>16}\n", .{ vec, name, frame.error_code, frame.rip, isr.readCr2(), frame.rsp }));
+    backtrace.emergency(frame.rbp);
+
     banner("CPU EXCEPTION - Zest has stopped");
     console.print("  vector {d}: {s}\n", .{ vec, name });
     console.print("  error code: 0x{x}\n", .{frame.error_code});
@@ -110,6 +115,7 @@ pub fn panicFn(msg: []const u8, first_trace_addr: ?usize) noreturn {
         var address_buf: [64]u8 = undefined;
         console.emergencyWrite(fmt.bufPrint(&address_buf, "PANIC address: 0x{x:0>16}\n", .{addr}));
     }
+    backtrace.emergency(backtrace.currentRbp());
     banner("KERNEL PANIC - Zest has stopped");
     console.print("  reason: {s}\n", .{msg});
     if (first_trace_addr) |addr| {

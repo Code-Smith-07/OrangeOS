@@ -90,3 +90,20 @@ pub inline fn currentRbp() u64 {
         : [out] "=r" (-> u64),
     );
 }
+
+/// Frame-pointer walk written straight to the outputs without the console
+/// lock or log: usable at the very start of a panic, before anything that
+/// could block on a lock another (halted) CPU holds.
+pub fn emergency(rbp: u64) void {
+    const fmt = @import("../lib/fmt.zig");
+    var buffer: [96]u8 = undefined;
+    var frame: ?*const Frame = if (plausibleFrame(rbp)) @ptrFromInt(rbp) else null;
+    var depth: usize = 0;
+    while (frame) |f| : (depth += 1) {
+        if (depth >= MAX_FRAMES or !plausibleCode(f.return_address)) break;
+        console.emergencyWrite(fmt.bufPrint(&buffer, "PANIC frame #{d}: 0x{x:0>16}\n", .{ depth, f.return_address }));
+        const next = @intFromPtr(f.prev);
+        if (!plausibleFrame(next) or next <= @intFromPtr(f)) break;
+        frame = f.prev;
+    }
+}

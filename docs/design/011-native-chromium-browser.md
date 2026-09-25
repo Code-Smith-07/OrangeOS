@@ -1038,6 +1038,19 @@ establish a fix or a root cause. Panic handling now writes the bounds operands
 and caller address to the emergency serial path before framebuffer replay or
 normal console locking, so a recurrence should provide actionable evidence.
 
+A recurrence on 2026-09-25 (four vCPUs, during `thread-probe`) located it:
+`mm.heap.freeUnlocked` indexed the slab-cache table with a corrupted header
+`class` whose value was a kernel-stack address. That points at a heap object
+freed twice, or written after free, with its memory reused in between, most
+likely a page-backed object (process record, address space or IPC message,
+8 KiB blocks) whose pages became part of a kernel stack. The root cause is
+still open. Heap headers now carry a live magic that is checked and cleared
+on free, and freed payloads are poisoned in safety builds. An invalid free
+prints the object, the header and the freeing caller. Panics and CPU exceptions
+also print a lock-free frame-pointer backtrace on emergency serial. Five
+consecutive four-vCPU runs and one two-vCPU run of the full runtime suite
+passed afterwards without a recurrence.
+
 ### 11.27 Reference-counted address-space ownership
 
 `kernel/mm/address_space.zig` now owns each user PML4, anonymous VM records,
