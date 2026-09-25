@@ -67,7 +67,19 @@ pub const Loaded = struct {
     entry: u64,
     /// Highest mapped address, so the heap can start above it.
     brk: u64,
+    /// The program-header table, for the auxiliary vector (AT_PHDR etc.).
+    phoff: u64,
+    phnum: u16,
+    phentsize: u16,
 };
+
+/// Copy the program-header table of a loaded image into `out`.
+pub fn readProgramHeaders(node: *const vfs.Node, loaded: Loaded, out: []u8) Error![]u8 {
+    const size = @as(usize, loaded.phnum) * loaded.phentsize;
+    if (size > out.len) return Error.BadProgramHeader;
+    try readExact(node, loaded.phoff, out[0..size]);
+    return out[0..size];
+}
 
 fn validate(hdr: *align(1) const Header) Error!void {
     if (!std.mem.eql(u8, hdr.ident[0..4], &ELF_MAGIC)) return Error.NotElf;
@@ -151,5 +163,5 @@ pub fn loadFromNode(pml4_phys: u64, node: *const vfs.Node) Error!Loaded {
         if (end > brk) brk = end;
     }
 
-    return .{ .entry = hdr.entry, .brk = brk };
+    return .{ .entry = hdr.entry, .brk = brk, .phoff = hdr.phoff, .phnum = hdr.phnum, .phentsize = hdr.phentsize };
 }

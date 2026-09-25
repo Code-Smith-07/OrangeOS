@@ -49,7 +49,7 @@ concerns, not something bolted on later.
   DESKTOP           Grove         panel, dock, launcher
   DISPLAY SERVER    Peel          compositor, window mgmt, input
   SERVICES          Seed (init) · devmgr · netd · audiod · logd
-  C LIBRARY         Pulp          libc + syscall stubs
+  C LIBRARY         Pulp / musl   Zig runtime; musl 1.2.5 for C programs
   ══════════════════════════════════════════════════ ring 3 / ring 0
   KERNEL            Zest          sched · mm · vfs · ipc · drivers
   ARCH LAYER        x86_64        GDT · IDT · paging · APIC
@@ -171,10 +171,12 @@ anything, checked by mutation-tested concurrency probes. Programs can now
 create real threads sharing their address space, with join, private TLS, a
 futex mutex, and program exit or a fault in any thread ending every thread.
 The network stack is now safe to use from several CPUs and threads at once,
-and its waits sleep rather than spin with interrupts masked. This is a thread
-foundation, not yet pthreads or a libc.
-This is groundwork for shared threads, not pthread support or a complete C++
-standard library. Configurable orphan-process stress and emergency panic
+and its waits sleep rather than spin with interrupts masked. Anonymous memory
+can be flipped to read/execute under W^X for JIT code. C programs now build
+against musl 1.2.5 and run natively: stdio, malloc, clocks, file reads, TLS and
+POSIX threads, with musl's Linux calls translated in userland onto OrangeOS
+calls. There is no C++ standard library, writable filesystem, or dynamic
+linking yet. Configurable orphan-process stress and emergency panic
 diagnostics track a still-unexplained intermittent kernel bounds panic.
 The modern browser engine, HTTPS and remaining runtime work are still tracked
 in the [browser runtime ledger](docs/design/008-browser.md). The new
@@ -381,6 +383,9 @@ Dual-licensed under either:
 - **[MIT License](LICENSE-MIT)** — short and permissive
 
 at your option. `SPDX-License-Identifier: MIT OR Apache-2.0`
+
+C programs link musl 1.2.5 (MIT), compiled from the copy bundled with Zig;
+its copyright notice is installed at `/share/licenses/musl-COPYRIGHT.txt`.
 
 ---
 

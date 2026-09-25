@@ -276,6 +276,75 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(exe);
     }
 
+    // ── C programs on musl ───────────────────────────────────────────────────
+    // musl is compiled from the copy bundled with the pinned Zig toolchain,
+    // following musl's own Makefile: every src/*/*.c plus mallocng, with the
+    // x86-64 overrides. Its system calls are routed to the OrangeOS layer in
+    // userland/libs/musl-orange, which also replaces the six x86-64 assembly
+    // files that execute `syscall` directly.
+    const zig_lib = b.graph.zig_lib_directory.path orelse @panic("zig lib directory unknown");
+    const musl_root = b.pathJoin(&.{ zig_lib, "libc", "musl" });
+    const musl_headers = [_][]const u8{
+        b.pathJoin(&.{ zig_lib, "libc", "include", "x86_64-linux-musl" }),
+        b.pathJoin(&.{ zig_lib, "libc", "include", "generic-musl" }),
+    };
+    const musl_mod = b.createModule(.{
+        .root_source_file = b.path("userland/libs/musl-orange/orange.zig"),
+        .target = user_target,
+        .optimize = user_optimize,
+        .red_zone = false,
+        .pic = false,
+        .stack_protector = false,
+        .stack_check = false,
+        .sanitize_c = false,
+        .single_threaded = false,
+    });
+    musl_mod.addIncludePath(b.path("userland/libs/musl-orange/arch"));
+    for ([_][]const u8{ "arch/x86_64", "arch/generic", "src/include", "src/internal" }) |dir| {
+        musl_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ musl_root, dir }) });
+    }
+    for (musl_headers) |dir| musl_mod.addIncludePath(.{ .cwd_relative = dir });
+    const musl_sources = collectMuslSources(b, musl_root) catch |e| std.debug.panic("musl sources: {s}", .{@errorName(e)});
+    const musl_src = b.pathJoin(&.{ musl_root, "src" });
+    musl_mod.addCSourceFiles(.{
+        .root = .{ .cwd_relative = musl_src },
+        .files = musl_sources.c,
+        .flags = &.{ "-std=c99", "-nostdinc", "-ffreestanding", "-fexcess-precision=standard", "-frounding-math", "-fno-strict-aliasing", "-D_XOPEN_SOURCE=700", "-fno-stack-protector", "-mno-red-zone", "-mno-avx", "-w" },
+    });
+    for (musl_sources.asm_files) |file| {
+        musl_mod.addAssemblyFile(.{ .cwd_relative = b.pathJoin(&.{ musl_src, file }) });
+    }
+    const musl_lib = b.addLibrary(.{ .linkage = .static, .name = "c", .root_module = musl_mod });
+
+    const CProgram = struct { name: []const u8, sources: []const []const u8 };
+    const c_programs = [_]CProgram{
+        .{ .name = "musl-probe", .sources = &.{"userland/bin/musl-probe/probe.c"} },
+    };
+    for (c_programs) |program| {
+        const mod = b.createModule(.{
+            .root_source_file = b.path("userland/libs/musl-orange/crt.zig"),
+            .target = user_target,
+            .optimize = user_optimize,
+            .strip = user_optimize != .Debug,
+            .red_zone = false,
+            .pic = false,
+            .stack_protector = false,
+            .stack_check = false,
+            .sanitize_c = false,
+            .single_threaded = false,
+        });
+        mod.addCSourceFiles(.{
+            .files = program.sources,
+            .flags = &.{ "-std=c11", "-nostdinc", "-fno-stack-protector", "-mno-red-zone", "-mno-avx", "-Wall", "-Wextra", "-Werror" },
+        });
+        for (musl_headers) |dir| mod.addSystemIncludePath(.{ .cwd_relative = dir });
+        mod.linkLibrary(musl_lib);
+        const exe = b.addExecutable(.{ .name = program.name, .root_module = mod, .use_lld = true });
+        exe.setLinkerScript(b.path("userland/user.ld"));
+        exe.entry = .{ .symbol_name = "_start" };
+        b.installArtifact(exe);
+    }
+
     // ── Zest kernel ──────────────────────────────────────────────────────────
     const kernel_mod = b.createModule(.{
         .root_source_file = b.path("kernel/main.zig"),
@@ -371,4 +440,83 @@ pub fn build(b: *std.Build) void {
     // memory map, and ACPI's XSDT instead of the RSDT.
     const uefi = b.addSystemCommand(&.{ "sh", "scripts/run-uefi.sh" });
     b.step("uefi", "Boot the USB image under UEFI firmware").dependOn(&uefi.step);
+}
+
+const MuslSources = struct { c: []const []const u8, asm_files: []const []const u8 };
+
+/// musl assembly that executes `syscall` itself, replaced by
+/// userland/libs/musl-orange/orange.zig (vfork and the signal restorers fall
+/// back to musl's generic C, which reports ENOSYS or is never called).
+const musl_replaced_asm = [_][]const u8{
+    "thread/x86_64/__unmapself.s",
+    "thread/x86_64/clone.s",
+    "thread/x86_64/syscall_cp.s",
+    "thread/x86_64/__set_thread_area.s",
+    "signal/x86_64/restore.s",
+    "process/x86_64/vfork.s",
+};
+/// Generic C versions of functions orange.zig provides.
+const musl_replaced_c = [_][]const u8{
+    "thread/__unmapself.c",
+    "thread/clone.c",
+    "thread/__set_thread_area.c",
+};
+
+fn contains(list: []const []const u8, item: []const u8) bool {
+    for (list) |entry| if (std.mem.eql(u8, entry, item)) return true;
+    return false;
+}
+
+fn collectMuslSources(b: *std.Build, musl_root: []const u8) !MuslSources {
+    const src = b.pathJoin(&.{ musl_root, "src" });
+    var dirs = std.ArrayList([]const u8).init(b.allocator);
+    var src_dir = try std.fs.openDirAbsolute(src, .{ .iterate = true });
+    defer src_dir.close();
+    var it = src_dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind == .directory) try dirs.append(b.dupe(entry.name));
+    }
+    try dirs.append("malloc/mallocng");
+    std.mem.sort([]const u8, dirs.items, {}, struct {
+        fn less(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.lessThan(u8, x, y);
+        }
+    }.less);
+
+    var c = std.ArrayList([]const u8).init(b.allocator);
+    var asm_files = std.ArrayList([]const u8).init(b.allocator);
+    for (dirs.items) |dir| {
+        // Architecture files replace the generic C file of the same name.
+        var overridden = std.StringHashMap(void).init(b.allocator);
+        const arch_rel = b.pathJoin(&.{ dir, "x86_64" });
+        if (std.fs.openDirAbsolute(b.pathJoin(&.{ src, arch_rel }), .{ .iterate = true })) |arch_dir_value| {
+            var arch_dir = arch_dir_value;
+            defer arch_dir.close();
+            var arch_it = arch_dir.iterate();
+            while (try arch_it.next()) |entry| {
+                if (entry.kind != .file) continue;
+                const ext = std.fs.path.extension(entry.name);
+                const rel = b.pathJoin(&.{ arch_rel, entry.name });
+                if (contains(&musl_replaced_asm, rel)) continue;
+                if (std.mem.eql(u8, ext, ".c")) {
+                    try c.append(rel);
+                } else if (std.mem.eql(u8, ext, ".s") or std.mem.eql(u8, ext, ".S")) {
+                    try asm_files.append(rel);
+                } else continue;
+                try overridden.put(b.dupe(std.fs.path.stem(entry.name)), {});
+            }
+        } else |_| {}
+
+        var base_dir = try std.fs.openDirAbsolute(b.pathJoin(&.{ src, dir }), .{ .iterate = true });
+        defer base_dir.close();
+        var base_it = base_dir.iterate();
+        while (try base_it.next()) |entry| {
+            if (entry.kind != .file or !std.mem.eql(u8, std.fs.path.extension(entry.name), ".c")) continue;
+            if (overridden.contains(std.fs.path.stem(entry.name))) continue;
+            const rel = b.pathJoin(&.{ dir, entry.name });
+            if (contains(&musl_replaced_c, rel)) continue;
+            try c.append(rel);
+        }
+    }
+    return .{ .c = c.items, .asm_files = asm_files.items };
 }

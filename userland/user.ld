@@ -19,6 +19,10 @@ SECTIONS
         PROVIDE(__init_array_end = .);
     }
     . = ALIGN(0x1000);
+    /* Thread-local storage: the linker emits a PT_TLS segment describing
+     * these, and a C runtime copies the image into each thread's block. */
+    .tdata : { *(.tdata .tdata.*) }
+    .tbss  : { *(.tbss .tbss.*) }
     .data : { *(.data .data.*) }
     .bss  : { *(.bss .bss.*) *(COMMON) }
 

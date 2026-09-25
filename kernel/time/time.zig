@@ -35,6 +35,13 @@ pub fn unixSeconds() ?u64 {
     return epoch + (millisSinceBoot() - wall_base_ms) / 1000;
 }
 
+/// Wall-clock nanoseconds since the Unix epoch: the RTC reading taken at
+/// boot, advanced by the monotonic clock.
+pub fn unixNanos() ?u64 {
+    const epoch = wall_epoch orelse return null;
+    return epoch * 1_000_000_000 + (monotonicNs() -| wall_base_ms * 1_000_000);
+}
+
 /// Called from the LAPIC timer interrupt on EVERY core.
 ///
 /// The LAPIC timer is per-CPU, so with four cores this fires four times per

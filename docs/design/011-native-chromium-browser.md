@@ -1344,6 +1344,50 @@ mappings are available to every program for now. Restricting them per
 process (for example to renderers that need JIT) belongs with the sandbox
 work, and a jitless bring-up remains an option.
 
+### 11.34 musl C library for native C programs
+
+C programs now build against musl 1.2.5, compiled from the copy bundled with
+the pinned Zig toolchain into a static `libc.a`. The only change to musl is
+that `arch/syscall_arch.h` is replaced, so every Linux-numbered system call
+goes to `__orange_syscall` in `userland/libs/musl-orange/orange.zig`. That
+translation layer maps each request onto OrangeOS calls or returns `-ENOSYS`,
+and no Linux number ever reaches the kernel. It covers file reads, stat,
+seek, readv/writev, anonymous mmap/mprotect/munmap, futex wait/wake/requeue,
+clocks and sleeping, uname, identity calls, `arch_prctl` for the thread
+pointer, and `set_tid_address`. Six musl assembly files that execute
+`syscall` directly are replaced: `__clone`, `__syscall_cp_asm`,
+`__set_thread_area`, `__unmapself`, the signal restorer and `vfork`.
+`__clone` maps onto `thread_create`, passing the thread pointer and the
+child-clear-tid word as the exit word. That makes `pthread_join` and detached
+thread cleanup work unchanged.
+
+The kernel now starts every program with a SysV initial stack (argc, argv,
+an empty environment, and an auxiliary vector that includes a copy of the
+program headers, so musl finds the TLS segment). New calls support libc:
+`seek` (24), `stat` (25), `fstat` (26), `set_exit_word` (46) and `clock_ns`
+(63, monotonic or wall time). Writes and creation return `EROFS`, because the
+root filesystem is read-only.
+
+Verified on 2026-09-25 inside the full runtime suite (45 checks, two and four
+vCPUs), plus the desktop interaction suite. `/bin/musl-probe` is strict C11
+built with `-Wall -Wextra -Werror` and checks:
+- argv and uname;
+- `snprintf` of integers, floats and hex, `strtod` and `qsort`;
+- a 3 MiB malloc and realloc;
+- a 20 ms `nanosleep` measured by the monotonic clock, and wall time;
+- `fopen`/`fgets` of `/etc/motd`, `stat` of a file and a directory, and
+  `ENOENT` and `EROFS`;
+- `__thread` isolation;
+- four pthreads doing 20,000 mutex-protected increments, a condition-variable
+  handoff, and join values.
+
+The desktop image grew to an 80 MiB disk (48 MiB filesystem) to fit it.
+
+Not provided yet: signals, `fork`/`exec` from C, environment variables,
+writable files, directories and pipes through libc, sockets through libc, and
+dynamic linking. libc++ (§11.25's next step) can now be built on this
+library.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,
