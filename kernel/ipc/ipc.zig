@@ -29,8 +29,8 @@ pub const Header = object.Header;
 pub const MAX_PAYLOAD = object.MAX_PAYLOAD;
 
 fn currentTable() Error!*handle.Table {
-    const t = sched.currentTask() orelse return Error.BadHandle;
-    return &t.handles;
+    const p = sched.currentProcess() orelse return Error.BadHandle;
+    return &p.handles;
 }
 
 /// Create a named port and return a handle to it.
@@ -64,7 +64,7 @@ var input_sink_lock: spinlock.SpinLock = .{};
 pub fn setInputSink(h: i64) Error!void {
     const table = try currentTable();
     const obj = try table.getPort(h);
-    const owner = sched.currentTask().?.tid;
+    const owner = sched.currentTask().?.ownerId();
     object.retain(obj);
     const state = spinlock.acquireIrqSave(&input_sink_lock);
     const old = input_sink;
@@ -74,9 +74,9 @@ pub fn setInputSink(h: i64) Error!void {
     if (old) |previous| object.release(previous);
 }
 
-pub fn clearInputSinkOwnedBy(tid: u32) void {
+pub fn clearInputSinkOwnedBy(pid: u32) void {
     const state = spinlock.acquireIrqSave(&input_sink_lock);
-    const old = if (input_sink_owner == tid) input_sink else null;
+    const old = if (input_sink_owner == pid) input_sink else null;
     if (old != null) {
         input_sink = null;
         input_sink_owner = 0;
@@ -113,7 +113,7 @@ pub fn portSend(h: i64, opcode: u32, payload: []const u8) Error!u64 {
     const msg = try object.allocMessage();
     errdefer object.freeMessage(msg);
 
-    const sender: u32 = if (sched.currentTask()) |t| t.tid else 0;
+    const sender: u32 = if (sched.currentTask()) |t| t.ownerId() else 0;
     msg.header = .{
         .opcode = opcode,
         .len = @intCast(payload.len),
@@ -196,7 +196,7 @@ pub fn shmOpen(name: []const u8) Error!i64 {
 pub fn shmMap(h: i64, writable: bool) Error!u64 {
     const t = sched.currentTask() orelse return Error.BadHandle;
     const space = t.user_space orelse return Error.BadHandle;
-    const obj = try t.handles.getShm(h);
+    const obj = try (try currentTable()).getShm(h);
     const shm = &obj.data.shm;
     var mapping_slot: ?*?*object.Object = null;
     for (&space.mapped_shm) |*slot| {

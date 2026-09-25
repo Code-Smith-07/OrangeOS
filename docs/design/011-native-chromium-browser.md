@@ -1113,6 +1113,40 @@ allocated throughout. Concurrent user unmap/protect, user-copy and wait-word
 pinning, shared process resources, and user-thread creation/join/exit still
 need implementation and testing before Chromium can use this foundation.
 
+### 11.29 Process records separate from threads
+
+A reference-counted `Process` record (`kernel/sched/task.zig`) now owns what
+belongs to a whole program: file descriptors, capability handles, the stdio
+PTY, boot-issued authority (service manager, host bridge, host controls) and
+the owner identity used by UDP/TCP slots, the framebuffer, the compositor's
+input sink and IPC sender stamps. A `Task` keeps only per-thread state: kernel
+stack, registers, FPU/TLS, scheduling and wait bookkeeping, plus its own
+address-space reference. The process id is the tid of the first thread, so
+every existing single-threaded program keeps identical pid/tid numbers.
+
+Spawn creates the process record, PTY binding and authority before the first
+thread is queued; PID 1 is now created the same way, so service-manager
+authority is a property of that process rather than a flag written by its
+thread. Children are parented by process id. An atomic live-thread count picks
+exactly one last thread to release descriptors, sockets, the input sink, the
+PTY and handles; it publishes `exited` under the scheduler lock only after
+that teardown, and each task record's reference keeps the process readable
+until the last record is collected. `wait` now finds the child by id under
+the scheduler lock on every pass and sleeps on the process's exit channel, so
+no task pointer is held across a sleep — a prerequisite for multi-threaded
+parents.
+
+Verified on 2026-09-25 (3 GiB / two vCPUs): every kernel build variant
+compiles; the complete runtime suite passed (VM, TLB/residency, faults,
+SIMD/TLS migration, wait/wake, C/C++ ABI, 96 reaps, full-table recovery,
+96-parent orphan cleanup, descriptor/socket/IPC exit cleanup); the desktop
+interaction suite passed with `host-probe` still denied every bridge
+operation; and the simulated-host sound/display bridge suite passed all 13
+authority and revocation checks. This is an ownership refactor with unchanged
+single-thread behaviour, **not** user threads: no program can yet create a
+second thread, and handle/descriptor tables are not yet locked for
+concurrent threads.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,
