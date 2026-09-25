@@ -11,6 +11,7 @@ const vmm = @import("../mm/vmm.zig");
 const vfs = @import("../fs/vfs/vfs.zig");
 const fd_mod = @import("../fs/fd.zig");
 const epoll = @import("../ipc/epoll.zig");
+const unix_socket = @import("../ipc/unix_socket.zig");
 const heap = @import("../mm/heap.zig");
 const serial = @import("../drivers/char/serial.zig");
 const io = @import("../arch/x86_64/io.zig");
@@ -100,6 +101,10 @@ pub const Nr = enum(u64) {
     epoll_ctl = 135,
     epoll_wait = 136,
     poll = 137,
+    socketpair = 138,
+    sendmsg = 139,
+    recvmsg = 140,
+    shutdown = 141,
     readdir = 34,
     readdir_page = 38,
     port_create = 50,
@@ -157,6 +162,7 @@ const EFBIG: i64 = -27;
 const EBUSY: i64 = -16;
 const ESPIPE: i64 = -29;
 const EPIPE: i64 = -32;
+const ENOTSOCK: i64 = -88;
 const EPERM: i64 = -1;
 const ENOMEM: i64 = -12;
 /// The calling program is exiting; a blocked call gave up.
@@ -192,6 +198,10 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .epoll_ctl => sysEpollCtl(frame.rdi, frame.rsi, frame.rdx, frame.r10),
         .epoll_wait => sysEpollWait(frame.rdi, frame.rsi, frame.rdx, frame.r10),
         .poll => sysPoll(frame.rdi, frame.rsi, frame.rdx),
+        .socketpair => sysSocketPair(frame.rdi, frame.rsi, frame.rdx),
+        .sendmsg => sysSendMsg(frame.rdi, frame.rsi, frame.rdx),
+        .recvmsg => sysRecvMsg(frame.rdi, frame.rsi, frame.rdx),
+        .shutdown => sysShutdown(frame.rdi, frame.rsi),
         .close => sysClose(frame.rdi),
         .read => sysRead(frame.rdi, frame.rsi, frame.rdx),
         .spawn => sysSpawn(frame.rdi, frame.rsi),
@@ -594,6 +604,7 @@ fn vfsErrno(e: vfs.Error) i64 {
         vfs.Error.Interrupted => EINTR,
         vfs.Error.NotSeekable => ESPIPE,
         vfs.Error.OutOfMemory => ENOMEM,
+        vfs.Error.MessageTooLong => EMSGSIZE,
         vfs.Error.NameTooLong => ENAMETOOLONG,
         vfs.Error.TooManyOpen => EMFILE,
         vfs.Error.BadFd => EBADF,
@@ -861,6 +872,191 @@ fn sysPoll(fds_ptr: u64, nfds: u64, timeout: u64) i64 {
     }
     validate.copyToUser(vmm.currentCr3(), fds_ptr, raw[0 .. n * POLLFD_SIZE], n * POLLFD_SIZE) catch return EFAULT;
     return @intCast(result);
+}
+
+// ── Local socket pairs ──────────────────────────────────────────────────────
+
+/// socketpair: 1 stream, 2 datagram, 5 seqpacket; flags as for pipe.
+fn sysSocketPair(kind: u64, flags: u64, out: u64) i64 {
+    if (flags & ~(FD_NONBLOCK | FD_CLOEXEC) != 0) return EINVAL;
+    const socket_kind: unix_socket.Kind = switch (kind) {
+        1 => .stream,
+        2 => .datagram,
+        5 => .seqpacket,
+        else => return EINVAL,
+    };
+    const proc = sched.currentProcess() orelse return EIO;
+    const fds = fd_mod.createSocketPair(&proc.files, socket_kind, flags & FD_NONBLOCK != 0, flags & FD_CLOEXEC != 0) catch |e| return vfsErrno(e);
+    validate.copyToUser(vmm.currentCr3(), out, std.mem.asBytes(&fds), @sizeOf([2]i32)) catch {
+        fd_mod.close(&proc.files, fds[0]) catch {};
+        fd_mod.close(&proc.files, fds[1]) catch {};
+        return EFAULT;
+    };
+    return 0;
+}
+
+/// The message sendmsg and recvmsg take: data as an iovec array, and
+/// descriptors as an i32 array. recvmsg writes back how many descriptors it
+/// installed and `flags` (1 data truncated, 2 descriptors dropped).
+const NativeMessage = extern struct {
+    iov: u64,
+    iov_count: u64,
+    fds: u64,
+    fd_count: u32,
+    flags: u32,
+};
+const Iovec = extern struct { base: u64, len: u64 };
+/// sendmsg/recvmsg flags.
+const MSG_DONTWAIT: u64 = 1;
+const MSG_CLOEXEC: u64 = 2;
+const MAX_IOV = 1024;
+
+fn socketOf(number: u64) error{ BadFd, NotSocket }!struct { desc: *fd_mod.Description, sock: fd_mod.SocketEnd } {
+    const desc = descriptionOf(number) orelse return error.BadFd;
+    switch (desc.object) {
+        .socket => |sock| return .{ .desc = desc, .sock = sock },
+        else => {
+            desc.release();
+            return error.NotSocket;
+        },
+    }
+}
+
+/// Copy the message header and its iovec array in; returns the vectors in a
+/// heap buffer the caller frees, and their total length (capped).
+fn readMessage(address: u64, message: *NativeMessage) error{ Fault, Invalid, NoMemory }![]Iovec {
+    const pml4 = vmm.currentCr3();
+    validate.copyFromUser(pml4, std.mem.asBytes(message), address, @sizeOf(NativeMessage)) catch return error.Fault;
+    if (message.iov_count > MAX_IOV) return error.Invalid;
+    const vector_count: usize = @intCast(message.iov_count);
+    if (vector_count == 0) return &.{};
+    const raw = heap.alloc(vector_count * @sizeOf(Iovec)) catch return error.NoMemory;
+    const vectors: [*]Iovec = @ptrCast(@alignCast(raw));
+    validate.copyFromUser(pml4, raw[0 .. vector_count * @sizeOf(Iovec)], message.iov, vector_count * @sizeOf(Iovec)) catch {
+        heap.free(raw);
+        return error.Fault;
+    };
+    return vectors[0..vector_count];
+}
+
+fn messageErrno(e: error{ Fault, Invalid, NoMemory }) i64 {
+    return switch (e) {
+        error.Fault => EFAULT,
+        error.Invalid => EINVAL,
+        error.NoMemory => ENOMEM,
+    };
+}
+
+fn totalLength(vectors: []const Iovec) ?usize {
+    var total: usize = 0;
+    for (vectors) |v| total = std.math.add(usize, total, @intCast(v.len)) catch return null;
+    return total;
+}
+
+fn sysSendMsg(number: u64, address: u64, flags: u64) i64 {
+    if (flags & ~MSG_DONTWAIT != 0) return EINVAL;
+    const target = socketOf(number) catch |e| return if (e == error.BadFd) EBADF else ENOTSOCK;
+    defer target.desc.release();
+    var message: NativeMessage = undefined;
+    const vectors = readMessage(address, &message) catch |e| return messageErrno(e);
+    defer if (vectors.len > 0) heap.free(@ptrCast(vectors.ptr));
+    const requested = totalLength(vectors) orelse return EINVAL;
+    const length = @min(requested, unix_socket.CAPACITY);
+    if (target.sock.pair.kind != .stream and requested > unix_socket.CAPACITY) return EMSGSIZE;
+    if (message.fd_count > unix_socket.MAX_RIGHTS) return EINVAL;
+
+    const pml4 = vmm.currentCr3();
+    const data = heap.alloc(@max(length, 1)) catch return ENOMEM;
+    defer heap.free(data);
+    var gathered: usize = 0;
+    for (vectors) |v| {
+        const take = @min(@as(usize, @intCast(v.len)), length - gathered);
+        if (take == 0) break;
+        validate.copyFromUser(pml4, data[gathered .. gathered + take], v.base, take) catch return EFAULT;
+        gathered += take;
+    }
+
+    // Take a reference on every description being passed.
+    var numbers: [unix_socket.MAX_RIGHTS]i32 = undefined;
+    const rights_count: usize = message.fd_count;
+    if (rights_count > 0) {
+        validate.copyFromUser(pml4, std.mem.sliceAsBytes(numbers[0..rights_count]), message.fds, rights_count * 4) catch return EFAULT;
+    }
+    var rights: [unix_socket.MAX_RIGHTS]*fd_mod.Description = undefined;
+    var taken: usize = 0;
+    defer for (rights[0..taken]) |d| d.release();
+    for (numbers[0..rights_count]) |n| {
+        rights[taken] = descriptionOf(@bitCast(@as(i64, n))) orelse return EBADF;
+        taken += 1;
+    }
+
+    io.sti();
+    defer io.cli();
+    const nonblock = flags & MSG_DONTWAIT != 0 or target.desc.statusFlags() & vfs.OPEN_NONBLOCK != 0;
+    const sent = unix_socket.send(target.sock.pair, target.sock.end, data[0..length], rights[0..taken], nonblock) catch |e| return vfsErrno(fd_mod.socketError(e));
+    // The message now owns those references.
+    taken = 0;
+    return @intCast(sent);
+}
+
+fn sysRecvMsg(number: u64, address: u64, flags: u64) i64 {
+    if (flags & ~(MSG_DONTWAIT | MSG_CLOEXEC) != 0) return EINVAL;
+    const target = socketOf(number) catch |e| return if (e == error.BadFd) EBADF else ENOTSOCK;
+    defer target.desc.release();
+    const proc = sched.currentProcess() orelse return EIO;
+    var message: NativeMessage = undefined;
+    const vectors = readMessage(address, &message) catch |e| return messageErrno(e);
+    defer if (vectors.len > 0) heap.free(@ptrCast(vectors.ptr));
+    const capacity = @min(totalLength(vectors) orelse return EINVAL, unix_socket.CAPACITY);
+    const data = heap.alloc(@max(capacity, 1)) catch return ENOMEM;
+    defer heap.free(data);
+
+    const got = blk: {
+        io.sti();
+        defer io.cli();
+        const nonblock = flags & MSG_DONTWAIT != 0 or target.desc.statusFlags() & vfs.OPEN_NONBLOCK != 0;
+        break :blk unix_socket.receive(target.sock.pair, target.sock.end, data[0..capacity], nonblock) catch |e| return vfsErrno(fd_mod.socketError(e));
+    };
+
+    // Install what arrived; what does not fit is closed, as on Linux.
+    var installed: [unix_socket.MAX_RIGHTS]i32 = undefined;
+    var installed_count: usize = 0;
+    var dropped = false;
+    for (got.rights[0..got.right_count]) |carried| {
+        if (installed_count < message.fd_count) {
+            if (fd_mod.install(&proc.files, carried, fd_mod.FD_BASE, flags & MSG_CLOEXEC != 0)) |n| {
+                installed[installed_count] = n;
+                installed_count += 1;
+                continue;
+            } else |_| {}
+        }
+        carried.release();
+        dropped = true;
+    }
+
+    const pml4 = vmm.currentCr3();
+    var scattered: usize = 0;
+    for (vectors) |v| {
+        const put = @min(@as(usize, @intCast(v.len)), got.bytes - scattered);
+        if (put == 0) break;
+        validate.copyToUser(pml4, v.base, data[scattered .. scattered + put], put) catch return EFAULT;
+        scattered += put;
+    }
+    if (installed_count > 0) {
+        validate.copyToUser(pml4, message.fds, std.mem.sliceAsBytes(installed[0..installed_count]), installed_count * 4) catch return EFAULT;
+    }
+    message.fd_count = @intCast(installed_count);
+    message.flags = (if (got.truncated) @as(u32, 1) else 0) | (if (dropped) @as(u32, 2) else 0);
+    validate.copyToUser(pml4, address, std.mem.asBytes(&message), @sizeOf(NativeMessage)) catch return EFAULT;
+    return @intCast(got.bytes);
+}
+
+fn sysShutdown(number: u64, how: u64) i64 {
+    if (how > 2) return EINVAL;
+    const target = socketOf(number) catch |e| return if (e == error.BadFd) EBADF else ENOTSOCK;
+    defer target.desc.release();
+    unix_socket.shutdown(target.sock.pair, target.sock.end, @intCast(how));
+    return 0;
 }
 
 fn sysEventFd(initial: u64, flags: u64) i64 {

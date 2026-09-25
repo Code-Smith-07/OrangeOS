@@ -135,6 +135,10 @@ def main():
         guest.until(lambda: "runtime: PASS epoll, poll and select" in guest.log() or "epoll-probe: FAIL" in guest.log()
                     or "runtime: FAIL readiness" in guest.log(), "epoll, poll and select", 120)
         assert "epoll-probe: PASS level/edge/oneshot, OUT/HUP/ERR, blocking and timed waits, removal on close, eventfd pump, 64 pipes, poll and select" in guest.log(), guest.log()[-2000:]
+        guest.until(lambda: "runtime: PASS socket pairs and descriptor passing" in guest.log() or "unix-probe: FAIL" in guest.log()
+                    or "runtime: FAIL socket pairs" in guest.log(), "socket pairs and descriptor passing", 120)
+        assert ("unix-probe: PASS stream, seqpacket, datagram, SCM_RIGHTS (pipes, shared offsets, CTRUNC, CLOEXEC), "
+                "EOF/EPIPE/shutdown, 256 KiB, epoll and 200 descriptor-passing rounds") in guest.log(), guest.log()[-2000:]
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]

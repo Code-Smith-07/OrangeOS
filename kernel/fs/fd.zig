@@ -21,6 +21,7 @@ const pipe = @import("../ipc/pipe.zig");
 const eventfd = @import("../ipc/eventfd.zig");
 const readiness = @import("../ipc/readiness.zig");
 const epoll = @import("../ipc/epoll.zig");
+const unix_socket = @import("../ipc/unix_socket.zig");
 
 pub const Error = vfs.Error;
 pub const MAX_OPEN = 256;
@@ -34,7 +35,10 @@ pub const Object = union(enum) {
     pipe_write: *pipe.Pipe,
     eventfd: *eventfd.EventFd,
     epoll: *epoll.Epoll,
+    socket: SocketEnd,
 };
+
+pub const SocketEnd = struct { pair: *unix_socket.Pair, end: u1 };
 
 pub const NodeFile = struct { node: vfs.Node, offset: u64 = 0 };
 
@@ -76,6 +80,7 @@ pub const Description = struct {
             .pipe_write => |p| pipe.closeEnd(p, true),
             .eventfd => |e| eventfd.destroy(e),
             .epoll => |ep| epoll.destroy(ep),
+            .socket => |sock| unix_socket.closeEnd(sock.pair, sock.end),
         }
         heap.destroy(self);
     }
@@ -97,6 +102,7 @@ pub const Description = struct {
             .pipe_read => |p| pipe.source(p, false),
             .pipe_write => |p| pipe.source(p, true),
             .eventfd => |e| &e.source,
+            .socket => |sock| unix_socket.source(sock.pair, sock.end),
         };
     }
 };
@@ -340,6 +346,12 @@ pub fn read(desc: *Description, buf: []u8) Error!usize {
         },
         .pipe_read => |p| return pipe.read(p, buf, desc.nonblocking()) catch |e| pipeError(e),
         .eventfd => |e| return eventfd.read(e, buf, desc.nonblocking()) catch |err| eventError(err),
+        .socket => |sock| {
+            // read() takes data only; descriptions sent along are closed.
+            const got = unix_socket.receive(sock.pair, sock.end, buf, desc.nonblocking()) catch |e| return socketError(e);
+            for (got.rights[0..got.right_count]) |carried| carried.release();
+            return got.bytes;
+        },
         .pipe_write, .epoll => return Error.BadFd,
     }
 }
@@ -358,8 +370,20 @@ pub fn write(desc: *Description, data: []const u8) Error!usize {
         },
         .pipe_write => |p| return pipe.write(p, data, desc.nonblocking()) catch |e| pipeError(e),
         .eventfd => |e| return eventfd.write(e, data, desc.nonblocking()) catch |err| eventError(err),
+        .socket => |sock| return unix_socket.send(sock.pair, sock.end, data, &.{}, desc.nonblocking()) catch |e| socketError(e),
         .pipe_read, .epoll => return Error.BadFd,
     }
+}
+
+pub fn socketError(e: unix_socket.Error) Error {
+    return switch (e) {
+        unix_socket.Error.WouldBlock => Error.WouldBlock,
+        unix_socket.Error.BrokenPipe => Error.BrokenPipe,
+        unix_socket.Error.Interrupted => Error.Interrupted,
+        unix_socket.Error.OutOfMemory => Error.OutOfMemory,
+        unix_socket.Error.MessageTooLong => Error.MessageTooLong,
+        unix_socket.Error.InvalidArgument => Error.InvalidArgument,
+    };
 }
 
 /// pread: read at an explicit offset, leaving the description's alone.
@@ -427,6 +451,7 @@ pub fn stat(desc: *Description) Status {
         .pipe_read => |p| .{ .size = pipe.bytesAvailable(p), .kind = .pipe, .mode = mode },
         .pipe_write => .{ .size = 0, .kind = .pipe, .mode = mode },
         .eventfd, .epoll => .{ .size = 0, .kind = .anonymous, .mode = mode },
+        .socket => |sock| .{ .size = unix_socket.pending(sock.pair, sock.end), .kind = .socket, .mode = mode },
     };
 }
 
@@ -457,7 +482,43 @@ pub fn readinessOf(desc: *Description) u32 {
             break :blk bits;
         },
         .epoll => 0,
+        .socket => |sock| blk: {
+            const r = unix_socket.poll(sock.pair, sock.end);
+            var bits: u32 = 0;
+            if (r.readable) bits |= epoll.IN | epoll.RDNORM;
+            if (r.writable) bits |= epoll.OUT | epoll.WRNORM;
+            if (r.read_hangup) bits |= epoll.RDHUP;
+            if (r.hangup) bits |= epoll.HUP;
+            break :blk bits;
+        },
     };
+}
+
+/// socketpair(): two connected ends.
+pub fn createSocketPair(table: *FileTable, kind: unix_socket.Kind, nonblock: bool, cloexec: bool) Error![2]i32 {
+    const pair = unix_socket.create(kind) catch return Error.OutOfMemory;
+    const status = vfs.OPEN_READ | vfs.OPEN_WRITE | (if (nonblock) vfs.OPEN_NONBLOCK else 0);
+    const first = Description.create(.{ .socket = .{ .pair = pair, .end = 0 } }, status) catch {
+        unix_socket.closeEnd(pair, 0);
+        unix_socket.closeEnd(pair, 1);
+        return Error.OutOfMemory;
+    };
+    const second = Description.create(.{ .socket = .{ .pair = pair, .end = 1 } }, status) catch {
+        first.release();
+        unix_socket.closeEnd(pair, 1);
+        return Error.OutOfMemory;
+    };
+    const a = install(table, first, FD_BASE, cloexec) catch |e| {
+        first.release();
+        second.release();
+        return e;
+    };
+    const b = install(table, second, FD_BASE, cloexec) catch |e| {
+        close(table, a) catch {};
+        second.release();
+        return e;
+    };
+    return .{ a, b };
 }
 
 pub fn createEpoll(table: *FileTable, cloexec: bool) Error!i32 {

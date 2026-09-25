@@ -51,6 +51,10 @@ const OR = struct {
     const epoll_ctl = 135;
     const epoll_wait = 136;
     const poll = 137;
+    const socketpair = 138;
+    const sendmsg = 139;
+    const recvmsg = 140;
+    const shutdown = 141;
     const thread_create = 40;
     const thread_exit = 41;
     const gettid = 45;
@@ -122,6 +126,13 @@ const SYS = struct {
     const ioctl = 16;
     const poll = 7;
     const select = 23;
+    const socket = 41;
+    const sendto = 44;
+    const recvfrom = 45;
+    const sendmsg = 46;
+    const recvmsg = 47;
+    const shutdown = 48;
+    const socketpair = 53;
     const epoll_create = 213;
     const epoll_wait = 232;
     const epoll_ctl = 233;
@@ -425,6 +436,107 @@ fn vectored(nr: u64, fd: u64, vec: u64, count: u64) i64 {
     return total;
 }
 
+// ── Socket pairs and descriptor passing ─────────────────────────────────────
+
+const AF_UNIX = 1;
+const SOCK_TYPE_MASK: u64 = 0xf;
+const SOCK_NONBLOCK: u64 = 0o4000;
+const SOCK_CLOEXEC: u64 = 0o2000000;
+const MSG_DONTWAIT: u64 = 0x40;
+const MSG_NOSIGNAL: u64 = 0x4000;
+const MSG_CMSG_CLOEXEC: u64 = 0x40000000;
+const MSG_CTRUNC: u32 = 0x8;
+const MSG_TRUNC: u32 = 0x20;
+const SOL_SOCKET = 1;
+const SCM_RIGHTS = 1;
+const MAX_RIGHTS = 64;
+
+/// Linux struct msghdr.
+const MsgHeader = extern struct {
+    name: u64 = 0,
+    namelen: u32 = 0,
+    pad0: u32 = 0,
+    iov: u64 = 0,
+    iovlen: u64 = 0,
+    control: u64 = 0,
+    controllen: u64 = 0,
+    flags: u32 = 0,
+    pad1: u32 = 0,
+};
+/// struct cmsghdr, then data aligned to 8 bytes.
+const CMSG_HEADER = 16;
+
+/// The native message (see the kernel's sendmsg/recvmsg).
+const NativeMessage = extern struct { iov: u64, iov_count: u64, fds: u64, fd_count: u32, flags: u32 };
+
+fn socketpair(domain: u64, kind: u64, protocol: u64, out: u64) i64 {
+    if (domain != AF_UNIX) return err(97); // EAFNOSUPPORT
+    if (protocol != 0) return err(93); // EPROTONOSUPPORT
+    const base = kind & SOCK_TYPE_MASK;
+    if (base != 1 and base != 2 and base != 5) return err(94); // ESOCKTNOSUPPORT
+    if (kind & ~(SOCK_TYPE_MASK | SOCK_NONBLOCK | SOCK_CLOEXEC) != 0) return err(E.INVAL);
+    const flags = (if (kind & SOCK_NONBLOCK != 0) FD_NONBLOCK else 0) | (if (kind & SOCK_CLOEXEC != 0) FD_CLOEXEC else 0);
+    return raw3(OR.socketpair, base, flags, out);
+}
+
+fn messageFlags(flags: u64, allowed: u64) ?u64 {
+    if (flags & ~(allowed | MSG_NOSIGNAL) != 0) return null;
+    return (if (flags & MSG_DONTWAIT != 0) @as(u64, 1) else 0) | (if (flags & MSG_CMSG_CLOEXEC != 0) @as(u64, 2) else 0);
+}
+
+fn sendMessage(fd: u64, header_address: u64, flags: u64) i64 {
+    const native_flags = messageFlags(flags, MSG_DONTWAIT) orelse return err(E.OPNOTSUPP);
+    const header: *const MsgHeader = @ptrFromInt(header_address);
+    if (header.name != 0) return err(106); // EISCONN
+    var rights: [MAX_RIGHTS]i32 = undefined;
+    var count: usize = 0;
+    var offset: u64 = 0;
+    while (offset + CMSG_HEADER <= header.controllen) {
+        const at = header.control + offset;
+        const length = @as(*const u64, @ptrFromInt(at)).*;
+        const level = @as(*const i32, @ptrFromInt(at + 8)).*;
+        const kind = @as(*const i32, @ptrFromInt(at + 12)).*;
+        if (length < CMSG_HEADER or offset + length > header.controllen) return err(E.INVAL);
+        if (level != SOL_SOCKET or kind != SCM_RIGHTS) return err(E.INVAL);
+        const n: usize = @intCast((length - CMSG_HEADER) / 4);
+        if (count + n > MAX_RIGHTS) return err(E.INVAL);
+        const data: [*]const i32 = @ptrFromInt(at + CMSG_HEADER);
+        @memcpy(rights[count .. count + n], data[0..n]);
+        count += n;
+        offset += std.mem.alignForward(u64, length, 8);
+    }
+    var message = NativeMessage{ .iov = header.iov, .iov_count = header.iovlen, .fds = @intFromPtr(&rights), .fd_count = @intCast(count), .flags = 0 };
+    return raw3(OR.sendmsg, fd, @intFromPtr(&message), native_flags);
+}
+
+fn receiveMessage(fd: u64, header_address: u64, flags: u64) i64 {
+    const native_flags = messageFlags(flags, MSG_DONTWAIT | MSG_CMSG_CLOEXEC) orelse return err(E.OPNOTSUPP);
+    const header: *MsgHeader = @ptrFromInt(header_address);
+    // Room for descriptors in the caller's control buffer.
+    const room: usize = if (header.control != 0 and header.controllen > CMSG_HEADER)
+        @intCast(@min((header.controllen - CMSG_HEADER) / 4, MAX_RIGHTS))
+    else
+        0;
+    var rights: [MAX_RIGHTS]i32 = undefined;
+    var message = NativeMessage{ .iov = header.iov, .iov_count = header.iovlen, .fds = @intFromPtr(&rights), .fd_count = @intCast(room), .flags = 0 };
+    const r = raw3(OR.recvmsg, fd, @intFromPtr(&message), native_flags);
+    if (r < 0) return r;
+    header.flags = 0;
+    if (message.flags & 1 != 0) header.flags |= MSG_TRUNC;
+    if (message.flags & 2 != 0) header.flags |= MSG_CTRUNC;
+    if (message.fd_count > 0) {
+        const at = header.control;
+        const length = CMSG_HEADER + @as(u64, message.fd_count) * 4;
+        @as(*u64, @ptrFromInt(at)).* = length;
+        @as(*i32, @ptrFromInt(at + 8)).* = SOL_SOCKET;
+        @as(*i32, @ptrFromInt(at + 12)).* = SCM_RIGHTS;
+        const data: [*]i32 = @ptrFromInt(at + CMSG_HEADER);
+        @memcpy(data[0..message.fd_count], rights[0..message.fd_count]);
+        header.controllen = std.mem.alignForward(u64, length, 8);
+    } else header.controllen = 0;
+    return r;
+}
+
 // ── Readiness ───────────────────────────────────────────────────────────────
 
 /// A `struct timespec *` timeout in milliseconds, rounded up; null pointer
@@ -709,6 +821,26 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
         // No signals are ever delivered, so the pwait masks change nothing.
         SYS.epoll_wait, SYS.epoll_pwait => raw(OR.epoll_wait, a, b, c, @bitCast(@as(i64, @as(i32, @truncate(a4)))), 0),
         SYS.epoll_pwait2 => raw(OR.epoll_wait, a, b, c, timeoutMs(d) orelse break :dispatch err(E.INVAL), 0),
+        // BSD sockets (network and named local sockets) are not offered yet.
+        SYS.socket => err(97), // EAFNOSUPPORT
+        SYS.socketpair => socketpair(a, b, c, d),
+        SYS.sendmsg => sendMessage(a, b, c),
+        SYS.recvmsg => receiveMessage(a, b, c),
+        SYS.sendto => blk: {
+            if (e != 0) break :blk err(106); // EISCONN: pairs are connected
+            var vector = Iovec{ .base = b, .len = c };
+            var header = MsgHeader{ .iov = @intFromPtr(&vector), .iovlen = 1 };
+            break :blk sendMessage(a, @intFromPtr(&header), d);
+        },
+        SYS.recvfrom => blk: {
+            var vector = Iovec{ .base = b, .len = c };
+            var header = MsgHeader{ .iov = @intFromPtr(&vector), .iovlen = 1 };
+            const r = receiveMessage(a, @intFromPtr(&header), d);
+            // Socket pairs have no addresses.
+            if (r >= 0 and e != 0 and f != 0) @as(*u32, @ptrFromInt(f)).* = 0;
+            break :blk r;
+        },
+        SYS.shutdown => raw2(OR.shutdown, a, b),
         SYS.eventfd => raw2(OR.eventfd, a, 0),
         SYS.eventfd2 => blk: {
             const semaphore: u64 = 1; // EFD_SEMAPHORE
