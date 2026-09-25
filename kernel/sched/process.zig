@@ -97,8 +97,11 @@ fn buildInitialStack(pml4: u64, node: *const vfs.Node, loaded: elf.Loaded, path:
 }
 
 /// Build an address space from a filesystem node and drop into ring 3.
-/// Runs as the body of a kernel thread; never returns.
+/// Runs as the body of a kernel thread; never returns. Consumes the node's
+/// reference, on failure as well as success.
 pub fn execNode(node: *const vfs.Node, path: []const u8) Error!noreturn {
+    var held = true;
+    defer if (held) vfs.release(node.*);
     const space = try @import("../mm/address_space.zig").AddressSpace.create();
     errdefer space.release();
     const pml4 = space.pml4;
@@ -138,6 +141,9 @@ pub fn execNode(node: *const vfs.Node, path: []const u8) Error!noreturn {
     // mod 16 with a zero return address (a terminal frame for backtraces and
     // allocator instrumentation). The SysV block above it serves C runtimes.
     const entry_stack = try buildInitialStack(pml4, node, loaded, path);
+    // The image is loaded; the file may now change or disappear.
+    held = false;
+    vfs.release(node.*);
 
     // Record it on the task before loading, so the scheduler restores this
     // address space whenever it switches back to this thread.
@@ -145,7 +151,7 @@ pub fn execNode(node: *const vfs.Node, path: []const u8) Error!noreturn {
     user.enter(loaded.entry, entry_stack);
 }
 
-/// A pending program holds an immutable filesystem node, not the ELF contents,
+/// A pending program holds a filesystem node reference, not the ELF contents,
 /// and the path it was started by, which becomes argv[0].
 pub const SpawnRequest = struct {
     node: vfs.Node,
@@ -169,6 +175,7 @@ fn spawnPathInternal(path: []const u8, pty: ?*@import("../ipc/object.zig").Objec
     if (!vfs.isMounted()) return error.NotMounted;
 
     const node = vfs.resolve(path) catch return error.NotFound;
+    errdefer vfs.release(node);
     if (node.isDir() or node.size() == 0) return error.BadImage;
 
     const req = heap.create(SpawnRequest) catch return error.OutOfMemory;
@@ -257,6 +264,7 @@ fn initThread(arg: ?*anyopaque) void {
 
     if (node.isDir() or node.size() == 0) {
         console.err("{s} is not a nonempty executable file", .{path});
+        vfs.release(node);
         sched.exit(1);
     }
     console.print("[ ok ] loading {s} from disk ({d} bytes)\n", .{ path, node.size() });

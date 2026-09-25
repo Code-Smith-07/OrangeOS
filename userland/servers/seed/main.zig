@@ -159,6 +159,13 @@ export fn _start() callconv(.c) noreturn {
             pulp.exit(180);
         }
         pulp.puts("runtime: PASS C++ program on libc++\n");
+        const file_program = pulp.spawn("/bin/file-probe") catch pulp.exit(181);
+        const file_code = pulp.wait(file_program) catch pulp.exit(182);
+        if (file_code != 0) {
+            pulp.print("runtime: FAIL writable files exit {d}\n", .{file_code});
+            pulp.exit(183);
+        }
+        pulp.puts("runtime: PASS writable files in /tmp\n");
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.
         for (0..2) |_| {

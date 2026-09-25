@@ -121,6 +121,10 @@ def main():
                     or "runtime: FAIL libc++" in guest.log(), "a C++20 program on libc++", 60)
         assert "cxx-probe: PASS iostreams, containers, format, exceptions, RTTI, thread-safe statics, threads and futures" in guest.log(), guest.log()[-2000:]
         print("PASS C++20 program on libc++: iostreams, format, exceptions, RTTI, thread-safe statics and threads", flush=True)
+        guest.until(lambda: "runtime: PASS writable files in /tmp" in guest.log() or "file-probe: FAIL" in guest.log()
+                    or "runtime: FAIL writable files" in guest.log(), "writable files in /tmp", 90)
+        assert "file-probe: PASS stdio, pread/pwrite, truncate, rename, unlink-while-open, readdir, errors, 4 writers and 2 appenders, space returned" in guest.log(), guest.log()[-2000:]
+        print("PASS writable tmpfs through musl: stdio, positioned I/O, truncate, rename, readdir, errors, concurrency, space returned", flush=True)
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]

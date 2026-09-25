@@ -319,6 +319,7 @@ pub fn build(b: *std.Build) void {
     const CProgram = struct { name: []const u8, sources: []const []const u8 };
     const c_programs = [_]CProgram{
         .{ .name = "musl-probe", .sources = &.{"userland/bin/musl-probe/probe.c"} },
+        .{ .name = "file-probe", .sources = &.{"userland/bin/file-probe/probe.c"} },
     };
     for (c_programs) |program| {
         const mod = b.createModule(.{

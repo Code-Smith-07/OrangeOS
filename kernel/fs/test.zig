@@ -72,7 +72,7 @@ pub fn run() void {
 
     // The file descriptor path.
     var files: vfs.FileTable = .{};
-    if (vfs.open(&files, "/etc/motd")) |fd| {
+    if (vfs.open(&files, "/etc/motd", 0)) |fd| {
         const size = vfs.statSize(&files, fd) catch 0;
         var small: [8]u8 = undefined;
         const n1 = vfs.read(&files, fd, &small) catch 0;
@@ -89,10 +89,58 @@ pub fn run() void {
         check("/sbin/init exists and starts with the ELF magic", n == 4 and std.mem.eql(u8, &head, "\x7fELF"));
     } else |_| check("/sbin/init exists", false);
 
+    tmpfsChecks();
+
     console.print("\n[{s}] filesystem: {d} passed, {d} failed\n", .{
         if (failed == 0) " ok " else "FAIL", passed, failed,
     });
 
     vfs.listDir("/") catch {};
     vfs.listDir("/etc") catch {};
+}
+
+fn tmpfsChecks() void {
+    var buffer: [vfs.MAX_PATH]u8 = undefined;
+    const canonical = vfs.normalize("//tmp/./a/../b//c/", &buffer) catch "";
+    check("paths normalize '.', '..' and repeated slashes", std.mem.eql(u8, canonical, "/tmp/b/c"));
+    const above_root = vfs.normalize("/../..", &buffer) catch "";
+    check("'..' at the root stays at the root", std.mem.eql(u8, above_root, "/"));
+
+    const before = vfs.usage("/tmp") catch {
+        check("/tmp is mounted", false);
+        return;
+    };
+    check("/tmp is writable", !before.read_only and before.free_bytes > 0);
+    check("the root filesystem refuses changes", vfs.mkdir("/etc/new") == vfs.Error.ReadOnly);
+    check("an existing root path reports EEXIST to mkdir", vfs.mkdir("/etc") == vfs.Error.Exists);
+
+    var files: vfs.FileTable = .{};
+    check("mkdir /tmp/kernel-test", if (vfs.mkdir("/tmp/kernel-test")) |_| true else |_| false);
+    const flags = vfs.OPEN_READ | vfs.OPEN_WRITE | vfs.OPEN_CREATE | vfs.OPEN_EXCLUSIVE;
+    const fd = vfs.open(&files, "/tmp/kernel-test/data", flags) catch {
+        check("create /tmp/kernel-test/data", false);
+        return;
+    };
+    // Three pages plus a tail, written one byte pattern per page.
+    var page: [4096]u8 = undefined;
+    var ok = true;
+    for (0..3) |i| {
+        @memset(&page, @intCast('a' + i));
+        ok = ok and (vfs.write(&files, fd, &page) catch 0) == page.len;
+    }
+    ok = ok and (vfs.write(&files, fd, "tail") catch 0) == 4;
+    check("write three pages and a tail", ok and (vfs.statSize(&files, fd) catch 0) == 3 * 4096 + 4);
+    _ = vfs.seekFrom(&files, fd, 4094, .set) catch 0;
+    var across: [4]u8 = undefined;
+    const got = vfs.read(&files, fd, &across) catch 0;
+    check("a read across a page boundary", got == 4 and std.mem.eql(u8, &across, "aabb"));
+    check("exclusive create of an existing file fails", vfs.open(&files, "/tmp/kernel-test/data", flags) == vfs.Error.Exists);
+    check("rmdir of a non-empty directory fails", vfs.remove("/tmp/kernel-test", true) == vfs.Error.NotEmpty);
+    check("unlink while open", if (vfs.remove("/tmp/kernel-test/data", false)) |_| true else |_| false);
+    _ = vfs.seekFrom(&files, fd, 0, .set) catch 0;
+    check("an unlinked open file stays readable", (vfs.read(&files, fd, &across) catch 0) == 4 and across[0] == 'a');
+    vfs.close(&files, fd) catch {};
+    check("rmdir of the emptied directory", if (vfs.remove("/tmp/kernel-test", true)) |_| true else |_| false);
+    const after = vfs.usage("/tmp") catch before;
+    check("closing the last handle returns every page", after.free_bytes == before.free_bytes);
 }
