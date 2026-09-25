@@ -104,9 +104,12 @@ def main():
         ):
             assert f"[pass] {marker}" in log, marker
         print("PASS frame/page-table conservation and cleanup", flush=True)
-        guest.until(lambda: "runtime: PASS null, read-only, NX and invalid-opcode containment" in guest.log(),
+        guest.until(lambda: "runtime: PASS null, read-only, NX, W^X and invalid-opcode containment" in guest.log(),
                     "faulting apps terminate without halting the OS", 30)
-        assert guest.log().count("[app fault]") == 4
+        assert guest.log().count("[app fault]") == 5
+        guest.until(lambda: "runtime: PASS W^X code generation across threads" in guest.log(),
+                    "JIT-style W^X flips run on both threads", 60)
+        assert guest.log().count("jit-probe: PASS 64 W^X re-patches run on both threads; RWX refused") == 2
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]
@@ -155,7 +158,7 @@ def main():
                     "program exit ends every blocked, sleeping and spinning thread", 90)
         guest.until(lambda: "runtime: PASS a faulting thread ends its whole program" in guest.log(),
                     "a faulting thread ends its program", 60)
-        assert guest.log().count("[app fault]") == 8, guest.log().count("[app fault]")
+        assert guest.log().count("[app fault]") == 9, guest.log().count("[app fault]")
         guest.until(lambda: "runtime: PASS a program outlives its first thread" in guest.log(),
                     "the last thread's status becomes the program's", 60)
         guest.until(lambda: "runtime: PASS threads share the network stack" in guest.log(),

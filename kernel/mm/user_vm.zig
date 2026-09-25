@@ -37,13 +37,20 @@ fn sizeOf(length: u64, max: usize) Error!usize {
     return std.mem.alignForward(usize, @intCast(length), vmm.PAGE_SIZE);
 }
 
+/// Protections: 0 none, 1 read, 3 read/write, 5 read/execute. Execute alone
+/// (4) means read/execute: x86 pages cannot be execute-only. Writable and
+/// executable together is refused (W^X): a JIT writes code under read/write,
+/// then flips it to read/execute, and each flip shoots down every CPU running
+/// the program — which also gives those CPUs the serializing event that
+/// cross-modified code requires before they execute it.
 fn flagsFor(prot: u64) Error!u64 {
-    // Initial interpreter/runtime support only: no executable anonymous pages,
-    // no JIT or writable/executable transitions until the sandbox exists.
-    if (prot != 0 and prot != 1 and prot != 3) return error.Unsupported;
-    return vmm.PRESENT | vmm.NO_EXECUTE |
-        (if (prot != 0) vmm.USER else @as(u64, 0)) |
-        (if (prot == 3) vmm.WRITABLE else @as(u64, 0));
+    return switch (prot) {
+        0 => vmm.PRESENT | vmm.NO_EXECUTE,
+        1 => vmm.PRESENT | vmm.USER | vmm.NO_EXECUTE,
+        3 => vmm.PRESENT | vmm.USER | vmm.WRITABLE | vmm.NO_EXECUTE,
+        4, 5 => vmm.PRESENT | vmm.USER,
+        else => error.Unsupported,
+    };
 }
 
 fn emptySlot(state: *State) Error!*Region {

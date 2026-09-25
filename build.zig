@@ -206,6 +206,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "net-thread-probe", .path = "userland/bin/net-thread-probe/main.zig" },
         .{ .name = "net-exit-probe", .path = "userland/bin/net-exit-probe/main.zig" },
         .{ .name = "tcp-probe", .path = "userland/bin/tcp-probe/main.zig" },
+        .{ .name = "jit-probe", .path = "userland/bin/jit-probe/main.zig" },
+        .{ .name = "fault-wx", .path = "userland/bin/fault-wx/main.zig" },
         .{ .name = "fault-null", .path = "userland/bin/fault-null/main.zig" },
         .{ .name = "fault-ro", .path = "userland/bin/fault-ro/main.zig" },
         .{ .name = "fault-nx", .path = "userland/bin/fault-nx/main.zig" },

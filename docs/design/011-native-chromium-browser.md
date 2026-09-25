@@ -1307,6 +1307,30 @@ readiness API, no non-blocking sockets, no TLS and one-segment TCP windows.
 Replies are observed between 1 ms sleeps, so latency figures have that
 granularity.
 
+### 11.33 W^X executable memory for JIT code
+
+Anonymous memory now accepts protection 5 (read/execute; 4 is treated the
+same, since x86 pages cannot be execute-only) through `mmap`, `mprotect` and
+`vm_commit`. Writable and executable together remains refused with
+`-EOPNOTSUPP`, so a JIT follows the W^X pattern: write code under read/write,
+flip the pages to read/execute, run them, and flip back to re-patch. Every
+permission change already invalidates the range on every CPU running the
+program (§11.30), so no thread keeps a writable translation to code that has
+become executable, and each remote CPU takes an interrupt return — a
+serializing event — before it can execute the new bytes.
+
+Verified on 2026-09-25 inside the full runtime suite (43 checks): two
+`jit-probe` runs each emit `mov eax, imm32; ret`, run it, then re-patch it 64
+times while a second thread runs every version between flips; RWX and WX
+requests via `mprotect` and `mmap` are refused; and `fault-wx`, which writes
+to its code after flipping it to read/execute, is terminated with a page
+fault (142).
+
+This is the memory primitive V8's JIT needs, not V8 itself: executable
+mappings are available to every program for now. Restricting them per
+process (for example to renderers that need JIT) belongs with the sandbox
+work, and a jitless bring-up remains an option.
+
 ## 12. Security updates and distribution
 
 Track a supported upstream Chromium release branch, recording its source hash,
