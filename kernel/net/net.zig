@@ -4,11 +4,48 @@
 //! access goes through explicit byte reads rather than struct overlays. A
 //! packed struct would be shorter and would break the first time a header
 //! landed at an odd offset.
+//!
+//! ── Concurrency ─────────────────────────────────────────────────────────────
+//!
+//! Any CPU may be in a network syscall, and threads of one program may be in
+//! several at once. One lock covers every piece of network state: the NIC
+//! rings, the receive buffer, the ARP cache, sockets, ICMP reply records and
+//! the TCP connection table. It is held only for bounded steps — drain the
+//! receive ring, send a frame, update a table. Waits never hold it: they poll
+//! under the lock, drop it and sleep between polls (`waitStep`). So no CPU
+//! spins for seconds with interrupts masked, a TLB shootdown to a waiting CPU
+//! is acknowledged, and a program's exit interrupts its network waits.
+//!
+//! Functions named `...Locked` expect the lock held. Blocking ARP resolution
+//! happens only at the start of an operation, outside the lock; sends made
+//! with the lock held use the cache and, on a miss, request the address and
+//! report NoRoute (TCP simply retransmits).
 
 const std = @import("std");
 const e1000 = @import("../drivers/net/e1000.zig");
 const console = @import("../console.zig");
 const tsc = @import("../time/tsc.zig");
+const spinlock = @import("../sync/spinlock.zig");
+const sched = @import("../sched/sched.zig");
+
+var lock: spinlock.SpinLock = .{};
+
+pub fn acquire() spinlock.IrqState {
+    return spinlock.acquireIrqSave(&lock);
+}
+
+pub fn release(state: spinlock.IrqState) void {
+    spinlock.releaseIrqRestore(&lock, state);
+}
+
+/// Pause between polls of a network wait, without the lock. False when the
+/// caller should give up: its deadline passed or its program is exiting.
+/// Before the scheduler runs (DHCP at boot) this busy-waits instead.
+pub fn waitStep(deadline_us: u64) bool {
+    if (tsc.microsSinceBoot() >= deadline_us or sched.killPending()) return false;
+    sched.sleepMs(1);
+    return !sched.killPending();
+}
 
 pub const Error = error{
     NoDevice,
@@ -148,22 +185,32 @@ fn handleArp(frame: []const u8) void {
     e1000.send(&reply) catch {};
 }
 
-/// Resolve an address, sending requests until an answer arrives.
+/// Resolve an address, re-sending requests until an answer arrives. Called
+/// without the lock, at the start of an operation.
 pub fn resolve(ip: Ipv4Addr, timeout_ms: u64) ?MacAddr {
-    if (arpLookup(ip)) |m| return m;
-
-    var attempt: usize = 0;
-    while (attempt < 4) : (attempt += 1) {
-        sendArpRequest(ip) catch return null;
-
-        const deadline = tsc.microsSinceBoot() + (timeout_ms * 1000) / 4;
-        while (tsc.microsSinceBoot() < deadline) {
-            poll();
-            if (arpLookup(ip)) |m| return m;
-            asm volatile ("pause");
+    const deadline = tsc.microsSinceBoot() + timeout_ms * 1000;
+    const interval = @max(timeout_ms * 1000 / 4, 1000);
+    var next_request: u64 = 0;
+    while (true) {
+        const state = acquire();
+        pollLocked();
+        if (arpLookup(ip)) |m| {
+            release(state);
+            return m;
         }
+        const now = tsc.microsSinceBoot();
+        if (now >= next_request) {
+            sendArpRequest(ip) catch {};
+            next_request = now + interval;
+        }
+        release(state);
+        if (!waitStep(deadline)) return null;
     }
-    return null;
+}
+
+/// The on-link address a packet for `dst` must be sent to.
+pub fn nextHop(dst: Ipv4Addr) Ipv4Addr {
+    return if (sameSubnet(dst)) dst else gateway_ip;
 }
 
 // ── IPv4 ────────────────────────────────────────────────────────────────────
@@ -214,18 +261,30 @@ fn buildIpv4(buf: []u8, dst_mac: MacAddr, dst_ip: Ipv4Addr, proto: u8, payload: 
 const ICMP_ECHO_REQUEST: u8 = 8;
 const ICMP_ECHO_REPLY: u8 = 0;
 
-var last_reply_seq: u16 = 0;
-var got_reply: bool = false;
-var reply_from: Ipv4Addr = .{ 0, 0, 0, 0 };
+/// Recent echo replies, matched by (identifier, sequence). Each ping uses a
+/// fresh identifier, so concurrent pings never consume each other's replies.
+const EchoReply = struct { id: u16 = 0, seq: u16 = 0, valid: bool = false };
+var echo_replies: [16]EchoReply = [_]EchoReply{.{}} ** 16;
+var echo_next: usize = 0;
+var echo_id: u16 = 0x4F53; // "OS"
+
+fn takeEchoReplyLocked(id: u16, seq: u16) bool {
+    for (&echo_replies) |*r| {
+        if (r.valid and r.id == id and r.seq == seq) {
+            r.valid = false;
+            return true;
+        }
+    }
+    return false;
+}
 
 fn handleIcmp(ip_payload: []const u8, src_ip: Ipv4Addr) void {
     if (ip_payload.len < 8) return;
 
     switch (ip_payload[0]) {
         ICMP_ECHO_REPLY => {
-            last_reply_seq = be16(ip_payload, 6);
-            reply_from = src_ip;
-            got_reply = true;
+            echo_replies[echo_next] = .{ .id = be16(ip_payload, 4), .seq = be16(ip_payload, 6), .valid = true };
+            echo_next = (echo_next + 1) % echo_replies.len;
         },
         ICMP_ECHO_REQUEST => {
             // Answer pings addressed to us.
@@ -251,38 +310,41 @@ fn handleIcmp(ip_payload: []const u8, src_ip: Ipv4Addr) void {
 }
 
 /// Send an echo request and wait for the reply. Returns the round trip in
-/// microseconds, or null on timeout.
+/// microseconds, or null on timeout. Replies are observed between 1 ms
+/// sleeps, so the figure is rounded up to that granularity.
 pub fn ping(dst_ip: Ipv4Addr, seq: u16, timeout_ms: u64) ?u64 {
-    const dst_mac = resolve(dst_ip, 1000) orelse return null;
+    const deadline = tsc.microsSinceBoot() + timeout_ms * 1000;
+    _ = resolve(nextHop(dst_ip), @min(timeout_ms, 1000)) orelse return null;
 
-    var payload: [40]u8 = undefined;
-    @memset(&payload, 0);
-    payload[0] = ICMP_ECHO_REQUEST;
-    payload[1] = 0;
-    putBe16(&payload, 2, 0); // checksum
-    putBe16(&payload, 4, 0x4F53); // identifier: "OS"
-    putBe16(&payload, 6, seq);
-    for (payload[8..], 0..) |*b, i| b.* = @truncate(i);
-
-    const sum = checksum(&payload);
-    putBe16(&payload, 2, sum);
-
-    var frame: [1518]u8 = undefined;
-    const total = buildIpv4(&frame, dst_mac, dst_ip, PROTO_ICMP, &payload);
-
-    got_reply = false;
     const start = tsc.microsSinceBoot();
-    e1000.send(frame[0..total]) catch return null;
+    var id: u16 = undefined;
+    {
+        const state = acquire();
+        defer release(state);
+        echo_id +%= 1;
+        id = echo_id;
 
-    const deadline = start + timeout_ms * 1000;
-    while (tsc.microsSinceBoot() < deadline) {
-        poll();
-        if (got_reply and last_reply_seq == seq) {
-            return tsc.microsSinceBoot() - start;
-        }
-        asm volatile ("pause");
+        var payload: [40]u8 = undefined;
+        @memset(&payload, 0);
+        payload[0] = ICMP_ECHO_REQUEST;
+        payload[1] = 0;
+        putBe16(&payload, 2, 0); // checksum
+        putBe16(&payload, 4, id);
+        putBe16(&payload, 6, seq);
+        for (payload[8..], 0..) |*b, i| b.* = @truncate(i);
+        const sum = checksum(&payload);
+        putBe16(&payload, 2, sum);
+        sendRawLocked(dst_ip, PROTO_ICMP, &payload) catch return null;
     }
-    return null;
+
+    while (true) {
+        const state = acquire();
+        pollLocked();
+        const answered = takeEchoReplyLocked(id, seq);
+        release(state);
+        if (answered) return tsc.microsSinceBoot() - start;
+        if (!waitStep(deadline)) return null;
+    }
 }
 
 // ── UDP ─────────────────────────────────────────────────────────────────────
@@ -316,8 +378,10 @@ pub fn socketOpen(port: u16) ?usize {
     return socketOpenOwned(port, 0);
 }
 
-/// A nonzero owner is a user task; zero is reserved for kernel DNS/DHCP.
+/// A nonzero owner is a user process; zero is reserved for kernel DNS/DHCP.
 pub fn socketOpenOwned(port: u16, owner_tid: u32) ?usize {
+    const state = acquire();
+    defer release(state);
     var chosen = port;
     if (chosen == 0) {
         chosen = ephemeral_next;
@@ -335,21 +399,29 @@ pub fn socketOpenOwned(port: u16, owner_tid: u32) ?usize {
 
 pub fn socketClose(index: usize) void {
     if (index >= MAX_SOCKETS) return;
+    const state = acquire();
+    defer release(state);
     sockets[index].used = false;
 }
 
 pub fn socketOwnedBy(index: usize, owner_tid: u32) bool {
+    const state = acquire();
+    defer release(state);
     return index < MAX_SOCKETS and sockets[index].used and sockets[index].owner_tid == owner_tid;
 }
 
 pub fn socketCloseOwnedBy(owner_tid: u32) void {
     if (owner_tid == 0) return;
+    const state = acquire();
+    defer release(state);
     for (&sockets) |*s| {
         if (s.used and s.owner_tid == owner_tid) s.used = false;
     }
 }
 
 pub fn socketPort(index: usize) u16 {
+    const state = acquire();
+    defer release(state);
     if (index >= MAX_SOCKETS or !sockets[index].used) return 0;
     return sockets[index].port;
 }
@@ -381,15 +453,18 @@ fn udpChecksum(src: Ipv4Addr, dst: Ipv4Addr, udp: []const u8) u16 {
 }
 
 pub fn sendTo(index: usize, dst_ip: Ipv4Addr, dst_port: u16, payload: []const u8) Error!void {
-    if (index >= MAX_SOCKETS or !sockets[index].used) return Error.NoRoute;
     if (payload.len > MAX_DATAGRAM) return Error.TooLarge;
+    const broadcast = std.mem.eql(u8, &dst_ip, &BROADCAST_IP);
+    // Resolve before taking the lock; the send below only reads the cache.
+    if (!broadcast) _ = resolve(nextHop(dst_ip), 1000) orelse return Error.NoRoute;
 
-    // Anything off-net goes via the gateway; anything local goes direct.
-    const via = if (sameSubnet(dst_ip)) dst_ip else gateway_ip;
-    const dst_mac = if (std.mem.eql(u8, &dst_ip, &BROADCAST_IP))
+    const state = acquire();
+    defer release(state);
+    if (index >= MAX_SOCKETS or !sockets[index].used) return Error.NoRoute;
+    const dst_mac = if (broadcast)
         BROADCAST
     else
-        resolve(via, 1000) orelse return Error.NoRoute;
+        arpLookup(nextHop(dst_ip)) orelse return Error.NoRoute;
 
     var udp: [8 + MAX_DATAGRAM]u8 = undefined;
     putBe16(&udp, 0, sockets[index].port);
@@ -407,12 +482,21 @@ pub fn sendTo(index: usize, dst_ip: Ipv4Addr, dst_port: u16, payload: []const u8
     try e1000.send(frame[0..n]);
 }
 
-/// Take a pending datagram, if one has arrived.
-pub fn recvFrom(index: usize) ?*const Datagram {
-    if (index >= MAX_SOCKETS or !sockets[index].used) return null;
-    if (!sockets[index].pending) return null;
+/// Drain the receive ring, then take a pending datagram into `out`. The copy
+/// is made under the lock: the socket's buffer is overwritten by the next
+/// arrival, possibly on another CPU.
+pub fn pollReceive(index: usize, out: *Datagram) bool {
+    const state = acquire();
+    defer release(state);
+    pollLocked();
+    if (index >= MAX_SOCKETS or !sockets[index].used) return false;
+    if (!sockets[index].pending) return false;
     sockets[index].pending = false;
-    return &sockets[index].dgram;
+    out.src_ip = sockets[index].dgram.src_ip;
+    out.src_port = sockets[index].dgram.src_port;
+    out.len = sockets[index].dgram.len;
+    @memcpy(out.data[0..out.len], sockets[index].dgram.data[0..out.len]);
+    return true;
 }
 
 pub const BROADCAST_IP: Ipv4Addr = .{ 255, 255, 255, 255 };
@@ -447,10 +531,14 @@ fn handleUdp(payload: []const u8, src_ip: Ipv4Addr) void {
 }
 
 /// Send a raw IPv4 payload with the given protocol number. Used by TCP, which
-/// builds its own segments.
-pub fn sendRaw(dst_ip: Ipv4Addr, proto: u8, payload: []const u8) Error!void {
-    const via = if (sameSubnet(dst_ip)) dst_ip else gateway_ip;
-    const dst_mac = resolve(via, 1000) orelse return Error.NoRoute;
+/// builds its own segments, and by ping. Never waits: an unknown next hop gets
+/// an ARP request and the packet is reported undeliverable for now.
+pub fn sendRawLocked(dst_ip: Ipv4Addr, proto: u8, payload: []const u8) Error!void {
+    const via = nextHop(dst_ip);
+    const dst_mac = arpLookup(via) orelse {
+        sendArpRequest(via) catch {};
+        return Error.NoRoute;
+    };
 
     var frame: [1600]u8 = undefined;
     if (payload.len + ETH_HEADER_LEN + 20 > frame.len) return Error.TooLarge;
@@ -494,6 +582,12 @@ fn handleIpv4(frame: []const u8) void {
 
 /// Drain the receive ring and dispatch whatever arrived.
 pub fn poll() void {
+    const state = acquire();
+    defer release(state);
+    pollLocked();
+}
+
+pub fn pollLocked() void {
     while (e1000.receive(&rx_buf)) |len| {
         if (len < ETH_HEADER_LEN) continue;
         const frame = rx_buf[0..len];

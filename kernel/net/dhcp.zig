@@ -120,7 +120,9 @@ pub fn configure(timeout_ms: u64) bool {
 
     net.sendTo(sock, net.BROADCAST_IP, SERVER_PORT, packet[0..n]) catch return false;
 
-    const offer = waitFor(sock, DHCP_OFFER, timeout_ms) orelse return false;
+    var offer_buffer: net.Datagram = undefined;
+    if (!waitFor(sock, DHCP_OFFER, timeout_ms, &offer_buffer)) return false;
+    const offer = &offer_buffer;
 
     var offered: net.Ipv4Addr = .{ offer.data[16], offer.data[17], offer.data[18], offer.data[19] };
     const server_id = if (findOption(offer.data[0..offer.len], OPT_SERVER_ID)) |o|
@@ -141,7 +143,9 @@ pub fn configure(timeout_ms: u64) bool {
 
     net.sendTo(sock, net.BROADCAST_IP, SERVER_PORT, packet[0..n]) catch return false;
 
-    const ack = waitFor(sock, DHCP_ACK, timeout_ms) orelse return false;
+    var ack_buffer: net.Datagram = undefined;
+    if (!waitFor(sock, DHCP_ACK, timeout_ms, &ack_buffer)) return false;
+    const ack = &ack_buffer;
 
     var mask: net.Ipv4Addr = .{ 255, 255, 255, 0 };
     var router: net.Ipv4Addr = server_id;
@@ -161,18 +165,14 @@ pub fn configure(timeout_ms: u64) bool {
     return true;
 }
 
-fn waitFor(sock: usize, msg_type: u8, timeout_ms: u64) ?*const net.Datagram {
+fn waitFor(sock: usize, msg_type: u8, timeout_ms: u64, out: *net.Datagram) bool {
     const deadline = tsc.microsSinceBoot() + timeout_ms * 1000;
-    while (tsc.microsSinceBoot() < deadline) {
-        net.poll();
-        if (net.recvFrom(sock)) |d| {
-            if (d.len < BOOTP_LEN + 4) continue;
-            if (d.data[0] != OP_REPLY) continue;
-            if (findOption(d.data[0..d.len], OPT_MSG_TYPE)) |o| {
-                if (o.len >= 1 and o[0] == msg_type) return d;
+    while (true) {
+        if (net.pollReceive(sock, out) and out.len >= BOOTP_LEN + 4 and out.data[0] == OP_REPLY) {
+            if (findOption(out.data[0..out.len], OPT_MSG_TYPE)) |o| {
+                if (o.len >= 1 and o[0] == msg_type) return true;
             }
         }
-        asm volatile ("pause");
+        if (!net.waitStep(deadline)) return false;
     }
-    return null;
 }

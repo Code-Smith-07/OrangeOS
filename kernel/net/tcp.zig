@@ -15,6 +15,12 @@
 //! control (the window is fixed), and passive open. Each of those is a real
 //! omission rather than a hidden one, and each is honest about costing
 //! throughput rather than correctness.
+//!
+//! Connection state is network state: it is only touched under the network
+//! lock (net.zig), and waits poll, drop the lock and sleep. A slot's
+//! generation changes whenever it is reallocated, so a wait whose connection
+//! another thread closed (or whose program exited) notices instead of
+//! reading someone else's connection.
 
 const std = @import("std");
 const net = @import("net.zig");
@@ -59,6 +65,7 @@ pub const State = enum(u8) {
 
 const Tcb = struct {
     used: bool = false,
+    generation: u32 = 0,
     owner_tid: u32 = 0,
     state: State = .closed,
 
@@ -168,7 +175,8 @@ fn transmit(c: *Tcb, flags: u8, seq: u32, payload: []const u8) void {
     const sum = tcpChecksum(net.local_ip, c.remote_ip, seg[0..total]);
     putBe16(&seg, 16, sum);
 
-    net.sendRaw(c.remote_ip, PROTO_TCP, seg[0..total]) catch {};
+    // An unresolved next hop is re-requested; retransmission covers the loss.
+    net.sendRawLocked(c.remote_ip, PROTO_TCP, seg[0..total]) catch {};
 }
 
 /// Send and remember, so a lost segment can be sent again.
@@ -294,10 +302,12 @@ pub fn input(segment: []const u8, src_ip: net.Ipv4Addr) void {
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-fn allocate(owner_tid: u32) ?*Tcb {
+/// Caller holds the network lock.
+fn allocateLocked(owner_tid: u32) ?*Tcb {
     for (&conns) |*c| {
         if (c.used) continue;
-        c.* = .{ .used = true, .owner_tid = owner_tid };
+        const generation = c.generation +% 1;
+        c.* = .{ .used = true, .owner_tid = owner_tid, .generation = generation };
         return c;
     }
     return null;
@@ -307,20 +317,32 @@ pub fn indexOf(c: *Tcb) usize {
     return (@intFromPtr(c) - @intFromPtr(&conns[0])) / @sizeOf(Tcb);
 }
 
-fn get(index: usize) ?*Tcb {
+/// Caller holds the network lock.
+fn getLocked(index: usize) ?*Tcb {
     if (index >= MAX_CONNECTIONS or !conns[index].used) return null;
     return &conns[index];
 }
 
+/// The same connection a wait started with, not a reuse of its slot.
+/// Caller holds the network lock.
+fn liveLocked(index: usize, generation: u32) ?*Tcb {
+    const c = getLocked(index) orelse return null;
+    return if (c.generation == generation) c else null;
+}
+
 pub fn ownedBy(index: usize, owner_tid: u32) bool {
-    const c = get(index) orelse return false;
+    const irq = net.acquire();
+    defer net.release(irq);
+    const c = getLocked(index) orelse return false;
     return c.owner_tid == owner_tid;
 }
 
 /// Exit cannot spend 500 ms per connection on graceful FIN handshakes.
-/// Stop retransmissions and release every connection owned by this task.
+/// Stop retransmissions and release every connection owned by this process.
 pub fn abortOwnedBy(owner_tid: u32) void {
     if (owner_tid == 0) return;
+    const irq = net.acquire();
+    defer net.release(irq);
     for (&conns) |*c| {
         if (c.used and c.owner_tid == owner_tid) {
             c.used = false;
@@ -329,112 +351,163 @@ pub fn abortOwnedBy(owner_tid: u32) void {
     }
 }
 
-/// Active open. Blocks until the handshake completes or times out.
+/// Active open. Waits until the handshake completes or times out.
 pub fn connect(dst_ip: net.Ipv4Addr, dst_port: u16, timeout_ms: u64, owner_tid: u32) Error!usize {
-    const c = allocate(owner_tid) orelse return Error.NoSockets;
-    errdefer c.used = false;
-
-    c.local_port = next_port;
-    next_port +%= 1;
-    if (next_port < 32768) next_port = 32768;
-
-    c.remote_ip = dst_ip;
-    c.remote_port = dst_port;
-
-    isn_counter +%= 0x9E37_79B9;
-    c.snd_una = isn_counter;
-    c.snd_nxt = isn_counter;
-    c.state = .syn_sent;
-
-    transmitTracked(c, FLAG_SYN, &.{});
-
     const deadline = tsc.microsSinceBoot() + timeout_ms * 1000;
-    while (tsc.microsSinceBoot() < deadline) {
-        net.poll();
-        maybeRetransmit(c);
+    // Warm the ARP cache so the SYN leaves at once; a failure here only
+    // delays it until retransmission.
+    _ = net.resolve(net.nextHop(dst_ip), @min(timeout_ms, 1000));
 
-        if (c.reset) return Error.Refused;
-        if (c.state == .established) return indexOf(c);
-        asm volatile ("pause");
+    var index: usize = undefined;
+    var generation: u32 = undefined;
+    {
+        const irq = net.acquire();
+        defer net.release(irq);
+        const c = allocateLocked(owner_tid) orelse return Error.NoSockets;
+        c.local_port = next_port;
+        next_port +%= 1;
+        if (next_port < 32768) next_port = 32768;
+
+        c.remote_ip = dst_ip;
+        c.remote_port = dst_port;
+
+        isn_counter +%= 0x9E37_79B9;
+        c.snd_una = isn_counter;
+        c.snd_nxt = isn_counter;
+        c.state = .syn_sent;
+
+        transmitTracked(c, FLAG_SYN, &.{});
+        index = indexOf(c);
+        generation = c.generation;
     }
 
-    c.used = false;
-    return Error.Timeout;
+    while (true) {
+        {
+            const irq = net.acquire();
+            defer net.release(irq);
+            const c = liveLocked(index, generation) orelse return Error.NotConnected;
+            net.pollLocked();
+            maybeRetransmit(c);
+            if (c.reset) {
+                c.used = false;
+                return Error.Refused;
+            }
+            if (c.state == .established) return index;
+        }
+        if (!net.waitStep(deadline)) {
+            const irq = net.acquire();
+            defer net.release(irq);
+            if (liveLocked(index, generation)) |c| c.used = false;
+            return Error.Timeout;
+        }
+    }
 }
 
 pub fn send(index: usize, data: []const u8) Error!usize {
-    const c = get(index) orelse return Error.NotConnected;
-    if (c.reset) return Error.Reset;
-    if (c.state != .established and c.state != .close_wait) return Error.NotConnected;
-
-    const n = @min(data.len, MSS);
-    transmitTracked(c, FLAG_ACK | FLAG_PSH, data[0..n]);
+    const deadline = tsc.microsSinceBoot() + 3_000_000;
+    var generation: u32 = undefined;
+    var n: usize = undefined;
+    {
+        const irq = net.acquire();
+        defer net.release(irq);
+        const c = getLocked(index) orelse return Error.NotConnected;
+        if (c.reset) return Error.Reset;
+        if (c.state != .established and c.state != .close_wait) return Error.NotConnected;
+        n = @min(data.len, MSS);
+        transmitTracked(c, FLAG_ACK | FLAG_PSH, data[0..n]);
+        generation = c.generation;
+    }
 
     // Wait for the acknowledgement before returning, so a caller that sends in
     // a loop cannot outrun the single retransmission slot.
-    const deadline = tsc.microsSinceBoot() + 3_000_000;
-    while (tsc.microsSinceBoot() < deadline) {
-        net.poll();
-        maybeRetransmit(c);
-        if (c.reset) return Error.Reset;
-        if (seqGE(c.snd_una, c.snd_nxt)) return n;
-        asm volatile ("pause");
+    while (true) {
+        {
+            const irq = net.acquire();
+            defer net.release(irq);
+            const c = liveLocked(index, generation) orelse return Error.NotConnected;
+            net.pollLocked();
+            maybeRetransmit(c);
+            if (c.reset) return Error.Reset;
+            if (seqGE(c.snd_una, c.snd_nxt)) return n;
+        }
+        if (!net.waitStep(deadline)) return Error.Timeout;
     }
-    return Error.Timeout;
 }
 
 /// Read whatever has arrived, waiting up to `timeout_ms` for something.
 pub fn recv(index: usize, out: []u8, timeout_ms: u64) Error!usize {
-    const c = get(index) orelse return Error.NotConnected;
-
     const deadline = tsc.microsSinceBoot() + timeout_ms * 1000;
+    var generation: ?u32 = null;
     while (true) {
-        net.poll();
-        maybeRetransmit(c);
+        {
+            const irq = net.acquire();
+            defer net.release(irq);
+            const c = if (generation) |g| liveLocked(index, g) else getLocked(index);
+            const conn = c orelse return Error.NotConnected;
+            generation = conn.generation;
+            net.pollLocked();
+            maybeRetransmit(conn);
 
-        if (c.rx_len > 0) {
-            const n = @min(out.len, c.rx_len);
-            @memcpy(out[0..n], c.rx[0..n]);
-            // Shift the remainder down. A ring would avoid the copy; at these
-            // sizes the simpler invariant is worth more than the memmove.
-            const left = c.rx_len - n;
-            if (left > 0) std.mem.copyForwards(u8, c.rx[0..left], c.rx[n..c.rx_len]);
-            c.rx_len = left;
-            return n;
+            if (conn.rx_len > 0) {
+                const n = @min(out.len, conn.rx_len);
+                @memcpy(out[0..n], conn.rx[0..n]);
+                // Shift the remainder down. A ring would avoid the copy; at these
+                // sizes the simpler invariant is worth more than the memmove.
+                const left = conn.rx_len - n;
+                if (left > 0) std.mem.copyForwards(u8, conn.rx[0..left], conn.rx[n..conn.rx_len]);
+                conn.rx_len = left;
+                return n;
+            }
+
+            if (conn.reset) return Error.Reset;
+            if (conn.peer_closed) return 0; // orderly end of stream
         }
-
-        if (c.reset) return Error.Reset;
-        if (c.peer_closed) return 0; // orderly end of stream
-        if (tsc.microsSinceBoot() >= deadline) return 0;
-        asm volatile ("pause");
+        if (!net.waitStep(deadline)) return 0;
     }
 }
 
 pub fn close(index: usize) void {
-    const c = get(index) orelse return;
-
-    if (c.state == .established) {
-        transmitTracked(c, FLAG_ACK | FLAG_FIN, &.{});
-        c.state = .fin_wait_1;
-    } else if (c.state == .close_wait) {
-        transmitTracked(c, FLAG_ACK | FLAG_FIN, &.{});
-        c.state = .last_ack;
+    var generation: u32 = undefined;
+    {
+        const irq = net.acquire();
+        defer net.release(irq);
+        const c = getLocked(index) orelse return;
+        if (c.state == .established) {
+            transmitTracked(c, FLAG_ACK | FLAG_FIN, &.{});
+            c.state = .fin_wait_1;
+        } else if (c.state == .close_wait) {
+            transmitTracked(c, FLAG_ACK | FLAG_FIN, &.{});
+            c.state = .last_ack;
+        }
+        generation = c.generation;
     }
 
     // Give the close a moment to complete, then release regardless. A proper
     // TIME_WAIT holds the port for twice the segment lifetime; nothing here
     // reuses ports fast enough for that to matter yet.
     const deadline = tsc.microsSinceBoot() + 500_000;
-    while (tsc.microsSinceBoot() < deadline and c.state != .closed) {
-        net.poll();
-        asm volatile ("pause");
+    while (true) {
+        {
+            const irq = net.acquire();
+            defer net.release(irq);
+            const c = liveLocked(index, generation) orelse return;
+            net.pollLocked();
+            if (c.state == .closed) break;
+        }
+        if (!net.waitStep(deadline)) break;
     }
 
-    c.used = false;
-    c.state = .closed;
+    const irq = net.acquire();
+    defer net.release(irq);
+    if (liveLocked(index, generation)) |c| {
+        c.used = false;
+        c.state = .closed;
+    }
 }
 
 pub fn state(index: usize) State {
-    const c = get(index) orelse return .closed;
+    const irq = net.acquire();
+    defer net.release(irq);
+    const c = getLocked(index) orelse return .closed;
     return c.state;
 }
