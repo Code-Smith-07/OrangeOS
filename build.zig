@@ -284,7 +284,8 @@ pub fn build(b: *std.Build) void {
         .stack_check = false,
         .sanitize_c = false, // UBSan runtime uses f128/SSE we cannot link
         .strip = false,
-        .single_threaded = true, // SMP arrives in Phase 8
+        // SMP: atomics must synchronize across CPUs, not just one thread.
+        .single_threaded = false,
     });
 
     kernel_mod.addOptions("build_options", options);
