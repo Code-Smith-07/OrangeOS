@@ -215,7 +215,7 @@ export fn isrDispatch(frame: *TrapFrame) callconv(.c) void {
         if (frame.cs & 3 == 3 and app_fault) {
             const sched = @import("../../sched/sched.zig");
             if (sched.currentTask()) |t| {
-                console.print("[app fault] pid {d} {s}: {s} at 0x{x}\n", .{ t.tid, t.nameSlice(), exception_names[vec], frame.rip });
+                console.print("[app fault] pid {d} tid {d} {s}: {s} at 0x{x}\n", .{ t.ownerId(), t.tid, t.nameSlice(), exception_names[vec], frame.rip });
                 sched.exit(128 + @as(i32, vec));
             }
         }

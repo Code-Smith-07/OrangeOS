@@ -282,7 +282,7 @@ var snapshot_at: u64 = 0;
 fn sysHostSnapshot(op: u64, ptr: u64, len: u64) i64 {
     const task = sched.currentTask() orelse return -13;
     if (op > 1 or len > 4096) return -22;
-    if (op == 1 and !task.host_bridge) return -13;
+    if (op == 1 and !hostBridge(task)) return -13;
     var buffer: [4096]u8 = undefined;
     if (op == 1) validate.copyFromUser(task.pageTable(), &buffer, ptr, @intCast(len)) catch return EFAULT;
     const now = @import("../time/time.zig").millisSinceBoot();
@@ -309,9 +309,13 @@ fn sysHostSnapshot(op: u64, ptr: u64, len: u64) i64 {
     return @intCast(size);
 }
 
+fn hostBridge(task: *const task_mod.Task) bool {
+    return if (task.process) |p| p.host_bridge else false;
+}
+
 fn sysHostIo(op: u64, ptr: u64, len: u64) i64 {
     const task = sched.currentTask() orelse return -13;
-    if (!task.host_bridge) return -13;
+    if (!hostBridge(task)) return -13;
     const bridge = @import("../drivers/virtio/serial.zig");
     var buf: [512]u8 = undefined;
     if (op == 2) return if (len == 0) bridge.operation(op, buf[0..0]) else -22;
@@ -374,15 +378,15 @@ fn sysOpen(path_ptr: u64, path_len: u64) i64 {
     var path: [vfs.MAX_PATH]u8 = undefined;
     validate.copyFromUser(pml4, &path, path_ptr, @intCast(path_len)) catch return EFAULT;
 
-    const task = sched.currentTask() orelse return EIO;
-    const fd = vfs.open(&task.files, path[0..@intCast(path_len)]) catch |e| return vfsErrno(e);
+    const proc = sched.currentProcess() orelse return EIO;
+    const fd = vfs.open(&proc.files, path[0..@intCast(path_len)]) catch |e| return vfsErrno(e);
     return fd;
 }
 
 fn sysClose(fd: u64) i64 {
     if (fd > std.math.maxInt(i32)) return EBADF;
-    const task = sched.currentTask() orelse return EIO;
-    vfs.close(&task.files, @intCast(fd)) catch |e| return vfsErrno(e);
+    const proc = sched.currentProcess() orelse return EIO;
+    vfs.close(&proc.files, @intCast(fd)) catch |e| return vfsErrno(e);
     return 0;
 }
 
@@ -453,8 +457,8 @@ fn sysRead(fd: u64, buf: u64, len: u64) i64 {
     // user buffer would mean the filesystem writing through an unvalidated
     // pointer.
     var kbuf: [4096]u8 = undefined;
-    const task = sched.currentTask() orelse return EIO;
-    const n = vfs.read(&task.files, @intCast(fd), kbuf[0..@intCast(len)]) catch |e| {
+    const proc = sched.currentProcess() orelse return EIO;
+    const n = vfs.read(&proc.files, @intCast(fd), kbuf[0..@intCast(len)]) catch |e| {
         return vfsErrno(e);
     };
 
@@ -491,12 +495,17 @@ fn sysSpawn(path_ptr: u64, path_len: u64) i64 {
 pub const WNOHANG: u64 = 1;
 
 fn sysWait(pid: u64, flags: u64) i64 {
-    const tid: u32 = @truncate(pid);
+    if (pid == 0 or pid > std.math.maxInt(u32)) return ECHILD;
+    const tid: u32 = @intCast(pid);
     const parent = sched.currentTask() orelse return ECHILD;
-    const t = sched.findChild(tid, parent.tid) orelse return ECHILD;
+    const owner = parent.ownerId();
 
     if (flags & WNOHANG != 0) {
-        return if (sched.reapChild(t, parent.tid)) |code| code else EAGAIN;
+        return switch (sched.collectChild(tid, owner)) {
+            .exited => |code| code,
+            .running => EAGAIN,
+            .missing => ECHILD,
+        };
     }
 
     // We arrive with IF clear, and the child needs timer interrupts to be
@@ -505,15 +514,26 @@ fn sysWait(pid: u64, flags: u64) i64 {
     defer io.cli();
 
     while (true) {
-        // Join the wait queue before checking the result. If exit wins between
-        // this check and commitWait, its wake removes us from the queue and
-        // commitWait returns without sleeping.
-        sched.prepareWait(@intFromPtr(t));
-        if (sched.taskExitCode(t) != null) {
-            sched.cancelWait();
-            return sched.reapChild(t, parent.tid) orelse ECHILD;
+        // Join the child's exit channel before checking its state. If the
+        // exit lands between the check and commitWait, its wake removes us
+        // from the queue and commitWait returns without sleeping.
+        const channel = switch (sched.collectChild(tid, owner)) {
+            .exited => |code| return code,
+            .missing => return ECHILD,
+            .running => |channel| channel,
+        };
+        sched.prepareWait(channel);
+        switch (sched.collectChild(tid, owner)) {
+            .exited => |code| {
+                sched.cancelWait();
+                return code;
+            },
+            .missing => {
+                sched.cancelWait();
+                return ECHILD;
+            },
+            .running => sched.commitWait(),
         }
-        sched.commitWait();
     }
 }
 
@@ -713,8 +733,8 @@ fn sysFbAcquire(info_ptr: u64) i64 {
     const f = framebuffer.get() orelse return -19; // ENODEV
 
     const t = sched.currentTask() orelse return EIO;
-    if (fb_owner != 0 and fb_owner != t.tid) return -16; // EBUSY
-    fb_owner = t.tid;
+    if (fb_owner != 0 and fb_owner != t.ownerId()) return -16; // EBUSY
+    fb_owner = t.ownerId();
 
     // Stop the kernel console drawing once a compositor is live. Panics still
     // reach the serial line, which is the console that matters when things
@@ -743,7 +763,7 @@ fn sysFbAcquire(info_ptr: u64) i64 {
 /// Map the framebuffer into the caller. Requires fb_acquire first.
 fn sysFbMap() i64 {
     const t = sched.currentTask() orelse return EIO;
-    if (fb_owner != t.tid) return -13; // EACCES
+    if (fb_owner != t.ownerId()) return -13; // EACCES
     const space = t.user_space orelse return EFAULT;
 
     const f = framebuffer.get() orelse return -19;
@@ -771,7 +791,7 @@ fn sysFbMap() i64 {
 /// client message wakes the same channel input events do.
 fn sysInputBind(h: u64) i64 {
     const t = sched.currentTask() orelse return EIO;
-    if (fb_owner != t.tid) return -13; // EACCES
+    if (fb_owner != t.ownerId()) return -13; // EACCES
     ipc.setInputSink(@bitCast(h)) catch |e| return ipcErrno(e);
     return 0;
 }
@@ -781,7 +801,7 @@ fn sysInputBind(h: u64) i64 {
 /// last thing keeping an otherwise idle desktop awake.
 fn sysInputWait(timeout_ms: u64) i64 {
     const t = sched.currentTask() orelse return EIO;
-    if (fb_owner != t.tid) return -13; // EACCES
+    if (fb_owner != t.ownerId()) return -13; // EACCES
 
     io.sti();
     defer io.cli();
@@ -818,18 +838,17 @@ fn sysInputRead(buf: u64, max: u64) i64 {
 // ── Pseudo-terminals ────────────────────────────────────────────────────────
 
 fn currentPty() ?*ipc_object.Object {
-    const t = sched.currentTask() orelse return null;
-    const p = t.pty orelse return null;
-    return @ptrCast(@alignCast(p));
+    const proc = sched.currentProcess() orelse return null;
+    return proc.pty;
 }
 
 fn sysPtyCreate() i64 {
     const obj = ipc_object.createPty() catch |e| return ipcErrno(e);
-    const t = sched.currentTask() orelse {
+    const proc = sched.currentProcess() orelse {
         ipc_object.release(obj);
         return EIO;
     };
-    return t.handles.insertOwned(obj) catch |e| {
+    return proc.handles.insertOwned(obj) catch |e| {
         ipc_object.release(obj);
         return ipcErrno(e);
     };
@@ -838,8 +857,8 @@ fn sysPtyCreate() i64 {
 /// Master side: read what the shell has written.
 fn sysPtyRead(h: u64, buf: u64, len: u64) i64 {
     if (len == 0) return 0;
-    const t = sched.currentTask() orelse return EIO;
-    const obj = t.handles.getPty(@bitCast(h)) catch |e| return ipcErrno(e);
+    const proc = sched.currentProcess() orelse return EIO;
+    const obj = proc.handles.getPty(@bitCast(h)) catch |e| return ipcErrno(e);
 
     var kbuf: [1024]u8 = undefined;
     const want = @min(len, kbuf.len);
@@ -854,8 +873,8 @@ fn sysPtyRead(h: u64, buf: u64, len: u64) i64 {
 /// Master side: supply input the shell will read from fd 0.
 fn sysPtyWrite(h: u64, buf: u64, len: u64) i64 {
     if (len == 0) return 0;
-    const t = sched.currentTask() orelse return EIO;
-    const obj = t.handles.getPty(@bitCast(h)) catch |e| return ipcErrno(e);
+    const proc = sched.currentProcess() orelse return EIO;
+    const obj = proc.handles.getPty(@bitCast(h)) catch |e| return ipcErrno(e);
 
     var kbuf: [1024]u8 = undefined;
     const want = @min(len, kbuf.len);
@@ -869,8 +888,8 @@ fn sysPtyWrite(h: u64, buf: u64, len: u64) i64 {
 fn sysSpawnPty(path_ptr: u64, path_len: u64, h: u64) i64 {
     if (path_len == 0 or path_len > vfs.MAX_PATH) return ENAMETOOLONG;
 
-    const t = sched.currentTask() orelse return EIO;
-    const obj = t.handles.getPty(@bitCast(h)) catch |e| return ipcErrno(e);
+    const proc = sched.currentProcess() orelse return EIO;
+    const obj = proc.handles.getPty(@bitCast(h)) catch |e| return ipcErrno(e);
 
     const pml4 = vmm.currentCr3();
     var path: [vfs.MAX_PATH]u8 = undefined;
@@ -954,13 +973,13 @@ fn sysUdpOpen(port: u64) i64 {
     if (!net.isUp()) return -19;
     if (port > std.math.maxInt(u16)) return EINVAL;
     const task = sched.currentTask() orelse return EIO;
-    const idx = net.socketOpenOwned(@intCast(port), task.tid) orelse return EMFILE;
+    const idx = net.socketOpenOwned(@intCast(port), task.ownerId()) orelse return EMFILE;
     return @intCast(idx);
 }
 
 fn sysUdpSend(sock: u64, dst: u64, port: u64, buf_and_len: u64) i64 {
     const task = sched.currentTask() orelse return EIO;
-    if (!net.socketOwnedBy(@intCast(sock), task.tid)) return EBADF;
+    if (!net.socketOwnedBy(@intCast(sock), task.ownerId())) return EBADF;
     // Pointer in the low 48 bits, length in the top 16. Six arguments is one
     // more than the syscall ABI has registers to spare here.
     const ptr = buf_and_len & 0x0000_FFFF_FFFF_FFFF;
@@ -980,7 +999,7 @@ fn sysUdpSend(sock: u64, dst: u64, port: u64, buf_and_len: u64) i64 {
 
 fn sysUdpRecv(sock: u64, buf: u64, len: u64) i64 {
     const task = sched.currentTask() orelse return EIO;
-    if (!net.socketOwnedBy(@intCast(sock), task.tid)) return EBADF;
+    if (!net.socketOwnedBy(@intCast(sock), task.ownerId())) return EBADF;
     net.poll();
     const d = net.recvFrom(@intCast(sock)) orelse return EAGAIN;
 
@@ -992,7 +1011,7 @@ fn sysUdpRecv(sock: u64, buf: u64, len: u64) i64 {
 
 fn sysUdpClose(sock: u64) i64 {
     const task = sched.currentTask() orelse return EIO;
-    if (!net.socketOwnedBy(@intCast(sock), task.tid)) return EBADF;
+    if (!net.socketOwnedBy(@intCast(sock), task.ownerId())) return EBADF;
     net.socketClose(@intCast(sock));
     return 0;
 }
@@ -1017,7 +1036,7 @@ fn sysTcpConnect(addr: u64, port: u64, timeout_ms: u64) i64 {
     const ip = [4]u8{
         @truncate(addr), @truncate(addr >> 8), @truncate(addr >> 16), @truncate(addr >> 24),
     };
-    const idx = tcp.connect(ip, @intCast(port), @min(timeout_ms, 10_000), task.tid) catch |e| {
+    const idx = tcp.connect(ip, @intCast(port), @min(timeout_ms, 10_000), task.ownerId()) catch |e| {
         return tcpErrno(e);
     };
     return @intCast(idx);
@@ -1025,7 +1044,7 @@ fn sysTcpConnect(addr: u64, port: u64, timeout_ms: u64) i64 {
 
 fn sysTcpSend(sock: u64, buf: u64, len: u64) i64 {
     const task = sched.currentTask() orelse return EIO;
-    if (!tcp.ownedBy(@intCast(sock), task.tid)) return EBADF;
+    if (!tcp.ownedBy(@intCast(sock), task.ownerId())) return EBADF;
     if (len == 0) return 0;
     if (len > 1400) return EMSGSIZE;
 
@@ -1039,7 +1058,7 @@ fn sysTcpSend(sock: u64, buf: u64, len: u64) i64 {
 
 fn sysTcpRecv(sock: u64, buf: u64, len: u64, timeout_ms: u64) i64 {
     const task = sched.currentTask() orelse return EIO;
-    if (!tcp.ownedBy(@intCast(sock), task.tid)) return EBADF;
+    if (!tcp.ownedBy(@intCast(sock), task.ownerId())) return EBADF;
     if (len == 0) return 0;
 
     var kbuf: [2048]u8 = undefined;
@@ -1056,14 +1075,14 @@ fn sysTcpRecv(sock: u64, buf: u64, len: u64, timeout_ms: u64) i64 {
 
 fn sysTcpClose(sock: u64) i64 {
     const task = sched.currentTask() orelse return EIO;
-    if (!tcp.ownedBy(@intCast(sock), task.tid)) return EBADF;
+    if (!tcp.ownedBy(@intCast(sock), task.ownerId())) return EBADF;
     tcp.close(@intCast(sock));
     return 0;
 }
 
 fn sysGetpid() i64 {
     const t = sched.currentTask() orelse return -1;
-    return @intCast(t.tid);
+    return @intCast(t.ownerId());
 }
 
 fn sysYield() i64 {

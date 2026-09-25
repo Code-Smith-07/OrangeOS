@@ -18,7 +18,8 @@ var deadline: u64 = 0;
 
 pub fn operation(op: u64, arg0: u64, arg1: u64) i64 {
     const task = sched.currentTask() orelse return -13;
-    if (((op <= 1 or op == 5) and !task.host_controls) or (op >= 2 and op != 5 and !task.host_bridge)) return -13;
+    const proc = task.process orelse return -13;
+    if (((op <= 1 or op == 5) and !proc.host_controls) or (op >= 2 and op != 5 and !proc.host_bridge)) return -13;
     if (op > 5) return -22;
     if (op == 2) {
         if (arg1 != @sizeOf(Command)) return -22;
@@ -38,7 +39,7 @@ pub fn operation(op: u64, arg0: u64, arg1: u64) i64 {
             if (serial == std.math.maxInt(u32)) return -75;
             serial += 1;
             command = .{ .id = serial, .percent = @intCast(arg0), .device = @intCast(arg1), .kind = if (op == 5) 2 else 1 };
-            owner = task.tid;
+            owner = proc.pid;
             active = true;
             done = false;
             taken = false;
@@ -47,7 +48,7 @@ pub fn operation(op: u64, arg0: u64, arg1: u64) i64 {
             return serial;
         },
         1 => {
-            if (!active or owner != task.tid or command.id != arg0 or arg1 != 0) return -2;
+            if (!active or owner != proc.pid or command.id != arg0 or arg1 != 0) return -2;
             if (!done) return -11;
             active = false;
             return result;

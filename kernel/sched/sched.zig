@@ -165,39 +165,88 @@ pub fn findByTid(tid: u32) ?*Task {
     return null;
 }
 
-/// Only the spawning task may wait for a child. This also means a returned
-/// pointer stays alive while our single-threaded parent performs wait/reap.
-pub fn findChild(tid: u32, parent_tid: u32) ?*Task {
-    const state = spinlock.acquireIrqSave(&lock);
-    defer spinlock.releaseIrqRestore(&lock, state);
+/// Caller holds the scheduler lock.
+fn findChildLocked(tid: u32, parent_id: u32) ?*Task {
     for (all_tasks[0..all_count]) |candidate| {
         const t = candidate orelse continue;
-        if (t.tid == tid and t.parent_tid == parent_tid) return t;
+        if (t.tid == tid and t.parent_tid == parent_id) return t;
     }
     return null;
 }
 
-/// Consume one exited child's status and recycle its registry slot and stack.
-/// The caller is its only waiter; user threads must add a shared wait owner.
-pub fn reapChild(t: *Task, parent_tid: u32) ?i32 {
-    const state = spinlock.acquireIrqSave(&lock);
-    if (t.parent_tid != parent_tid or t.state != .zombie) {
-        spinlock.releaseIrqRestore(&lock, state);
-        return null;
-    }
-    var found = false;
+/// Whether a zombie record may be collected. A program's leader stays until
+/// every thread of the program has exited and released its resources; any
+/// other thread, and every kernel task, is finished once it is a zombie.
+/// Caller holds the scheduler lock.
+fn finishedLocked(t: *const Task) bool {
+    if (t.state != .zombie) return false;
+    const p = t.process orelse return true;
+    return !t.isLeader() or p.exited;
+}
+
+fn exitCodeOf(t: *const Task) i32 {
+    return if (t.process) |p| p.exit_code else t.exit_code;
+}
+
+/// The channel woken when `t` can be collected: its process for a user
+/// program, the task itself for a kernel task.
+pub fn exitChannel(t: *const Task) usize {
+    return if (t.process) |p| @intFromPtr(p) else @intFromPtr(t);
+}
+
+/// Caller holds the scheduler lock; the record must be finished.
+fn unregisterLocked(t: *Task) bool {
     for (&all_tasks) |*slot| {
         if (slot.* == t) {
             slot.* = null;
-            found = true;
-            break;
+            return true;
         }
     }
-    const code = t.exit_code;
+    return false;
+}
+
+/// Consume one exited kernel child's status and recycle its registry slot and
+/// stack. The caller is the child's only waiter, so `t` stays valid.
+pub fn reapChild(t: *Task, parent_tid: u32) ?i32 {
+    const state = spinlock.acquireIrqSave(&lock);
+    if (t.parent_tid != parent_tid or !finishedLocked(t) or !unregisterLocked(t)) {
+        spinlock.releaseIrqRestore(&lock, state);
+        return null;
+    }
+    const code = exitCodeOf(t);
     spinlock.releaseIrqRestore(&lock, state);
-    if (!found) return null;
     task_mod.destroy(t);
     return code;
+}
+
+pub const ChildStatus = union(enum) {
+    /// The child's whole program has finished; its record is gone now.
+    exited: i32,
+    /// Still running. Wait on `channel`, then look the child up again.
+    running: usize,
+    /// No such child of this owner (never existed, or already collected).
+    missing,
+};
+
+/// Look up a child by id and consume its status if it has finished. The child
+/// is found afresh under the lock on every call, so no task pointer is held
+/// across a sleep: another thread of the same parent may collect it first.
+pub fn collectChild(tid: u32, parent_id: u32) ChildStatus {
+    const state = spinlock.acquireIrqSave(&lock);
+    const t = findChildLocked(tid, parent_id) orelse {
+        spinlock.releaseIrqRestore(&lock, state);
+        return .missing;
+    };
+    if (!finishedLocked(t)) {
+        const channel = exitChannel(t);
+        spinlock.releaseIrqRestore(&lock, state);
+        return .{ .running = channel };
+    }
+    std.debug.assert(unregisterLocked(t));
+    const code = exitCodeOf(t);
+    spinlock.releaseIrqRestore(&lock, state);
+    task_mod.destroy(t);
+    return .{ .exited = code };
 }
 
 /// A parent may exit without waiting. Detach its children while publishing
@@ -210,15 +259,15 @@ fn orphanChildrenLocked(parent_tid: u32) void {
     }
 }
 
-/// Remove one unowned zombie under the scheduler lock. The task's former CPU
-/// has already switched stacks before releasing that lock, so it is safe to
-/// destroy the record after the lock is released.
+/// Remove one unowned finished record under the scheduler lock. The task's
+/// former CPU has already switched stacks before releasing that lock, so it is
+/// safe to destroy the record after the lock is released.
 fn takeOrphanZombie() ?*Task {
     const state = spinlock.acquireIrqSave(&lock);
     defer spinlock.releaseIrqRestore(&lock, state);
     for (&all_tasks) |*slot| {
         const t = slot.* orelse continue;
-        if (t.parent_tid != 0 or t.state != .zombie) continue;
+        if (t.parent_tid != 0 or !finishedLocked(t)) continue;
         slot.* = null;
         return t;
     }
@@ -238,7 +287,7 @@ pub fn orphanReaper(_: ?*anyopaque) void {
 pub fn taskExitCode(t: *Task) ?i32 {
     const state = spinlock.acquireIrqSave(&lock);
     defer spinlock.releaseIrqRestore(&lock, state);
-    return if (t.state == .zombie) t.exit_code else null;
+    return if (finishedLocked(t)) exitCodeOf(t) else null;
 }
 
 /// Where a freshly created thread begins. It calls the thread's entry point
@@ -275,39 +324,66 @@ fn idleLoop(_: ?*anyopaque) void {
     }
 }
 
-/// Create a thread and make it runnable.
+/// Create a kernel thread and make it runnable.
 pub fn spawn(
     name: []const u8,
     entry: *const fn (?*anyopaque) void,
     arg: ?*anyopaque,
     priority: Priority,
 ) !*Task {
-    return spawnWithPty(name, entry, arg, priority, null);
+    const t = try task_mod.create(name, entry, arg, priority, @intFromPtr(&threadTrampoline));
+    return enqueueNew(t);
 }
 
-/// Set inherited PTY ownership before the child becomes runnable.
-pub fn spawnWithPty(
+/// What a new user program starts with. Everything else begins empty.
+pub const ProcessInit = struct {
+    pty: ?*ipc_object.Object = null,
+    service_manager: bool = false,
+    host_bridge: bool = false,
+    host_controls: bool = false,
+};
+
+/// Create the first thread of a new user program. Its process record, stdio
+/// binding and boot-issued authority are installed before it can run, so
+/// nothing observes a half-built process.
+pub fn spawnProcess(
     name: []const u8,
     entry: *const fn (?*anyopaque) void,
     arg: ?*anyopaque,
     priority: Priority,
-    pty: ?*ipc_object.Object,
+    setup: ProcessInit,
 ) !*Task {
     const t = try task_mod.create(name, entry, arg, priority, @intFromPtr(&threadTrampoline));
-    t.parent_tid = if (currentTask()) |parent| parent.tid else 0;
-    if (pty) |obj| {
+    const p = task_mod.Process.create(t.tid) catch {
+        task_mod.destroy(t);
+        return error.OutOfMemory;
+    };
+    p.service_manager = setup.service_manager;
+    p.host_bridge = setup.host_bridge;
+    p.host_controls = setup.host_controls;
+    if (setup.pty) |obj| {
         ipc_object.retain(obj);
-        t.pty = obj;
+        p.pty = obj;
     }
+    t.process = p;
+    return enqueueNew(t);
+}
 
+/// Record the spawner as the owner that may collect this task, then publish
+/// it. On failure the unpublished task and anything it holds are released.
+fn enqueueNew(t: *Task) !*Task {
+    t.parent_tid = if (currentTask()) |parent| parent.ownerId() else 0;
     const state = spinlock.acquireIrqSave(&lock);
     if (!registerTask(t)) {
         spinlock.releaseIrqRestore(&lock, state);
-        if (t.pty) |obj| ipc_object.release(obj);
+        if (t.process) |p| {
+            if (p.pty) |obj| ipc_object.release(obj);
+            p.pty = null;
+        }
         task_mod.destroy(t);
         return error.OutOfMemory;
     }
-    queues[@intFromEnum(priority)].push(t);
+    queues[@intFromEnum(t.priority)].push(t);
     task_count += 1;
     spinlock.releaseIrqRestore(&lock, state);
     return t;
@@ -507,22 +583,35 @@ pub fn preemptIfNeeded() void {
 }
 
 /// Terminate the current thread. Never returns.
+///
+/// The last thread of a user program also releases the program's resources
+/// and publishes its exit. The atomic decrement picks exactly one last thread
+/// even when several exit at once on different CPUs.
 pub fn exit(code: i32) noreturn {
     io.cli();
     std.debug.assert(cpu().preempt_depth == 0);
-    if (currentTask()) |t| {
-        t.files.clear();
-        @import("../ipc/ipc.zig").clearInputSinkOwnedBy(t.tid);
-        @import("../net/net.zig").socketCloseOwnedBy(t.tid);
-        @import("../net/tcp.zig").abortOwnedBy(t.tid);
-        if (t.user_space) |space| {
-            address_space.switchTo(space, null);
-            t.user_space = null;
-            space.release();
-        }
-        if (t.pty) |obj| ipc_object.release(obj);
-        t.pty = null;
-        for (&t.handles.entries) |*entry| {
+    const t = currentOf(cpu()) orelse unreachable;
+    const process = t.process;
+    const last = if (process) |p| @atomicRmw(u32, &p.live_threads, .Sub, 1, .acq_rel) == 1 else false;
+    if (last) {
+        const p = process.?;
+        p.files.clear();
+        @import("../ipc/ipc.zig").clearInputSinkOwnedBy(p.pid);
+        @import("../net/net.zig").socketCloseOwnedBy(p.pid);
+        @import("../net/tcp.zig").abortOwnedBy(p.pid);
+    }
+    // Each thread holds its own address-space reference; the last one out
+    // tears the mappings down, before borrowed frames lose their handles.
+    if (t.user_space) |space| {
+        address_space.switchTo(space, null);
+        t.user_space = null;
+        space.release();
+    }
+    if (last) {
+        const p = process.?;
+        if (p.pty) |obj| ipc_object.release(obj);
+        p.pty = null;
+        for (&p.handles.entries) |*entry| {
             if (entry.*) |obj| ipc_object.release(obj);
             entry.* = null;
         }
@@ -530,10 +619,19 @@ pub fn exit(code: i32) noreturn {
     lock.acquire();
 
     const c = cpu();
-    const t = currentOf(c) orelse unreachable;
+    std.debug.assert(currentOf(c) == t);
     t.exit_code = code;
     t.state = .zombie;
-    orphanChildrenLocked(t.tid);
+    if (process) |p| {
+        if (last) {
+            p.exit_code = code;
+            p.exited = true;
+            orphanChildrenLocked(p.pid);
+            _ = wakeChannelLocked(@intFromPtr(p), std.math.maxInt(usize));
+        }
+    } else {
+        orphanChildrenLocked(t.tid);
+    }
     task_count -= 1;
     _ = wakeChannelLocked(@intFromPtr(t), std.math.maxInt(usize));
 
@@ -594,6 +692,12 @@ pub fn startAp() noreturn {
 
 pub fn currentTask() ?*Task {
     return currentOf(cpu());
+}
+
+/// The user program the running thread belongs to; null for kernel tasks.
+pub fn currentProcess() ?*task_mod.Process {
+    const t = currentTask() orelse return null;
+    return t.process;
 }
 
 /// Transfer a live reference to the current kernel task before entering user

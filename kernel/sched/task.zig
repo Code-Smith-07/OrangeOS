@@ -1,7 +1,11 @@
 //! Task structures.
 //!
-//! Kernel and ring-3 task state. Each user task currently owns one address
-//! space; shared-address-space threads require VM locking and TLB shootdown.
+//! A Task is one thread of execution: a kernel stack, saved registers, FPU and
+//! TLS state, and scheduling bookkeeping. Resources that belong to a whole
+//! user program (descriptors, handles, stdio, boot-issued authority and the
+//! owner identity used by sockets and devices) live in its Process instead.
+//! Every user task currently runs alone in its process; shared-address-space
+//! threads additionally require VM locking and TLB shootdown.
 
 const std = @import("std");
 const heap = @import("../mm/heap.zig");
@@ -63,9 +67,66 @@ pub const LEVEL_COUNT: usize = 4;
 
 var next_tid: u32 = 1;
 
+/// Resources shared by every thread of one user program.
+///
+/// The process id is the tid of its first thread, so a single-threaded
+/// program's pid and tid are the same number. Each task record that points
+/// here holds one reference, which keeps this object readable by a waiting
+/// parent after the program's threads are gone. The resources themselves are
+/// released by the last thread to exit, before `exited` is published.
+pub const Process = struct {
+    pid: u32,
+    /// Task records referencing this object, live or awaiting collection.
+    refs: u32 = 1,
+    /// Threads that have not begun exiting. The one that takes this to zero
+    /// releases the process resources.
+    live_threads: u32 = 1,
+    /// Set under the scheduler lock once every resource has been released, so
+    /// a parent never reaps a program whose teardown is still running.
+    exited: bool = false,
+    exit_code: i32 = 0,
+
+    /// When set, fd 0/1/2 route to this PTY's slave end instead of the serial
+    /// console. Inherited by programs this one spawns, so a shell started in
+    /// a terminal keeps its children in the same terminal.
+    pty: ?*ipc_object.Object = null,
+    /// Capabilities this process holds. Empty at creation: a process starts
+    /// with no authority and receives handles explicitly.
+    handles: handle.Table = .{},
+    /// Files opened by this process. Ordinary spawn does not inherit them.
+    files: vfs.FileTable = .{},
+    // Boot-issued authority, never inherited by ordinary spawned programs.
+    service_manager: bool = false,
+    host_bridge: bool = false,
+    host_controls: bool = false,
+
+    pub fn create(pid: u32) Error!*Process {
+        const self = heap.create(Process) catch return Error.OutOfMemory;
+        self.* = .{ .pid = pid };
+        return self;
+    }
+
+    pub fn retain(self: *Process) void {
+        const previous = @atomicRmw(u32, &self.refs, .Add, 1, .monotonic);
+        std.debug.assert(previous > 0);
+    }
+
+    /// Drop a task record's reference. The final release only frees memory:
+    /// the last thread has already returned every resource.
+    pub fn release(self: *Process) void {
+        const previous = @atomicRmw(u32, &self.refs, .Sub, 1, .acq_rel);
+        std.debug.assert(previous > 0);
+        if (previous != 1) return;
+        std.debug.assert(self.handles.count() == 0 and self.pty == null);
+        heap.destroy(self);
+    }
+};
+
 pub const Task = struct {
     tid: u32,
-    /// The task that may collect our exit status and release this record.
+    /// Owner id (a process id, or a kernel task's tid) that may collect this
+    /// task's exit status and release its record. Zero means nobody will: the
+    /// orphan reaper collects it.
     parent_tid: u32 = 0,
     name: [NAME_LEN]u8,
     name_len: usize,
@@ -104,23 +165,13 @@ pub const Task = struct {
     /// Set only when a timed wait expired, not when its channel was signalled.
     wait_timed_out: bool = false,
 
-    /// When set, fd 0/1/2 route to this PTY's slave end instead of the serial
-    /// console. Inherited by anything this task spawns, so a shell started in
-    /// a terminal keeps its children in the same terminal.
-    pty: ?*ipc_object.Object = null,
-
-    /// Capabilities this task holds. Empty at creation: a process starts with
-    /// no authority and receives handles explicitly.
-    handles: handle.Table = .{},
-    /// Files opened by this process. Ordinary spawn does not inherit them.
-    files: vfs.FileTable = .{},
-    // Boot-issued authority, never inherited by ordinary spawned programs.
-    service_manager: bool = false,
-    host_bridge: bool = false,
-    host_controls: bool = false,
+    /// The user program this thread belongs to, with one reference held for
+    /// the lifetime of this record. Null for kernel tasks.
+    process: ?*Process = null,
 
     /// One owned reference, detached at exit before this task becomes a zombie.
-    /// Null kernel tasks use the kernel PML4. Shared execution is not enabled.
+    /// Null kernel tasks use the kernel PML4. Kernel test workers may borrow a
+    /// user address space without belonging to any process.
     user_space: ?*@import("../mm/address_space.zig").AddressSpace = null,
 
     /// Run-queue link.
@@ -133,6 +184,17 @@ pub const Task = struct {
 
     pub fn pageTable(self: *const Task) u64 {
         return if (self.user_space) |space| space.pml4 else vmm.kernelPml4();
+    }
+
+    /// The identity that owns sockets, devices and children: the process id
+    /// for user threads, the tid itself for kernel tasks.
+    pub fn ownerId(self: *const Task) u32 {
+        return if (self.process) |p| p.pid else self.tid;
+    }
+
+    /// Whether this is the thread a parent waits on for the whole program.
+    pub fn isLeader(self: *const Task) bool {
+        return if (self.process) |p| p.pid == self.tid else true;
     }
 
     pub fn nameSlice(self: *const Task) []const u8 {
@@ -182,6 +244,7 @@ pub fn create(
 
 pub fn destroy(task: *Task) void {
     std.debug.assert(task.user_space == null);
+    if (task.process) |p| p.release();
     const pages = task.kstack_size / pmm.PAGE_SIZE;
     const order = pmm.orderFor(pages);
     pmm.freeOrder(pmm.virtToPhys(task.kstack_base), order);

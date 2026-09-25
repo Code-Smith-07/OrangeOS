@@ -170,7 +170,7 @@ export fn kmain() callconv(.c) noreturn {
     if (build_options.budget) {
         _ = sched.spawn("budget", budgetThread, null, .batch) catch {};
     }
-    _ = sched.spawn("init", process.initThread, null, .normal) catch |e| {
+    _ = process.spawnInit() catch |e| {
         fbcon.reclaim();
         console.err("could not spawn init: {s}", .{@errorName(e)});
     };

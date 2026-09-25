@@ -78,8 +78,6 @@ pub fn execNode(node: *const vfs.Node) Error!noreturn {
 /// A pending program holds an immutable filesystem node, not the ELF contents.
 pub const SpawnRequest = struct {
     node: vfs.Node,
-    host_bridge: bool,
-    host_controls: bool,
 };
 
 /// Start a program with its stdio bound to a PTY.
@@ -87,10 +85,10 @@ pub fn spawnPathWithPty(path: []const u8, pty: *@import("../ipc/object.zig").Obj
     return spawnPathInternal(path, pty);
 }
 
-/// Resolve a program on disk and start it as a new task. Returns its tid.
+/// Resolve a program on disk and start it as a new process. Returns its pid.
 /// The caller keeps running; use wait() to synchronise.
 pub fn spawnPath(path: []const u8) !u32 {
-    const inherited = if (sched.currentTask()) |parent| parent.pty else null;
+    const inherited = if (sched.currentProcess()) |parent| parent.pty else null;
     return spawnPathInternal(path, inherited);
 }
 
@@ -102,17 +100,18 @@ fn spawnPathInternal(path: []const u8, pty: ?*@import("../ipc/object.zig").Objec
 
     const req = heap.create(SpawnRequest) catch return error.OutOfMemory;
     errdefer heap.destroy(req);
-    const parent = sched.currentTask();
-    req.* = .{ .node = node, .host_controls = std.mem.eql(u8, path, "/bin/hardware"), .host_bridge = if (parent) |p|
-        p.service_manager and std.mem.eql(u8, path, "/bin/host-agent")
-    else
-        false };
+    req.* = .{ .node = node };
+    const service_manager = if (sched.currentProcess()) |p| p.service_manager else false;
 
     // Name the task after the last path component, so `ps` is readable.
     var name: []const u8 = path;
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| name = path[i + 1 ..];
 
-    const t = sched.spawnWithPty(name, spawnThread, req, .normal, pty) catch return error.OutOfMemory;
+    const t = sched.spawnProcess(name, spawnThread, req, .normal, .{
+        .pty = pty,
+        .host_controls = std.mem.eql(u8, path, "/bin/hardware"),
+        .host_bridge = service_manager and std.mem.eql(u8, path, "/bin/host-agent"),
+    }) catch return error.OutOfMemory;
 
     return t.tid;
 }
@@ -121,8 +120,6 @@ fn spawnPathInternal(path: []const u8, pty: ?*@import("../ipc/object.zig").Objec
 fn spawnThread(arg: ?*anyopaque) void {
     const req: *SpawnRequest = @ptrCast(@alignCast(arg.?));
     const node = req.node;
-    sched.currentTask().?.host_bridge = req.host_bridge;
-    sched.currentTask().?.host_controls = req.host_controls;
     heap.destroy(req);
 
     execNode(&node) catch |e| {
@@ -131,14 +128,19 @@ fn spawnThread(arg: ?*anyopaque) void {
     };
 }
 
+/// Start PID 1. Only this boot-created process holds service-manager
+/// authority, which is what lets it grant the host bridge to one agent.
+pub fn spawnInit() !*task_mod.Task {
+    return sched.spawnProcess("init", initThread, null, .normal, .{ .service_manager = true });
+}
+
 /// Thread body: load /sbin/init off the filesystem and run it.
 ///
 /// The binary is no longer embedded in the kernel image. Keeping it there
 /// would have cost about a megabyte of kernel .rodata, and the whole point of
 /// having a filesystem is that programs live on it.
-pub fn initThread(arg: ?*anyopaque) void {
+fn initThread(arg: ?*anyopaque) void {
     _ = arg;
-    sched.currentTask().?.service_manager = true;
 
     const path = "/sbin/init";
 
