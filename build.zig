@@ -340,8 +340,137 @@ pub fn build(b: *std.Build) void {
         for (musl_headers) |dir| mod.addSystemIncludePath(.{ .cwd_relative = dir });
         mod.linkLibrary(musl_lib);
         const exe = b.addExecutable(.{ .name = program.name, .root_module = mod, .use_lld = true });
-        exe.setLinkerScript(b.path("userland/user.ld"));
+        exe.setLinkerScript(b.path("userland/libs/musl-orange/program.ld"));
         exe.entry = .{ .symbol_name = "_start" };
+        b.installArtifact(exe);
+    }
+
+    // ── C++ standard library on musl ─────────────────────────────────────────
+    // libc++, libc++abi and libunwind (LLVM 19) from the pinned Zig
+    // toolchain, configured the way Zig configures them for a musl target
+    // (Zig replaces __config_site with -D flags). Exceptions and RTTI are on:
+    // libunwind finds each program's .eh_frame_hdr through musl's
+    // dl_iterate_phdr, which reads the program headers the kernel passes in
+    // the auxiliary vector. `-fhosted` undoes the -ffreestanding Zig adds for
+    // the freestanding target: these are hosted libraries over musl. The
+    // libc++ headers go in with -I, ahead of Zig's builtin C headers, because
+    // they wrap them (<stddef.h> and friends) with #include_next; they mark
+    // themselves as system headers.
+    const cxx_config = [_][]const u8{
+        "-D_LIBCPP_ABI_VERSION=1",
+        "-D_LIBCPP_ABI_NAMESPACE=__1",
+        "-D_LIBCPP_HAS_THREAD_API_PTHREAD",
+        "-D_LIBCPP_HAS_MUSL_LIBC",
+        "-D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS",
+        "-D_LIBCPP_PSTL_BACKEND_SERIAL",
+        "-D_LIBCPP_HARDENING_MODE_DEFAULT=_LIBCPP_HARDENING_MODE_NONE",
+        "-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS",
+        "-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS",
+        "-D_LIBUNWIND_DISABLE_VISIBILITY_ANNOTATIONS",
+        // What clang's Linux driver defines for C++; musl otherwise hides
+        // POSIX declarations under a strict -std=c++NN.
+        "-D_GNU_SOURCE",
+    };
+    const cxx_common = [_][]const u8{ "-nostdinc", "-nostdinc++", "-fhosted", "-fno-stack-protector", "-mno-red-zone", "-mno-avx" };
+    const libcxx_root = b.pathJoin(&.{ zig_lib, "libcxx" });
+    const libcxxabi_root = b.pathJoin(&.{ zig_lib, "libcxxabi" });
+    const libunwind_root = b.pathJoin(&.{ zig_lib, "libunwind" });
+    const cxx_headers = [_][]const u8{
+        b.pathJoin(&.{ libcxx_root, "include" }),
+        b.pathJoin(&.{ libcxxabi_root, "include" }),
+        b.pathJoin(&.{ libunwind_root, "include" }),
+    };
+    const cxx_mod = b.createModule(.{
+        .target = user_target,
+        .optimize = user_optimize,
+        .red_zone = false,
+        .pic = false,
+        .stack_protector = false,
+        .stack_check = false,
+        .sanitize_c = false,
+        .single_threaded = false,
+        .unwind_tables = .sync,
+    });
+    for (cxx_headers) |dir| cxx_mod.addIncludePath(.{ .cwd_relative = dir });
+    for (musl_headers) |dir| cxx_mod.addSystemIncludePath(.{ .cwd_relative = dir });
+    cxx_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ libcxx_root, "src" }) });
+    const libcxx_sources = collectSources(b, b.pathJoin(&.{ libcxx_root, "src" }), ".cpp", &libcxx_skipped) catch |e| std.debug.panic("libc++ sources: {s}", .{@errorName(e)});
+    cxx_mod.addCSourceFiles(.{
+        .root = .{ .cwd_relative = b.pathJoin(&.{ libcxx_root, "src" }) },
+        .files = libcxx_sources,
+        .flags = &(cxx_common ++ cxx_config ++ [_][]const u8{ "-std=c++23", "-D_LIBCPP_BUILDING_LIBRARY", "-DLIBCXX_BUILDING_LIBCXXABI", "-D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES", "-w" }),
+    });
+    const libcxxabi_sources = collectSources(b, b.pathJoin(&.{ libcxxabi_root, "src" }), ".cpp", &libcxxabi_skipped) catch |e| std.debug.panic("libc++abi sources: {s}", .{@errorName(e)});
+    cxx_mod.addCSourceFiles(.{
+        .root = .{ .cwd_relative = b.pathJoin(&.{ libcxxabi_root, "src" }) },
+        .files = libcxxabi_sources,
+        .flags = &(cxx_common ++ cxx_config ++ [_][]const u8{ "-std=c++23", "-D_LIBCXXABI_BUILDING_LIBRARY", "-D_LIBCPP_BUILDING_LIBRARY", "-DHAS_THREAD_LOCAL", "-w" }),
+    });
+    const cxx_lib = b.addLibrary(.{ .linkage = .static, .name = "c++", .root_module = cxx_mod });
+
+    // libunwind is C and C++ built against musl alone (its C files must not
+    // see libc++'s wrapper headers), so it is its own library.
+    const unwind_mod = b.createModule(.{
+        .target = user_target,
+        .optimize = user_optimize,
+        .red_zone = false,
+        .pic = false,
+        .stack_protector = false,
+        .stack_check = false,
+        .sanitize_c = false,
+        .single_threaded = false,
+        .unwind_tables = .sync,
+    });
+    unwind_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ libunwind_root, "include" }) });
+    for (musl_headers) |dir| unwind_mod.addSystemIncludePath(.{ .cwd_relative = dir });
+    const unwind_flags = [_][]const u8{ "-nostdinc", "-fhosted", "-fno-stack-protector", "-mno-red-zone", "-mno-avx", "-D_LIBUNWIND_IS_NATIVE_ONLY", "-D_LIBUNWIND_DISABLE_VISIBILITY_ANNOTATIONS", "-D_GNU_SOURCE", "-fno-exceptions", "-funwind-tables", "-w" };
+    unwind_mod.addCSourceFiles(.{
+        .root = .{ .cwd_relative = b.pathJoin(&.{ libunwind_root, "src" }) },
+        .files = &.{ "UnwindLevel1.c", "UnwindLevel1-gcc-ext.c", "gcc_personality_v0.c" },
+        .flags = &([_][]const u8{"-std=c99"} ++ unwind_flags),
+    });
+    unwind_mod.addCSourceFiles(.{
+        .root = .{ .cwd_relative = b.pathJoin(&.{ libunwind_root, "src" }) },
+        .files = &.{"libunwind.cpp"},
+        .flags = &([_][]const u8{ "-std=c++17", "-nostdinc++", "-fno-rtti" } ++ unwind_flags),
+    });
+    unwind_mod.addCSourceFiles(.{
+        .root = .{ .cwd_relative = b.pathJoin(&.{ libunwind_root, "src" }) },
+        .files = &.{ "UnwindRegistersSave.S", "UnwindRegistersRestore.S" },
+        .flags = &.{ "-nostdinc", "-D_LIBUNWIND_IS_NATIVE_ONLY" },
+    });
+    const unwind_lib = b.addLibrary(.{ .linkage = .static, .name = "unwind", .root_module = unwind_mod });
+
+    const cxx_programs = [_]CProgram{
+        .{ .name = "cxx-probe", .sources = &.{"userland/bin/cxx-probe/probe.cpp"} },
+    };
+    for (cxx_programs) |program| {
+        const mod = b.createModule(.{
+            .root_source_file = b.path("userland/libs/musl-orange/crt.zig"),
+            .target = user_target,
+            .optimize = user_optimize,
+            .strip = user_optimize != .Debug,
+            .red_zone = false,
+            .pic = false,
+            .stack_protector = false,
+            .stack_check = false,
+            .sanitize_c = false,
+            .single_threaded = false,
+            .unwind_tables = .sync,
+        });
+        mod.addCSourceFiles(.{
+            .files = program.sources,
+            .flags = &(cxx_common ++ cxx_config ++ [_][]const u8{ "-std=c++20", "-Wall", "-Wextra", "-Werror" }),
+        });
+        for (cxx_headers) |dir| mod.addIncludePath(.{ .cwd_relative = dir });
+        for (musl_headers) |dir| mod.addSystemIncludePath(.{ .cwd_relative = dir });
+        mod.linkLibrary(cxx_lib);
+        mod.linkLibrary(unwind_lib);
+        mod.linkLibrary(musl_lib);
+        const exe = b.addExecutable(.{ .name = program.name, .root_module = mod, .use_lld = true });
+        exe.setLinkerScript(b.path("userland/libs/musl-orange/program.ld"));
+        exe.entry = .{ .symbol_name = "_start" };
+        exe.link_eh_frame_hdr = true;
         b.installArtifact(exe);
     }
 
@@ -461,6 +590,46 @@ const musl_replaced_c = [_][]const u8{
     "thread/clone.c",
     "thread/__set_thread_area.c",
 };
+
+/// libc++ sources not built: other platforms' support code, the libdispatch
+/// parallel backend, the time-zone database (there is no zoneinfo), and
+/// new.cpp, whose operators libc++abi's stdlib_new_delete.cpp provides.
+const libcxx_skipped = [_][]const u8{
+    "new.cpp",
+    "pstl/",
+    "support/",
+    "experimental/tzdb.cpp",
+    "experimental/tzdb_list.cpp",
+    "experimental/time_zone.cpp",
+    "experimental/chrono_exception.cpp",
+};
+/// libc++abi's no-exceptions variant; this build has exceptions.
+const libcxxabi_skipped = [_][]const u8{"cxa_noexception.cpp"};
+
+/// Every file with `extension` under `root` (recursively), relative to it,
+/// sorted, except those named in `skipped` (an entry ending in "/" skips
+/// that whole directory).
+fn collectSources(b: *std.Build, root: []const u8, extension: []const u8, skipped: []const []const u8) ![]const []const u8 {
+    var dir = try std.fs.openDirAbsolute(root, .{ .iterate = true });
+    defer dir.close();
+    var walker = try dir.walk(b.allocator);
+    defer walker.deinit();
+    var files = std.ArrayList([]const u8).init(b.allocator);
+    outer: while (try walker.next()) |entry| {
+        if (entry.kind != .file or !std.mem.eql(u8, std.fs.path.extension(entry.path), extension)) continue;
+        for (skipped) |skip| {
+            const directory = std.mem.endsWith(u8, skip, "/");
+            if (if (directory) std.mem.startsWith(u8, entry.path, skip) else std.mem.eql(u8, entry.path, skip)) continue :outer;
+        }
+        try files.append(b.dupe(entry.path));
+    }
+    std.mem.sort([]const u8, files.items, {}, struct {
+        fn less(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.lessThan(u8, x, y);
+        }
+    }.less);
+    return files.items;
+}
 
 fn contains(list: []const []const u8, item: []const u8) bool {
     for (list) |entry| if (std.mem.eql(u8, entry, item)) return true;

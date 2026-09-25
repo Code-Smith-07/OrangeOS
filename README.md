@@ -49,7 +49,7 @@ concerns, not something bolted on later.
   DESKTOP           Grove         panel, dock, launcher
   DISPLAY SERVER    Peel          compositor, window mgmt, input
   SERVICES          Seed (init) · devmgr · netd · audiod · logd
-  C LIBRARY         Pulp / musl   Zig runtime; musl 1.2.5 for C programs
+  C LIBRARY         Pulp / musl   Zig runtime; musl 1.2.5 + libc++ for C/C++
   ══════════════════════════════════════════════════ ring 3 / ring 0
   KERNEL            Zest          sched · mm · vfs · ipc · drivers
   ARCH LAYER        x86_64        GDT · IDT · paging · APIC
@@ -175,8 +175,9 @@ and its waits sleep rather than spin with interrupts masked. Anonymous memory
 can be flipped to read/execute under W^X for JIT code. C programs now build
 against musl 1.2.5 and run natively: stdio, malloc, clocks, file reads, TLS and
 POSIX threads, with musl's Linux calls translated in userland onto OrangeOS
-calls. There is no C++ standard library, writable filesystem, or dynamic
-linking yet. Configurable orphan-process stress and emergency panic
+calls. C++20 programs link libc++, libc++abi and libunwind, with exceptions,
+RTTI, iostreams, `std::format`, thread-safe statics and `std::thread`. There
+is no writable filesystem or dynamic linking yet. Configurable orphan-process stress and emergency panic
 diagnostics track a still-unexplained intermittent kernel bounds panic.
 The modern browser engine, HTTPS and remaining runtime work are still tracked
 in the [browser runtime ledger](docs/design/008-browser.md). The new
@@ -386,6 +387,9 @@ at your option. `SPDX-License-Identifier: MIT OR Apache-2.0`
 
 C programs link musl 1.2.5 (MIT), compiled from the copy bundled with Zig;
 its copyright notice is installed at `/share/licenses/musl-COPYRIGHT.txt`.
+C++ programs link LLVM's libc++, libc++abi and libunwind (Apache-2.0 WITH
+LLVM-exception), from the same toolchain; their licenses are installed in
+`/share/licenses`.
 
 ---
 

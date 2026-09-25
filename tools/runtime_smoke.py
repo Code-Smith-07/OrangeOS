@@ -114,6 +114,10 @@ def main():
                     or "runtime: FAIL musl" in guest.log(), "a C11 program on musl", 60)
         assert "musl-probe: PASS stdio, formatting, malloc, qsort, clocks, files, TLS and 4 pthreads" in guest.log(), guest.log()[-2000:]
         print("PASS C11 program on musl: stdio, formatting, malloc, clocks, files, TLS and pthreads", flush=True)
+        guest.until(lambda: "runtime: PASS C++ program on libc++" in guest.log() or "cxx-probe: FAIL" in guest.log()
+                    or "runtime: FAIL libc++" in guest.log(), "a C++20 program on libc++", 60)
+        assert "cxx-probe: PASS iostreams, containers, format, exceptions, RTTI, thread-safe statics, threads and futures" in guest.log(), guest.log()[-2000:]
+        print("PASS C++20 program on libc++: iostreams, format, exceptions, RTTI, thread-safe statics and threads", flush=True)
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]

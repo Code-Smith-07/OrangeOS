@@ -44,6 +44,11 @@ cp assets/fonts/OFL-JetBrainsMono.txt "$ROOTFS/share/licenses/OFL-JetBrainsMono.
 # Zig toolchain; its notice ships with them.
 ZIG_LIB="$(zig env | python3 -c 'import json, sys; print(json.load(sys.stdin)["lib_dir"])')"
 cp "$ZIG_LIB/libc/musl/COPYRIGHT" "$ROOTFS/share/licenses/musl-COPYRIGHT.txt"
+# C++ programs link libc++, libc++abi and libunwind (Apache-2.0 WITH
+# LLVM-exception), from the same toolchain.
+for lib in libcxx libcxxabi libunwind; do
+    cp "$ZIG_LIB/$lib/LICENSE.TXT" "$ROOTFS/share/licenses/llvm-$lib-LICENSE.txt"
+done
 cp userland/servers/peel/assets/coastal-glass-1280.bmp "$ROOTFS/share/wallpapers/coastal-glass.bmp"
 cp userland/servers/peel/assets/citrus-atelier-1280.bmp "$ROOTFS/share/wallpapers/citrus-atelier.bmp"
 cp userland/servers/peel/assets/midnight-aurora-1280.bmp "$ROOTFS/share/wallpapers/midnight-aurora.bmp"
@@ -69,7 +74,7 @@ if [ ! -f zig-out/bin/init ]; then
 fi
 
 cp zig-out/bin/init "$ROOTFS/sbin/init"
-for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe cxx-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe tls-probe futex-probe futex-waiter thread-probe thread-exit-probe thread-fault-probe thread-last-probe net-thread-probe net-exit-probe tcp-probe jit-probe fault-wx musl-probe fault-null fault-ro fault-nx fault-opcode; do
+for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe cxx-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe tls-probe futex-probe futex-waiter thread-probe thread-exit-probe thread-fault-probe thread-last-probe net-thread-probe net-exit-probe tcp-probe jit-probe fault-wx musl-probe cxx-probe fault-null fault-ro fault-nx fault-opcode; do
     if [ -f "zig-out/bin/$prog" ]; then
         cp "zig-out/bin/$prog" "$ROOTFS/bin/$prog"
     fi
