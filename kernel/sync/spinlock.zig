@@ -1,12 +1,13 @@
 //! Spinlocks.
 //!
-//! Single-CPU for now, but the interrupt discipline matters immediately: if
-//! code holds a lock and a timer interrupt preempts it into code that wants
-//! the same lock, the machine deadlocks against itself. `acquireIrqSave`
-//! disables interrupts for the duration, which is the only safe way to take a
-//! lock that an interrupt handler also takes.
+//! The interrupt discipline matters as much as the atomics: if code holds a
+//! lock and a timer interrupt preempts it into code that wants the same lock,
+//! the CPU deadlocks against itself. `acquireIrqSave` disables interrupts for
+//! the duration, which is the only safe way to take a lock that an interrupt
+//! handler also takes.
 //!
-//! The atomic operations are already correct for SMP in Phase 8.
+//! The kernel is built with `single_threaded = false`, so these atomics carry
+//! LLVM's system (cross-CPU) scope rather than a single-thread one.
 
 const std = @import("std");
 const io = @import("../arch/x86_64/io.zig");
