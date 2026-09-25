@@ -43,6 +43,10 @@ const OR = struct {
     const statfs = 122;
     const pread = 123;
     const pwrite = 124;
+    const pipe = 130;
+    const dup = 131;
+    const fd_control = 132;
+    const eventfd = 133;
     const thread_create = 40;
     const thread_exit = 41;
     const gettid = 45;
@@ -112,6 +116,13 @@ const SYS = struct {
     const rt_sigaction = 13;
     const rt_sigprocmask = 14;
     const ioctl = 16;
+    const pipe = 22;
+    const dup = 32;
+    const dup2 = 33;
+    const eventfd = 284;
+    const eventfd2 = 290;
+    const dup3 = 292;
+    const pipe2 = 293;
     const pread64 = 17;
     const pwrite64 = 18;
     const readv = 19;
@@ -199,6 +210,8 @@ const O_EXCL: u64 = 0o200;
 const O_TRUNC: u64 = 0o1000;
 const O_APPEND: u64 = 0o2000;
 const O_DIRECTORY: u64 = 0o200000;
+const O_NONBLOCK: u64 = 0o4000;
+const O_CLOEXEC: u64 = 0o2000000;
 /// O_TMPFILE without its O_DIRECTORY bit.
 const O_TMPFILE_ONLY: u64 = 0o20000000;
 
@@ -210,6 +223,17 @@ const OPEN_EXCLUSIVE: u64 = 8;
 const OPEN_TRUNCATE: u64 = 16;
 const OPEN_APPEND: u64 = 32;
 const OPEN_DIRECTORY: u64 = 64;
+const OPEN_NONBLOCK: u64 = 128;
+const OPEN_CLOEXEC: u64 = 256;
+/// Flags of the native pipe, dup and eventfd calls.
+const FD_NONBLOCK: u64 = 1;
+const FD_CLOEXEC: u64 = 2;
+const EFD_SEMAPHORE: u64 = 4;
+
+/// O_NONBLOCK/O_CLOEXEC (as pipe2, eventfd2 and dup3 take them) to native.
+fn fdFlags(flags: u64) u64 {
+    return (if (flags & O_NONBLOCK != 0) FD_NONBLOCK else 0) | (if (flags & O_CLOEXEC != 0) FD_CLOEXEC else 0);
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -269,11 +293,18 @@ const Status = extern struct { size: u64, kind: u32, mode: u32 };
 const S_IFREG: u32 = 0o100000;
 const S_IFDIR: u32 = 0o040000;
 const S_IFCHR: u32 = 0o020000;
+const S_IFIFO: u32 = 0o010000;
+const S_IFSOCK: u32 = 0o140000;
 
+/// Native kinds: 1 file, 2 directory, 3 console, 4 pipe, 5 socket,
+/// 6 anonymous (eventfd, epoll), which Linux reports with no type bits.
 fn modeOf(kind: u32) u32 {
     return switch (kind) {
         2 => S_IFDIR | 0o755,
         3 => S_IFCHR | 0o620,
+        4 => S_IFIFO | 0o600,
+        5 => S_IFSOCK | 0o777,
+        6 => 0o600,
         else => S_IFREG | 0o644,
     };
 }
@@ -564,7 +595,19 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
             break :blk 0;
         },
         SYS.ioctl => ioctl(a, b, c),
-        SYS.fcntl => fcntl(a, b),
+        SYS.fcntl => fcntl(a, b, c),
+        SYS.pipe => raw2(OR.pipe, a, 0),
+        SYS.pipe2 => if (b & ~(O_NONBLOCK | O_CLOEXEC) != 0) err(E.INVAL) else raw2(OR.pipe, a, fdFlags(b)),
+        SYS.dup => raw3(OR.dup, a, std.math.maxInt(u64), 0),
+        SYS.dup2 => raw3(OR.dup, a, b, 0),
+        // dup3 differs from dup2 only in refusing old == new.
+        SYS.dup3 => if (a == b or c & ~O_CLOEXEC != 0) err(E.INVAL) else raw3(OR.dup, a, b, fdFlags(c)),
+        SYS.eventfd => raw2(OR.eventfd, a, 0),
+        SYS.eventfd2 => blk: {
+            const semaphore: u64 = 1; // EFD_SEMAPHORE
+            if (b & ~(O_NONBLOCK | O_CLOEXEC | semaphore) != 0) break :blk err(E.INVAL);
+            break :blk raw2(OR.eventfd, a, fdFlags(b) | (if (b & semaphore != 0) EFD_SEMAPHORE else 0));
+        },
         SYS.sched_yield => raw0(OR.yield),
         SYS.nanosleep => blk: {
             const ts: *const Timespec = @ptrFromInt(a);
@@ -657,6 +700,8 @@ fn openPath(dirfd: i64, path_address: u64, flags: u64) i64 {
     if (flags & O_TRUNC != 0) native |= OPEN_TRUNCATE;
     if (flags & O_APPEND != 0) native |= OPEN_APPEND;
     if (flags & O_DIRECTORY != 0) native |= OPEN_DIRECTORY;
+    if (flags & O_NONBLOCK != 0) native |= OPEN_NONBLOCK;
+    if (flags & O_CLOEXEC != 0) native |= OPEN_CLOEXEC;
     // The mode is ignored: no filesystem has permissions yet.
     var buffer: [256]u8 = undefined;
     return switch (pathAt(dirfd, path_address, &buffer)) {
@@ -782,30 +827,57 @@ fn mmap(address: u64, length: u64, prot: u64, flags: u64, fd: i64, offset: u64) 
 }
 
 fn ioctl(fd: u64, request: u64, argument: u64) i64 {
-    // The console and terminals answer TIOCGWINSZ, so stdio line-buffers
-    // them; nothing else is a terminal.
-    if (request == 0x5413 and fd <= 2) {
-        const size: *[4]u16 = @ptrFromInt(argument);
-        size.* = .{ 25, 80, 0, 0 };
-        return 0;
-    }
-    return err(E.NOTTY);
-}
-
-fn fcntl(fd: u64, command: u64) i64 {
-    return switch (command) {
-        1 => 0, // F_GETFD
-        2 => 0, // F_SETFD: descriptors are never inherited, so close-on-exec holds
-        3 => blk: { // F_GETFL: the access mode the descriptor was opened with
+    switch (request) {
+        // TIOCGWINSZ: the console and terminals answer, so stdio line-buffers
+        // them; nothing else is a terminal.
+        0x5413 => {
             var status: Status = undefined;
             const r = raw2(OR.fstat, fd, @intFromPtr(&status));
-            if (r < 0) break :blk r;
-            const read = status.mode & OPEN_READ != 0;
-            const write = status.mode & OPEN_WRITE != 0;
-            const access: i64 = if (read and write) O_RDWR else if (write) O_WRONLY else 0;
-            break :blk access | (if (status.mode & OPEN_APPEND != 0) @as(i64, O_APPEND) else 0);
+            if (r < 0) return r;
+            if (status.kind != 3) return err(E.NOTTY);
+            const size: *[4]u16 = @ptrFromInt(argument);
+            size.* = .{ 25, 80, 0, 0 };
+            return 0;
         },
-        4 => 0, // F_SETFL
+        // FIONBIO: set or clear nonblocking mode.
+        0x5421 => {
+            const on = @as(*const c_int, @ptrFromInt(argument)).* != 0;
+            const flags = raw3(OR.fd_control, fd, 4, 0);
+            if (flags < 0) return flags;
+            const status: u64 = @intCast(flags);
+            return raw3(OR.fd_control, fd, 5, if (on) status | OPEN_NONBLOCK else status & ~OPEN_NONBLOCK);
+        },
+        else => return err(E.NOTTY),
+    }
+}
+
+const F_DUPFD = 0;
+const F_GETFD = 1;
+const F_SETFD = 2;
+const F_GETFL = 3;
+const F_SETFL = 4;
+const F_DUPFD_CLOEXEC = 1030;
+const FD_CLOEXEC_BIT = 1;
+
+fn fcntl(fd: u64, command: u64, argument: u64) i64 {
+    return switch (command) {
+        F_DUPFD => raw3(OR.fd_control, fd, 0, argument),
+        F_DUPFD_CLOEXEC => raw3(OR.fd_control, fd, 1, argument),
+        F_GETFD => raw3(OR.fd_control, fd, 2, 0),
+        F_SETFD => raw3(OR.fd_control, fd, 3, argument & FD_CLOEXEC_BIT),
+        F_GETFL => blk: {
+            const flags = raw3(OR.fd_control, fd, 4, 0);
+            if (flags < 0) break :blk flags;
+            const status: u64 = @intCast(flags);
+            const read = status & OPEN_READ != 0;
+            const write = status & OPEN_WRITE != 0;
+            var linux: u64 = if (read and write) O_RDWR else if (write) O_WRONLY else 0;
+            if (status & OPEN_APPEND != 0) linux |= O_APPEND;
+            if (status & OPEN_NONBLOCK != 0) linux |= O_NONBLOCK;
+            break :blk @intCast(linux);
+        },
+        F_SETFL => raw3(OR.fd_control, fd, 5, (if (argument & O_APPEND != 0) OPEN_APPEND else 0) |
+            (if (argument & O_NONBLOCK != 0) OPEN_NONBLOCK else 0)),
         else => err(E.INVAL),
     };
 }

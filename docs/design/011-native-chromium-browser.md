@@ -446,7 +446,7 @@ named hold the evidence.
 | # | Item | Status |
 |---|---|---|
 | A1 | Browser-scale task table and per-program thread capacity | Done (§11.38) |
-| A2 | Pipes, `socketpair`/Unix sockets with descriptor passing, `poll`/`epoll`, `eventfd` | In progress |
+| A2 | Pipes, `socketpair`/Unix sockets with descriptor passing, `poll`/`epoll`, `eventfd` | Descriptions, `dup`, pipes and `eventfd` done (§11.39); `epoll`/`poll`, `socketpair` in progress |
 | A3 | POSIX process launch (`posix_spawn`: argv, environment, inherited descriptors), `chdir`, `*at()` relative to directory descriptors | To do |
 | A4 | Shared memory by descriptor (`memfd`, `mmap(MAP_SHARED)`), file mappings | To do |
 | A5 | V8/PartitionAlloc memory: `MAP_FIXED` and hints within reservations, alignment, `madvise(DONTNEED)`, `mremap` | Region capacity and arena size done (§11.38); the rest to do |
@@ -1694,6 +1694,63 @@ plus the desktop and Files suites.
 Still missing for V8 and PartitionAlloc: placement hints and `MAP_FIXED`
 within a program's own reservations, alignment of large reservations,
 `madvise(MADV_DONTNEED)` with zero-fill, and `mremap`.
+
+### 11.39 Open file descriptions, pipes and eventfd
+
+This is the first part of item A2, the plumbing under Chromium's message loop
+and Mojo IPC.
+
+**Descriptions.** Descriptors moved out of the VFS into `kernel/fs/fd.zig`.
+A descriptor now refers to a reference-counted *open file description*: the
+object (a file or directory node with its offset, a pipe end, an eventfd)
+plus its access mode and status flags. `dup`, `dup2`/`dup3` and `F_DUPFD`
+share a description, so duplicates share the offset and `O_NONBLOCK`/
+`O_APPEND`; close-on-exec belongs to the descriptor slot. The last reference
+closes the object, which is when a pipe reader sees end of file.
+- Each program has 256 descriptors (was 32).
+- Descriptors 0–2 stay the console unless a description is installed there
+  with `dup2`. Duplicating the console itself arrives with process launch
+  (A3), which needs console descriptions.
+- Blocking pipe and eventfd I/O runs with interrupts enabled, registers its
+  wait before checking state (no lost wakeups), and is interrupted when its
+  program exits.
+
+**Pipes** (`kernel/ipc/pipe.zig`): 64 KiB. Writes of up to 4096 bytes
+(`PIPE_BUF`) are atomic among concurrent writers. End of file comes after the
+last writer closes, and `EPIPE` when no reader is left (no signals, so no
+`SIGPIPE`).
+
+**eventfd** (`kernel/ipc/eventfd.zig`): counter and semaphore modes, as Linux
+defines them.
+
+**Readiness.** Each pipe end and eventfd carries a readiness source
+(`kernel/ipc/readiness.zig`). Watchers attached there are detached when the
+end's description closes, so the coming `epoll` never holds a dangling or
+EOF-hiding reference.
+
+System calls: `pipe` (130), `dup` (131), `fd_control` (132: DUPFD,
+DUPFD_CLOEXEC, GETFD/SETFD, GETFL/SETFL) and `eventfd` (133). `open` accepts
+nonblocking and close-on-exec, and `fstat` reports pipes, sockets and
+anonymous objects. musl translates `pipe`/`pipe2`, `dup`/`dup2`/`dup3`,
+`fcntl`, `eventfd`/`eventfd2`, `ioctl(FIONBIO)`, and `O_NONBLOCK`/`O_CLOEXEC`.
+`TIOCGWINSZ` now answers only for a real console, not for a redirected
+descriptor 0–2.
+
+Verified on 2026-09-25: full runtime suite (52 checks) on two and four
+vCPUs, kernel filesystem tests (23), and the desktop and Files suites.
+`/bin/pipe-probe` (C, `-Werror`) checks:
+- round trip, `S_ISFIFO`, `ESPIPE` from `lseek`, end of file and `EPIPE`;
+- `pipe2` flags, `EAGAIN` on an empty pipe, and exactly 64 KiB of capacity;
+- a 1 MiB stream verified byte for byte between threads;
+- 4 threads × 2,000 64-byte records with none interleaved or reordered;
+- eventfd sums, semaphore mode, `EAGAIN`, and a blocking read woken by
+  another thread;
+- `dup` sharing an offset, `dup2` to a chosen number and onto itself, `dup3`
+  refusing that, `F_DUPFD_CLOEXEC`, per-descriptor close-on-exec, and a shared
+  `O_NONBLOCK` status;
+- 253 descriptors then `EMFILE`, with reuse from the lowest free.
+
+`fd-probe` now fills all 253 slots.
 
 ## 12. Security updates and distribution
 

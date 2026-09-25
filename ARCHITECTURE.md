@@ -1344,6 +1344,11 @@ collection records, at most 256 programs, and at most 512 live threads per
 program; `spawn` fails with `-ENOMEM` and `thread_create` with `-EAGAIN` beyond
 them.
 
+Descriptors (2026-09-25): 256 per program. Each refers to a reference-counted
+open file description (file with offset, pipe end, eventfd) that `dup` shares;
+close-on-exec is per descriptor. Descriptors 0–2 are the console unless a
+description is installed there with `dup`.
+
 Filesystems (2026-09-25): the CitrusFS root is read-only; a tmpfs mounted at
 `/tmp` holds writable files and directories in memory, up to a quarter of
 physical memory. Paths are normalized (`.`, `..`, repeated slashes) before
@@ -1381,15 +1386,15 @@ link musl 1.2.5, whose Linux-numbered calls are translated in userland by
 | 18 | `user_wait` | `(aligned_u32_ptr, expected, timeout_ms) → !void`; 0 timeout means indefinite | P4 runtime |
 | 19 | `user_wake` | `(aligned_u32_ptr, max_count) → woken` | P4 runtime |
 | | **── File I/O ──** | | |
-| 20 | `open` | `(path_ptr, path_len, flags) → fd` (implemented; flags 1 read, 2 write, 4 create, 8 exclusive, 16 truncate, 32 append, 64 directory; neither 1 nor 2 means read-only) | P5 |
+| 20 | `open` | `(path_ptr, path_len, flags) → fd` (implemented; flags 1 read, 2 write, 4 create, 8 exclusive, 16 truncate, 32 append, 64 directory, 128 nonblocking, 256 close-on-exec; neither 1 nor 2 means read-only) | P5 |
 | 21 | `close` | `(fd) → !void` | P5 |
 | 22 | `read` | `(fd, buf, len) → count` | P5 |
 | 23 | `write` | `(fd, buf, len) → count` — call 1 in the implementation; files opened for writing as well as the console (implemented) | P5 |
 | 24 | `seek` | `(fd, off, whence) → off` (implemented; whence 0/1/2 = set/current/end) | P5 |
 | 25 | `stat` | `(path_ptr, path_len, *status) → !void` (implemented; status is `{size: u64, kind: u32, mode: u32}`, kind 1 file, 2 directory, 3 console; mode has bit 2 when the filesystem is writable) | P5 |
-| 26 | `fstat` | `(fd, *status) → !void` (implemented; fds 0–2 report a console; mode is the descriptor's open access: 1 read, 2 write, 32 append) | P5 |
-| 27 | `dup` / `dup2` | `(fd[, newfd]) → fd` | P5 |
-| 28 | `pipe` | `(*[2]fd) → !void` | P5 |
+| 26 | `fstat` | `(fd, *status) → !void` (implemented; kind 1 file, 2 directory, 3 console, 4 pipe, 5 socket, 6 anonymous; mode is the description's status: 1 read, 2 write, 32 append, 128 nonblocking) | P5 |
+| 27 | `dup` / `dup2` | superseded by call 131 | P5 |
+| 28 | `pipe` | superseded by call 130 | P5 |
 | 29 | `ioctl` | `(fd, req, arg) → !isize` | P5 |
 | | **── Directories ──** | | |
 | 30 | `mkdir` | `(path_ptr, path_len) → !void` (implemented, /tmp only) | P5 |
@@ -1406,6 +1411,10 @@ link musl 1.2.5, whose Linux-numbered calls are translated in userland by
 | 122 | `statfs` | `(path_ptr, path_len, *{total_bytes, free_bytes, read_only: u32, reserved: u32}) → !void` (implemented) | P5 runtime |
 | 123 | `pread` | `(fd, buf, len, offset) → count` — leaves the descriptor offset alone (implemented) | P5 runtime |
 | 124 | `pwrite` | `(fd, buf, len, offset) → count` (implemented) | P5 runtime |
+| 130 | `pipe` | `(*[2]i32, flags) → !void` — 64 KiB, writes ≤ 4096 bytes atomic; flags 1 nonblocking, 2 close-on-exec (implemented) | P5 runtime |
+| 131 | `dup` | `(old, new, flags) → fd` — `new` = -1 takes the lowest free descriptor ≥ 3, otherwise exactly `new` (dup2); flag 2 close-on-exec (implemented) | P5 runtime |
+| 132 | `fd_control` | `(fd, cmd, arg) → value` — 0 DUPFD, 1 DUPFD_CLOEXEC, 2 GETFD, 3 SETFD, 4 GETFL, 5 SETFL (append, nonblocking) (implemented) | P5 runtime |
+| 133 | `eventfd` | `(initial, flags) → fd` — flags 1 nonblocking, 2 close-on-exec, 4 semaphore (implemented) | P5 runtime |
 | | **── Threads ──** | | |
 | 40 | `thread_create` | `(entry, stack, arg, tls_base, exit_word) → tid` (implemented; `entry(arg)` in ring 3, kernel stores 0 to `exit_word` and wakes it at thread exit) | P4 runtime |
 | 41 | `thread_exit` | `(status) noreturn` — ends the calling thread; the last thread's status becomes the program's (implemented) | P4 runtime |

@@ -321,6 +321,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "musl-probe", .sources = &.{"userland/bin/musl-probe/probe.c"} },
         .{ .name = "file-probe", .sources = &.{"userland/bin/file-probe/probe.c"} },
         .{ .name = "thread-capacity", .sources = &.{"userland/bin/thread-capacity/probe.c"} },
+        .{ .name = "pipe-probe", .sources = &.{"userland/bin/pipe-probe/probe.c"} },
     };
     for (c_programs) |program| {
         const mod = b.createModule(.{
