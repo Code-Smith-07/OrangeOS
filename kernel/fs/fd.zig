@@ -20,6 +20,7 @@ const vfs = @import("vfs/vfs.zig");
 const pipe = @import("../ipc/pipe.zig");
 const eventfd = @import("../ipc/eventfd.zig");
 const readiness = @import("../ipc/readiness.zig");
+const epoll = @import("../ipc/epoll.zig");
 
 pub const Error = vfs.Error;
 pub const MAX_OPEN = 256;
@@ -32,6 +33,7 @@ pub const Object = union(enum) {
     pipe_read: *pipe.Pipe,
     pipe_write: *pipe.Pipe,
     eventfd: *eventfd.EventFd,
+    epoll: *epoll.Epoll,
 };
 
 pub const NodeFile = struct { node: vfs.Node, offset: u64 = 0 };
@@ -73,6 +75,7 @@ pub const Description = struct {
             .pipe_read => |p| pipe.closeEnd(p, false),
             .pipe_write => |p| pipe.closeEnd(p, true),
             .eventfd => |e| eventfd.destroy(e),
+            .epoll => |ep| epoll.destroy(ep),
         }
         heap.destroy(self);
     }
@@ -85,10 +88,12 @@ pub const Description = struct {
         return self.statusFlags() & vfs.OPEN_NONBLOCK != 0;
     }
 
-    /// The readiness source for epoll, if this object has one.
+    /// The readiness source for epoll, if this object has one. Files are
+    /// always ready and have none (epoll refuses them, as Linux does);
+    /// nesting epoll instances is not supported.
     pub fn source(self: *Description) ?*readiness.Source {
         return switch (self.object) {
-            .node => null,
+            .node, .epoll => null,
             .pipe_read => |p| pipe.source(p, false),
             .pipe_write => |p| pipe.source(p, true),
             .eventfd => |e| &e.source,
@@ -335,7 +340,7 @@ pub fn read(desc: *Description, buf: []u8) Error!usize {
         },
         .pipe_read => |p| return pipe.read(p, buf, desc.nonblocking()) catch |e| pipeError(e),
         .eventfd => |e| return eventfd.read(e, buf, desc.nonblocking()) catch |err| eventError(err),
-        .pipe_write => return Error.BadFd,
+        .pipe_write, .epoll => return Error.BadFd,
     }
 }
 
@@ -353,7 +358,7 @@ pub fn write(desc: *Description, data: []const u8) Error!usize {
         },
         .pipe_write => |p| return pipe.write(p, data, desc.nonblocking()) catch |e| pipeError(e),
         .eventfd => |e| return eventfd.write(e, data, desc.nonblocking()) catch |err| eventError(err),
-        .pipe_read => return Error.BadFd,
+        .pipe_read, .epoll => return Error.BadFd,
     }
 }
 
@@ -421,7 +426,49 @@ pub fn stat(desc: *Description) Status {
         },
         .pipe_read => |p| .{ .size = pipe.bytesAvailable(p), .kind = .pipe, .mode = mode },
         .pipe_write => .{ .size = 0, .kind = .pipe, .mode = mode },
-        .eventfd => .{ .size = 0, .kind = .anonymous, .mode = mode },
+        .eventfd, .epoll => .{ .size = 0, .kind = .anonymous, .mode = mode },
+    };
+}
+
+/// Current readiness as poll/epoll event bits.
+pub fn readinessOf(desc: *Description) u32 {
+    return switch (desc.object) {
+        // Regular files and directories never block.
+        .node => epoll.IN | epoll.RDNORM | epoll.OUT | epoll.WRNORM,
+        .pipe_read => |p| blk: {
+            const r = pipe.poll(p);
+            var bits: u32 = 0;
+            if (r.readable) bits |= epoll.IN | epoll.RDNORM;
+            if (r.hangup) bits |= epoll.HUP | epoll.RDHUP;
+            break :blk bits;
+        },
+        .pipe_write => |p| blk: {
+            const r = pipe.poll(p);
+            var bits: u32 = 0;
+            if (r.writable) bits |= epoll.OUT | epoll.WRNORM;
+            if (r.peer_closed) bits |= epoll.ERR;
+            break :blk bits;
+        },
+        .eventfd => |e| blk: {
+            const r = eventfd.poll(e);
+            var bits: u32 = 0;
+            if (r.readable) bits |= epoll.IN | epoll.RDNORM;
+            if (r.writable) bits |= epoll.OUT | epoll.WRNORM;
+            break :blk bits;
+        },
+        .epoll => 0,
+    };
+}
+
+pub fn createEpoll(table: *FileTable, cloexec: bool) Error!i32 {
+    const ep = epoll.create() catch return Error.OutOfMemory;
+    const desc = Description.create(.{ .epoll = ep }, vfs.OPEN_READ) catch {
+        epoll.destroy(ep);
+        return Error.OutOfMemory;
+    };
+    return install(table, desc, FD_BASE, cloexec) catch |e| {
+        desc.release();
+        return e;
     };
 }
 

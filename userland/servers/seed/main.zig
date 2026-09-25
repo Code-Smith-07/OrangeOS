@@ -180,6 +180,13 @@ export fn _start() callconv(.c) noreturn {
             pulp.exit(189);
         }
         pulp.puts("runtime: PASS pipes, eventfd and descriptor duplication\n");
+        const epoll_program = pulp.spawn("/bin/epoll-probe") catch pulp.exit(190);
+        const epoll_code = pulp.wait(epoll_program) catch pulp.exit(191);
+        if (epoll_code != 0) {
+            pulp.print("runtime: FAIL readiness exit {d}\n", .{epoll_code});
+            pulp.exit(192);
+        }
+        pulp.puts("runtime: PASS epoll, poll and select\n");
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.
         for (0..2) |_| {

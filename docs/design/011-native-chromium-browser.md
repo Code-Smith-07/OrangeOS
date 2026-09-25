@@ -446,7 +446,7 @@ named hold the evidence.
 | # | Item | Status |
 |---|---|---|
 | A1 | Browser-scale task table and per-program thread capacity | Done (§11.38) |
-| A2 | Pipes, `socketpair`/Unix sockets with descriptor passing, `poll`/`epoll`, `eventfd` | Descriptions, `dup`, pipes and `eventfd` done (§11.39); `epoll`/`poll`, `socketpair` in progress |
+| A2 | Pipes, `socketpair`/Unix sockets with descriptor passing, `poll`/`epoll`, `eventfd` | Descriptions, `dup`, pipes, `eventfd` (§11.39) and `epoll`/`poll`/`select` (§11.40) done; `socketpair` with descriptor passing in progress |
 | A3 | POSIX process launch (`posix_spawn`: argv, environment, inherited descriptors), `chdir`, `*at()` relative to directory descriptors | To do |
 | A4 | Shared memory by descriptor (`memfd`, `mmap(MAP_SHARED)`), file mappings | To do |
 | A5 | V8/PartitionAlloc memory: `MAP_FIXED` and hints within reservations, alignment, `madvise(DONTNEED)`, `mremap` | Region capacity and arena size done (§11.38); the rest to do |
@@ -1751,6 +1751,53 @@ vCPUs, kernel filesystem tests (23), and the desktop and Files suites.
 - 253 descriptors then `EMFILE`, with reuse from the lowest free.
 
 `fd-probe` now fills all 253 slots.
+
+### 11.40 epoll, poll and select
+
+This is the second part of item A2. Chromium's Linux message pump waits in
+`epoll_wait` and is woken through an eventfd; other code uses `poll`.
+
+**epoll** (`kernel/ipc/epoll.zig`): an instance holds interests keyed by
+(descriptor number, description), as Linux keys them.
+- Each interest is a watcher on its object's readiness source (§11.39). A
+  notification marks it pending and wakes the instance's waiters, and
+  `epoll_wait` re-checks the real state of every interest.
+- That gives level-triggered reporting. `EPOLLET` reports only interests
+  notified since their last report; `EPOLLONESHOT` disables an interest
+  until `EPOLL_CTL_MOD` re-arms it.
+- Interests hold no reference on their description. When the description
+  closes, the watcher is detached and the interest dropped, so closing a
+  descriptor removes it from epoll sets without keeping a pipe end (and its
+  end-of-file) alive.
+- Regular files are refused with `EPERM`, as Linux does. Nesting epoll
+  instances is not supported.
+
+**poll** attaches the same watchers for the duration of one call, holding a
+reference on each description meanwhile. A negative descriptor is ignored,
+and an invalid one reports `POLLNVAL`. The console behind 0–2 reports
+writable output; console input readiness is not tracked yet.
+
+musl translates `epoll_create(1)`, `epoll_ctl`, `epoll_wait`/`epoll_pwait`/
+`epoll_pwait2`, `poll` and `ppoll`. `select` and `pselect6` are rebuilt on
+top of `poll`. The signal masks of the `p` variants change nothing, since no
+signal is ever delivered. Native calls: 134–137.
+
+Verified on 2026-09-25: full runtime suite (53 checks) on two and four vCPUs,
+plus the desktop and Files suites. `/bin/epoll-probe` (C, `-Werror`) checks:
+- level-triggered repeats with 64-bit user data;
+- edge-triggered reports only for new arrivals, and oneshot with re-arming;
+- `EEXIST`, `ENOENT`, `EPERM` for a regular file, and `EINVAL` for a
+  non-epoll descriptor or the instance itself;
+- `EPOLLOUT` following free space;
+- `EPOLLHUP` after the last writer and `EPOLLERR` after the last reader;
+- closed descriptors dropping out, so a reused number adds cleanly;
+- a blocking wait woken by another thread after 30 ms, and a 50 ms timeout;
+- Chromium's pump pattern: 100 eventfd wakeups from another thread, drained
+  on each report;
+- 64 edge-triggered pipes with the right ones reported in batches;
+- `poll`: `POLLNVAL`, a blocking wake, `POLLHUP`, and `poll(NULL, 0, 20)` as a
+  sleep;
+- `select` with and without a ready descriptor.
 
 ## 12. Security updates and distribution
 

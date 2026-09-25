@@ -10,6 +10,8 @@ const validate = @import("validate.zig");
 const vmm = @import("../mm/vmm.zig");
 const vfs = @import("../fs/vfs/vfs.zig");
 const fd_mod = @import("../fs/fd.zig");
+const epoll = @import("../ipc/epoll.zig");
+const heap = @import("../mm/heap.zig");
 const serial = @import("../drivers/char/serial.zig");
 const io = @import("../arch/x86_64/io.zig");
 const process = @import("../sched/process.zig");
@@ -94,6 +96,10 @@ pub const Nr = enum(u64) {
     dup = 131,
     fd_control = 132,
     eventfd = 133,
+    epoll_create = 134,
+    epoll_ctl = 135,
+    epoll_wait = 136,
+    poll = 137,
     readdir = 34,
     readdir_page = 38,
     port_create = 50,
@@ -151,6 +157,7 @@ const EFBIG: i64 = -27;
 const EBUSY: i64 = -16;
 const ESPIPE: i64 = -29;
 const EPIPE: i64 = -32;
+const EPERM: i64 = -1;
 const ENOMEM: i64 = -12;
 /// The calling program is exiting; a blocked call gave up.
 const EINTR: i64 = -4;
@@ -181,6 +188,10 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .dup => sysDup(frame.rdi, frame.rsi, frame.rdx),
         .fd_control => sysFdControl(frame.rdi, frame.rsi, frame.rdx),
         .eventfd => sysEventFd(frame.rdi, frame.rsi),
+        .epoll_create => sysEpollCreate(frame.rdi),
+        .epoll_ctl => sysEpollCtl(frame.rdi, frame.rsi, frame.rdx, frame.r10),
+        .epoll_wait => sysEpollWait(frame.rdi, frame.rsi, frame.rdx, frame.r10),
+        .poll => sysPoll(frame.rdi, frame.rsi, frame.rdx),
         .close => sysClose(frame.rdi),
         .read => sysRead(frame.rdi, frame.rsi, frame.rdx),
         .spawn => sysSpawn(frame.rdi, frame.rsi),
@@ -732,6 +743,124 @@ fn sysFdControl(fd: u64, command: u64, arg: u64) i64 {
         5 => if (fd_mod.setStatus(&proc.files, n, @truncate(arg))) |_| 0 else |e| vfsErrno(e),
         else => EINVAL,
     };
+}
+
+// ── Readiness: epoll and poll ───────────────────────────────────────────────
+
+fn epollErrno(e: epoll.Error) i64 {
+    return switch (e) {
+        epoll.Error.BadFd => EBADF,
+        epoll.Error.Exists => EEXIST,
+        epoll.Error.NotFound => ENOENT,
+        epoll.Error.NotPermitted => EPERM,
+        epoll.Error.InvalidArgument => EINVAL,
+        epoll.Error.OutOfMemory => ENOMEM,
+        epoll.Error.Interrupted => EINTR,
+    };
+}
+
+fn sysEpollCreate(flags: u64) i64 {
+    if (flags & ~FD_CLOEXEC != 0) return EINVAL;
+    const proc = sched.currentProcess() orelse return EIO;
+    return fd_mod.createEpoll(&proc.files, flags & FD_CLOEXEC != 0) catch |e| vfsErrno(e);
+}
+
+/// The epoll instance behind `epfd`, referenced through its description.
+fn epollOf(epfd: u64) error{ BadFd, NotEpoll }!struct { desc: *fd_mod.Description, ep: *epoll.Epoll } {
+    const desc = descriptionOf(epfd) orelse return error.BadFd;
+    switch (desc.object) {
+        .epoll => |ep| return .{ .desc = desc, .ep = ep },
+        else => {
+            desc.release();
+            return error.NotEpoll;
+        },
+    }
+}
+
+/// epoll_event is packed on x86-64: u32 events, then u64 data (12 bytes).
+const EPOLL_EVENT_SIZE = 12;
+
+fn sysEpollCtl(epfd: u64, op: u64, target: u64, event_ptr: u64) i64 {
+    const instance = epollOf(epfd) catch |e| return if (e == error.BadFd) EBADF else EINVAL;
+    defer instance.desc.release();
+    if (op < 1 or op > 3) return EINVAL;
+    if (target == epfd) return EINVAL;
+    const desc = descriptionOf(target) orelse return EBADF;
+    defer desc.release();
+    var interest: epoll.Event = .{ .events = 0, .data = 0 };
+    if (op != 2) {
+        var raw: [EPOLL_EVENT_SIZE]u8 = undefined;
+        validate.copyFromUser(vmm.currentCr3(), &raw, event_ptr, EPOLL_EVENT_SIZE) catch return EFAULT;
+        interest = .{ .events = std.mem.readInt(u32, raw[0..4], .little), .data = std.mem.readInt(u64, raw[4..12], .little) };
+    }
+    epoll.control(instance.ep, @enumFromInt(op), @intCast(target), desc, interest) catch |e| return epollErrno(e);
+    return 0;
+}
+
+/// At most this many events per call; a caller asking for more gets fewer.
+const EPOLL_BATCH = 128;
+
+fn sysEpollWait(epfd: u64, out: u64, max: u64, timeout: u64) i64 {
+    if (max == 0 or max > std.math.maxInt(i32)) return EINVAL;
+    const instance = epollOf(epfd) catch |e| return if (e == error.BadFd) EBADF else EINVAL;
+    defer instance.desc.release();
+    var events: [EPOLL_BATCH]epoll.Event = undefined;
+    const want: usize = @intCast(@min(max, EPOLL_BATCH));
+    io.sti();
+    defer io.cli();
+    const ready = epoll.wait(instance.ep, events[0..want], @bitCast(timeout)) catch |e| return epollErrno(e);
+    var raw: [EPOLL_BATCH * EPOLL_EVENT_SIZE]u8 = undefined;
+    for (events[0..ready], 0..) |item, i| {
+        const at = raw[i * EPOLL_EVENT_SIZE ..][0..EPOLL_EVENT_SIZE];
+        std.mem.writeInt(u32, at[0..4], item.events, .little);
+        std.mem.writeInt(u64, at[4..12], item.data, .little);
+    }
+    const bytes = ready * EPOLL_EVENT_SIZE;
+    validate.copyToUser(vmm.currentCr3(), out, raw[0..bytes], bytes) catch return EFAULT;
+    return @intCast(ready);
+}
+
+/// struct pollfd: i32 fd, i16 events, i16 revents.
+const POLLFD_SIZE = 8;
+const MAX_POLL = 1024;
+
+fn sysPoll(fds_ptr: u64, nfds: u64, timeout: u64) i64 {
+    if (nfds > MAX_POLL) return EINVAL;
+    const proc = sched.currentProcess() orelse return EIO;
+    const n: usize = @intCast(nfds);
+    if (n == 0) {
+        // A plain sleep.
+        const ms: i64 = @bitCast(timeout);
+        if (ms > 0) {
+            io.sti();
+            defer io.cli();
+            sched.sleepMs(@intCast(ms));
+        }
+        return 0;
+    }
+    const raw = heap.alloc(n * POLLFD_SIZE) catch return ENOMEM;
+    defer heap.free(raw);
+    validate.copyFromUser(vmm.currentCr3(), raw[0 .. n * POLLFD_SIZE], fds_ptr, n * POLLFD_SIZE) catch return EFAULT;
+    const entries_raw = heap.alloc(n * @sizeOf(epoll.PollEntry)) catch return ENOMEM;
+    defer heap.free(entries_raw);
+    const entries: [*]epoll.PollEntry = @ptrCast(@alignCast(entries_raw));
+    for (0..n) |i| {
+        const at = raw[i * POLLFD_SIZE ..][0..POLLFD_SIZE];
+        entries[i] = .{
+            .number = std.mem.readInt(i32, at[0..4], .little),
+            .requested = std.mem.readInt(u16, at[4..6], .little),
+        };
+    }
+    io.sti();
+    const ready = epoll.poll(&proc.files, entries[0..n], @bitCast(timeout));
+    io.cli();
+    const result = ready catch |e| return epollErrno(e);
+    for (0..n) |i| {
+        const at = raw[i * POLLFD_SIZE ..][0..POLLFD_SIZE];
+        std.mem.writeInt(u16, at[6..8], @truncate(entries[i].returned), .little);
+    }
+    validate.copyToUser(vmm.currentCr3(), fds_ptr, raw[0 .. n * POLLFD_SIZE], n * POLLFD_SIZE) catch return EFAULT;
+    return @intCast(result);
 }
 
 fn sysEventFd(initial: u64, flags: u64) i64 {
