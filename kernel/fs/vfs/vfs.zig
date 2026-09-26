@@ -16,6 +16,7 @@ const std = @import("std");
 const block = @import("../../drivers/block/block.zig");
 const citrusfs = @import("../citrusfs/citrusfs.zig");
 const tmpfs = @import("../tmpfs/tmpfs.zig");
+const random = @import("../../lib/random.zig");
 const console = @import("../../console.zig");
 const spinlock = @import("../../sync/spinlock.zig");
 
@@ -51,10 +52,24 @@ pub const MAX_PATH = 256;
 
 /// Where the tmpfs is mounted.
 const TMP_MOUNT = "/tmp";
+/// Where the device nodes are.
+const DEV_MOUNT = "/dev";
+
+/// The device files: /dev itself and what it holds.
+pub const Device = enum {
+    root,
+    null,
+    zero,
+    random,
+    urandom,
+
+    const files = [_]Device{ .null, .zero, .random, .urandom };
+};
 
 pub const Node = union(enum) {
     citrus: Citrus,
     tmp: *tmpfs.Inode,
+    device: Device,
 
     pub const Citrus = struct { inode_num: u32, inode: citrusfs.Inode };
 
@@ -62,6 +77,7 @@ pub const Node = union(enum) {
         return switch (self.*) {
             .citrus => |c| c.inode.isDir(),
             .tmp => |t| tmpfs.isDir(t),
+            .device => |d| d == .root,
         };
     }
 
@@ -69,11 +85,16 @@ pub const Node = union(enum) {
         return switch (self.*) {
             .citrus => |c| c.inode.size,
             .tmp => |t| tmpfs.size(t),
+            .device => 0,
         };
     }
 
     pub fn writable(self: *const Node) bool {
-        return self.* == .tmp;
+        return switch (self.*) {
+            .tmp => true,
+            .device => |d| d != .root,
+            .citrus => false,
+        };
     }
 };
 
@@ -147,6 +168,19 @@ fn tmpRelative(path: []const u8) ?[]const u8 {
     return path[TMP_MOUNT.len + 1 ..];
 }
 
+fn deviceRelative(path: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, path, DEV_MOUNT)) return null;
+    if (path.len == DEV_MOUNT.len) return "";
+    if (path[DEV_MOUNT.len] != '/') return null;
+    return path[DEV_MOUNT.len + 1 ..];
+}
+
+fn deviceNamed(name: []const u8) Error!Device {
+    if (name.len == 0) return .root;
+    for (Device.files) |device| if (std.mem.eql(u8, name, @tagName(device))) return device;
+    return Error.NotFound;
+}
+
 fn tmpError(e: tmpfs.Error) Error {
     return switch (e) {
         tmpfs.Error.NotFound => Error.NotFound,
@@ -190,6 +224,7 @@ pub fn resolve(path: []const u8) Error!Node {
     if (tmpRelative(canonical)) |relative| {
         return .{ .tmp = tmpfs.lookup(relative) catch |e| return tmpError(e) };
     }
+    if (deviceRelative(canonical)) |relative| return .{ .device = try deviceNamed(relative) };
     return resolveCitrus(canonical);
 }
 
@@ -198,6 +233,7 @@ pub fn release(node: Node) void {
     switch (node) {
         .citrus => {},
         .tmp => |t| tmpfs.release(t),
+        .device => {},
     }
 }
 
@@ -206,6 +242,7 @@ pub fn retain(node: Node) Node {
     switch (node) {
         .citrus => {},
         .tmp => |t| tmpfs.retain(t),
+        .device => {},
     }
     return node;
 }
@@ -216,7 +253,21 @@ pub fn readAt(node: *const Node, offset: u64, buf: []u8) Error!usize {
     return switch (node.*) {
         .citrus => |*c| root_fs.readFile(&c.inode, offset, buf) catch Error.IoError,
         .tmp => |t| tmpfs.read(t, offset, buf) catch |e| tmpError(e),
+        .device => |d| readDevice(d, buf),
     };
+}
+
+/// /dev/random waits for the generator's first seeding; /dev/urandom never
+/// waits, as on Linux. Call with interrupts enabled.
+fn readDevice(device: Device, buf: []u8) Error!usize {
+    switch (device) {
+        .root => return Error.NotFile,
+        .null => return 0,
+        .zero => @memset(buf, 0),
+        .random => random.fill(buf, .block) catch return Error.Interrupted,
+        .urandom => random.fill(buf, .insecure) catch return Error.Interrupted,
+    }
+    return buf.len;
 }
 
 // ── Namespace changes ───────────────────────────────────────────────────────
@@ -278,6 +329,7 @@ pub fn usage(path: []const u8) Error!Usage {
             .free_bytes = 0,
             .read_only = true,
         },
+        .device => .{ .total_bytes = 0, .free_bytes = 0, .read_only = true },
     };
 }
 
@@ -292,7 +344,14 @@ pub fn openNode(path: []const u8, flags: u32) Error!Node {
     var buffer: [MAX_PATH]u8 = undefined;
     const canonical = try normalize(path, &buffer);
     const changes = flags & (OPEN_WRITE | OPEN_TRUNCATE | OPEN_APPEND) != 0;
-    const node: Node = if (tmpRelative(canonical)) |relative|
+    const node: Node = if (deviceRelative(canonical)) |relative| blk: {
+        const device = deviceNamed(relative) catch |e| {
+            if (e == Error.NotFound and flags & OPEN_CREATE != 0) return Error.ReadOnly;
+            return e;
+        };
+        if (flags & OPEN_CREATE != 0 and flags & OPEN_EXCLUSIVE != 0) return Error.Exists;
+        break :blk .{ .device = device };
+    } else if (tmpRelative(canonical)) |relative|
         .{ .tmp = tmpfs.open(relative, flags & OPEN_CREATE != 0, flags & OPEN_EXCLUSIVE != 0) catch |e| return tmpError(e) }
     else blk: {
         const found = resolveCitrus(canonical) catch |e| {
@@ -307,7 +366,7 @@ pub fn openNode(path: []const u8, flags: u32) Error!Node {
         if (changes) return Error.IsDirectory;
     } else if (flags & OPEN_DIRECTORY != 0) return Error.NotDirectory;
     if (changes and !node.writable()) return Error.ReadOnly;
-    if (flags & OPEN_TRUNCATE != 0 and flags & OPEN_WRITE != 0) {
+    if (flags & OPEN_TRUNCATE != 0 and flags & OPEN_WRITE != 0 and node == .tmp) {
         tmpfs.truncate(node.tmp, 0) catch |e| return tmpError(e);
     }
     return node;
@@ -318,13 +377,20 @@ pub fn writeNode(node: *const Node, offset: ?u64, data: []const u8) Error!tmpfs.
     return switch (node.*) {
         .tmp => |t| tmpfs.write(t, offset, data) catch |e| tmpError(e),
         .citrus => Error.ReadOnly,
+        // Devices swallow writes; the random ones mix them into the pool
+        // without crediting them.
+        .device => |d| blk: {
+            if (d == .root) break :blk Error.IsDirectory;
+            if (d == .random or d == .urandom) random.mixUncredited(data);
+            break :blk .{ .count = data.len, .end = (offset orelse 0) + data.len };
+        },
     };
 }
 
 pub fn truncateNode(node: *const Node, length: u64) Error!void {
     switch (node.*) {
         .tmp => |t| tmpfs.truncate(t, length) catch |e| return tmpError(e),
-        .citrus => return Error.ReadOnly,
+        .citrus, .device => return Error.ReadOnly,
     }
 }
 
@@ -339,6 +405,13 @@ pub fn iterateNode(
     switch (node.*) {
         .citrus => |*c| root_fs.iterate(&c.inode, ctx, visit) catch return Error.IoError,
         .tmp => |t| tmpfs.iterate(t, ctx, visit) catch |e| return tmpError(e),
+        // /dev: the device files, with type 3 (character device).
+        .device => {
+            if (!visit(ctx, ".", 1, 2) or !visit(ctx, "..", 1, 2)) return;
+            for (Device.files, 2..) |device, ino| {
+                if (!visit(ctx, @tagName(device), @intCast(ino), 3)) return;
+            }
+        },
     }
 }
 

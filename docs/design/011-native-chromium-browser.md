@@ -450,7 +450,7 @@ named hold the evidence.
 | A3 | POSIX process launch (`posix_spawn`: argv, environment, inherited descriptors), `chdir`, `*at()` relative to directory descriptors | Done (§11.42); Chromium's `LaunchProcess` needs a recorded patch to use `posix_spawn` |
 | A4 | Shared memory by descriptor (`memfd`, `mmap(MAP_SHARED)`), file mappings | Done (§11.44) |
 | A5 | V8/PartitionAlloc memory: `MAP_FIXED` and hints within reservations, alignment, `madvise(DONTNEED)`, `mremap` | Done (§11.38, §11.43): demand paging, `PROT_NONE` reservations, `MAP_FIXED(_NOREPLACE)`, hints, trimming, `DONTNEED`/`FREE`, `mremap`, 8 MiB stack |
-| A6 | Entropy: `getrandom`, `/dev/urandom` | To do |
+| A6 | Entropy: `getrandom`, `/dev/urandom` | Done (§11.45) |
 | A7 | Minimal signals: `sigaction`, `kill`, `SIGCHLD`, crash handlers | To do |
 
 **B. Platform services (Phase 3)**
@@ -1522,7 +1522,7 @@ with `-Wall -Wextra -Werror`. It checks:
 
 The binary is 0.95 MB statically linked (ReleaseSafe).
 
-Not provided yet: `std::random_device` (no `/dev/urandom` or `getrandom`),
+Not provided yet (at the time; `std::random_device` arrived with §11.45):
 `std::filesystem` beyond what the read-only filesystem allows, time zones,
 and shared libraries. This covers the C++ runtime requirement in §11.25 and
 the runtime row in the source inventory. It does not cover the rest of
@@ -2052,6 +2052,58 @@ vCPUs, kernel filesystem tests (23), and the desktop and Files suites.
   untouched, `EACCES` for writable sharing of the disk, and read-only
   sharing;
 - `statvfs("/tmp")` free space back to its starting value.
+
+### 11.45 Entropy: getrandom and /dev
+
+This is item A6. BoringSSL, V8 and Chromium's base library need
+cryptographic randomness through `getrandom`, and some code opens
+`/dev/urandom`.
+
+**The generator** (`kernel/lib/random.zig`):
+- **Hardware randomness.** RDSEED/RDRAND output is credited in full when the
+  CPU has them, as Linux does for a trusted CPU. Real x86 hardware has them;
+  QEMU's default `qemu64` model, used here, does not.
+- **Interrupt timing.** Every hardware interrupt folds the timestamp counter
+  into a per-CPU accumulator, without locks. Every 64 interrupts the
+  accumulator is hashed into a BLAKE2s pool and credited one bit, Linux's
+  fast-pool rate. Boot time and memory figures are mixed in uncredited.
+- **Output.** At 256 credited bits the pool keys a ChaCha20 generator
+  (`std.crypto`), reseeded with every further 256 bits. Each request ends by
+  replacing the key with fresh keystream (fast key erasure), so a later
+  compromise cannot reconstruct earlier output.
+- **Before the first seeding**, `getrandom` blocks (interruptibly), returns
+  `EAGAIN` with `GRND_NONBLOCK`, or with `GRND_INSECURE` and for
+  `/dev/urandom` returns output keyed from the pool as it stands, matching
+  Linux. The boot log records the source (`random: entropy from
+  interrupts`).
+
+**Device files.** A small `/dev`: `null`, `zero`, `random` (waits for the
+first seeding) and `urandom` (never waits). Writes to the random devices are
+mixed in uncredited. The files report as character devices, list as
+`DT_CHR`, and cannot be created or removed; a private mapping of `/dev/zero`
+gives zero pages.
+
+musl's `getrandom`/`getentropy` use native call 148 (`GRND_RANDOM` changes
+nothing, as on current Linux). libc++'s `std::random_device`, which reads
+`/dev/urandom`, now works.
+
+Verified on 2026-09-26: full runtime suite (58 checks) on two and four
+vCPUs, plus the desktop and Files suites. `/bin/random-probe` (C, `-Werror`)
+checks:
+- `getrandom` blocking and with `GRND_NONBLOCK`, with distinct outputs;
+- `getentropy`'s 256-byte limit;
+- 1 MiB of `/dev/urandom` with a byte-frequency chi-square inside the 99.99%
+  band (319 and 238 in the two runs; the expected mean is 255) and balanced
+  bits;
+- `/dev/random`, `/dev/null` (with `O_TRUNC`) and `/dev/zero` read and
+  mapped, character-device status, the `/dev` listing, and `EROFS` for
+  creating or removing there.
+
+`cxx-probe` now checks `std::random_device`.
+
+Limitations: under QEMU without RDRAND the generator is ready only after
+about 16,000 interrupts, a few seconds after boot. A virtio-rng driver
+would give it hardware entropy in VMs.
 
 ## 12. Security updates and distribution
 

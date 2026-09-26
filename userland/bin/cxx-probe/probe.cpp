@@ -23,6 +23,7 @@
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
+#include <random>
 #include <string>
 #include <thread>
 #include <typeinfo>
@@ -178,6 +179,9 @@ void library() {
     check(stream.str() == "pi=3.25 hex=ff", "ostringstream");
     check(std::format("{:>6}|{:.3f}|{}", "ok", 2.0 / 3.0, 12345) == "    ok|0.667|12345", "std::format");
     check(std::stod("2.5e3") == 2500.0 && std::stoi("-17") == -17, "stod and stoi");
+    std::random_device device;
+    unsigned first = device(), second = device(), third = device();
+    check(!(first == second && second == third), "std::random_device");
 
     std::ifstream motd("/etc/motd");
     std::string line;

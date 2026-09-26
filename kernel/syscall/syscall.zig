@@ -114,6 +114,7 @@ pub const Nr = enum(u64) {
     vm_advise = 145,
     vm_remap = 146,
     memfd = 147,
+    getrandom = 148,
     readdir = 34,
     readdir_page = 38,
     port_create = 50,
@@ -221,6 +222,7 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .vm_advise => sysVmAdvise(frame.rdi, frame.rsi, frame.rdx),
         .vm_remap => sysVmRemap(frame.rdi, frame.rsi, frame.rdx, frame.r10),
         .memfd => sysMemfd(frame.rdi),
+        .getrandom => sysGetrandom(frame.rdi, frame.rsi, frame.rdx),
         .close => sysClose(frame.rdi),
         .read => sysRead(frame.rdi, frame.rsi, frame.rdx),
         .spawn => sysSpawn(frame.rdi, frame.rsi),
@@ -392,6 +394,26 @@ fn sysVmMap(address: u64, length: u64, prot: u64, flags: u64, fd: u64, offset: u
         }
         return vmErrno(e);
     });
+}
+
+/// getrandom: up to 4096 bytes from the kernel generator per call. Flags: 1
+/// do not wait for the first seeding (EAGAIN), 2 use the pool as it stands
+/// if not yet seeded.
+fn sysGetrandom(buf: u64, len: u64, flags: u64) i64 {
+    if (flags & ~@as(u64, 3) != 0) return EINVAL;
+    const random = @import("../lib/random.zig");
+    const n: usize = @intCast(@min(len, 4096));
+    if (n == 0) return 0;
+    var kbuf: [4096]u8 = undefined;
+    io.sti();
+    defer io.cli();
+    const wait: random.Wait = if (flags & 2 != 0) .insecure else if (flags & 1 != 0) .fail else .block;
+    random.fill(kbuf[0..n], wait) catch |e| return switch (e) {
+        error.WouldBlock => EAGAIN,
+        error.Interrupted => EINTR,
+    };
+    validate.copyToUser(vmm.currentCr3(), buf, kbuf[0..n], n) catch return EFAULT;
+    return @intCast(n);
 }
 
 /// memfd_create: an anonymous tmpfs file. Flags: 2 close-on-exec, 8 allow
@@ -649,7 +671,7 @@ fn sysStat(path_ptr: u64, path_len: u64, out: u64) i64 {
     defer vfs.release(node);
     return copyStatus(out, .{
         .size = node.size(),
-        .kind = if (node.isDir()) 2 else 1,
+        .kind = if (node.isDir()) 2 else if (node == .device) 7 else 1,
         .mode = if (node.writable()) vfs.OPEN_READ | vfs.OPEN_WRITE else vfs.OPEN_READ,
     });
 }

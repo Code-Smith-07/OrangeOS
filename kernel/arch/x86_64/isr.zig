@@ -199,6 +199,8 @@ pub fn installDefaults() void {
 export fn isrDispatch(frame: *TrapFrame) callconv(.c) void {
     const vec: u8 = @truncate(frame.vector);
     const sched = @import("../../sched/sched.zig");
+    // Hardware interrupt timing feeds the entropy pool.
+    if (vec >= 32) @import("../../lib/random.zig").mixInterrupt(vec);
 
     if (handlers[vec]) |h| {
         h(frame);

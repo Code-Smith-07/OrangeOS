@@ -125,6 +125,16 @@ export fn kmain() callconv(.c) noreturn {
     };
     tlb.init();
 
+    // Seed the random generator: hardware randomness if the CPU has it, else
+    // it becomes ready as interrupt timing accumulates.
+    {
+        const random = @import("lib/random.zig");
+        const wall = @import("time/time.zig").unixNanos() orelse 0;
+        const stats = @import("mm/pmm.zig").stats();
+        random.init(@import("std").mem.asBytes(&[_]u64{ wall, stats.free_pages, stats.total_pages }));
+        console.ok("random: entropy from {s}{s}", .{ random.sourceName(), if (random.isReady()) ", ready" else ", gathering" });
+    }
+
     @import("drivers/virtio/serial.zig").init();
     if (have_fb and graphical_boot) splash.progress(3);
 

@@ -328,6 +328,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "spawn-child", .sources = &.{"userland/bin/spawn-child/child.c"} },
         .{ .name = "mmap-probe", .sources = &.{"userland/bin/mmap-probe/probe.c"} },
         .{ .name = "shm-probe", .sources = &.{"userland/bin/shm-probe/probe.c"} },
+        .{ .name = "random-probe", .sources = &.{"userland/bin/random-probe/probe.c"} },
     };
     for (c_programs) |program| {
         const mod = b.createModule(.{
