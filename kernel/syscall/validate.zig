@@ -21,6 +21,10 @@
 
 const vmm = @import("../mm/vmm.zig");
 const address_space = @import("../mm/address_space.zig");
+const user_vm = @import("../mm/user_vm.zig");
+const sched = @import("../sched/sched.zig");
+const io = @import("../arch/x86_64/io.zig");
+const spinlock = @import("../sync/spinlock.zig");
 
 pub const Error = error{Fault};
 
@@ -44,6 +48,7 @@ fn rangeOk(addr: u64, len: usize) bool {
 /// can change as soon as this returns; a copy re-validates under its own
 /// access.
 pub fn check(pml4: u64, addr: u64, len: usize, need_write: bool) Error!void {
+    prefault(pml4, addr, len, need_write);
     const access = address_space.beginCurrentAccess(pml4);
     defer if (access) |a| a.end();
     return checkInAccess(pml4, addr, len, need_write);
@@ -66,9 +71,33 @@ pub fn checkInAccess(pml4: u64, addr: u64, len: usize, need_write: bool) Error!v
     }
 }
 
+/// Give frames to the not-yet-touched pages of a user range that lie in lazy
+/// regions (see user_vm), as the program touching them would. Runs before a
+/// copy begins its access, because it takes the VM lock; a page removed again
+/// in between just makes the copy fail cleanly. Only for the calling
+/// program's own address space.
+pub fn prefault(pml4: u64, addr: u64, len: usize, need_write: bool) void {
+    if (len == 0 or !rangeOk(addr, len)) return;
+    const task = sched.currentTask() orelse return;
+    const space = task.user_space orelse return;
+    if (space.pml4 != pml4) return;
+    var page = addr & ~@as(u64, vmm.PAGE_SIZE - 1);
+    const end = addr + len;
+    while (page < end) : (page += vmm.PAGE_SIZE) {
+        if (vmm.translate(pml4, page) != null) continue;
+        // Taking the VM lock needs interrupts on (a holder may be waiting
+        // for this CPU to acknowledge a shootdown).
+        const was = spinlock.interruptsEnabled();
+        if (!was) io.sti();
+        defer if (!was) io.cli();
+        if (!user_vm.faultIn(space, page, if (need_write) .write else .read)) return;
+    }
+}
+
 /// Copy `len` bytes from user memory into a kernel buffer.
 pub fn copyFromUser(pml4: u64, dest: []u8, user_addr: u64, len: usize) Error!void {
     if (len > dest.len) return Error.Fault;
+    prefault(pml4, user_addr, len, false);
     const access = address_space.beginCurrentAccess(pml4);
     defer if (access) |a| a.end();
     try checkInAccess(pml4, user_addr, len, false);
@@ -91,6 +120,7 @@ pub fn copyFromUser(pml4: u64, dest: []u8, user_addr: u64, len: usize) Error!voi
 /// Copy `len` bytes from a kernel buffer into user memory.
 pub fn copyToUser(pml4: u64, user_addr: u64, src: []const u8, len: usize) Error!void {
     if (len > src.len) return Error.Fault;
+    prefault(pml4, user_addr, len, true);
     const access = address_space.beginCurrentAccess(pml4);
     defer if (access) |a| a.end();
     try checkInAccess(pml4, user_addr, len, true);

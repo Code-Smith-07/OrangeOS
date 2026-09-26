@@ -326,6 +326,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "unix-probe", .sources = &.{"userland/bin/unix-probe/probe.c"} },
         .{ .name = "spawn-probe", .sources = &.{"userland/bin/spawn-probe/probe.c"} },
         .{ .name = "spawn-child", .sources = &.{"userland/bin/spawn-child/child.c"} },
+        .{ .name = "mmap-probe", .sources = &.{"userland/bin/mmap-probe/probe.c"} },
     };
     for (c_programs) |program| {
         const mod = b.createModule(.{

@@ -1351,7 +1351,14 @@ take the lowest free number. A program started by `spawn` (8) gets console
 descriptions at 0–2; one started by `spawn_process` (143) gets exactly the
 descriptors granted. There is no `fork`/`exec`: `posix_spawn` is built on
 `spawn_process`. Programs start with a SysV stack (argc, argv, envp, auxv) in
-a 256 KiB user stack.
+an 8 MiB user stack, backed as it is touched.
+
+Demand paging (2026-09-26): regions made by `vm_map` (and the main stack)
+are *lazy*. A not-present page fault in one, with an access its protection
+allows, gets a zeroed frame and the instruction retries; kernel copies and
+futex waits fault pages in the same way before their access begins. The
+older `mmap` (10) and `vm_reserve`/`vm_commit` calls keep their eager
+semantics.
 
 Filesystems (2026-09-25): the CitrusFS root is read-only; a tmpfs mounted at
 `/tmp` holds writable files and directories in memory, up to a quarter of
@@ -1428,6 +1435,9 @@ link musl 1.2.5, whose Linux-numbered calls are translated in userland by
 | 140 | `recvmsg` | `(fd, *message, flags) → count` — installs received descriptions and writes back how many; message flags 1 truncated, 2 descriptions dropped; flags 1 don't wait, 2 close-on-exec (implemented) | P5 runtime |
 | 141 | `shutdown` | `(fd, how) → !void` — 0 read, 1 write, 2 both (implemented) | P5 runtime |
 | 142 | `resolve_path` | `(dirfd, path_ptr, path_len, out, capacity) → length` — the canonical absolute path, relative to a directory descriptor (-1: the working directory); for the `*at()` calls (implemented) | P5 runtime |
+| 144 | `vm_map` | `(address, length, prot, flags, fd, offset) → address` — memory in the Linux mmap model, backed as it is touched; flags 1 FIXED (replacing lazy mappings), 2 FIXED_NOREPLACE, 4 hint; up to 64 GiB; anonymous only (`fd` -1) (implemented) | P5 runtime |
+| 145 | `vm_advise` | `(address, length, advice)` — 4 DONTNEED releases lazily backed pages, which read zero afterwards; other advice ignored (implemented) | P5 runtime |
+| 146 | `vm_remap` | `(address, old_length, new_length, flags) → address` — shrink, grow in place, or (flag 1) move a lazily backed range without copying (implemented) | P5 runtime |
 | 143 | `spawn_process` | `(*{path, args, env, fds, cwd})` → pid — NUL-separated argument and environment blocks (together ≤ 32 KiB, ≤ 1024 strings), `{child, parent}` descriptor pairs the program starts with exactly, and a working directory (implemented) | P5 runtime |
 | | **── Threads ──** | | |
 | 40 | `thread_create` | `(entry, stack, arg, tls_base, exit_word) → tid` (implemented; `entry(arg)` in ring 3, kernel stores 0 to `exit_word` and wakes it at thread exit) | P4 runtime |

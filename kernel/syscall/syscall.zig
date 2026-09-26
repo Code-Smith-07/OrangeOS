@@ -109,6 +109,9 @@ pub const Nr = enum(u64) {
     getcwd = 36,
     resolve_path = 142,
     spawn_process = 143,
+    vm_map = 144,
+    vm_advise = 145,
+    vm_remap = 146,
     readdir = 34,
     readdir_page = 38,
     port_create = 50,
@@ -210,6 +213,9 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .getcwd => sysGetcwd(frame.rdi, frame.rsi),
         .resolve_path => sysResolvePath(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
         .spawn_process => sysSpawnProcess(frame.rdi),
+        .vm_map => sysVmMap(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9),
+        .vm_advise => sysVmAdvise(frame.rdi, frame.rsi, frame.rdx),
+        .vm_remap => sysVmRemap(frame.rdi, frame.rsi, frame.rdx, frame.r10),
         .close => sysClose(frame.rdi),
         .read => sysRead(frame.rdi, frame.rsi, frame.rdx),
         .spawn => sysSpawn(frame.rdi, frame.rsi),
@@ -286,6 +292,7 @@ fn vmErrno(e: user_vm.Error) i64 {
         error.Invalid => -22,
         error.Unsupported => -95,
         error.OutOfMemory => -12,
+        error.Exists => EEXIST,
     };
 }
 // Anonymous VM changes may shoot down other CPUs running threads of this
@@ -317,6 +324,56 @@ fn sysMprotect(address: u64, len: u64, prot: u64) i64 {
     user_vm.protect(space, address, len, prot) catch |e| return vmErrno(e);
     return 0;
 }
+/// vm_map flags.
+const MAP_FIXED: u64 = 1;
+const MAP_FIXED_NOREPLACE: u64 = 2;
+const MAP_HINT: u64 = 4;
+
+/// Memory in the Linux mmap model: backed as it is touched, with one
+/// protection that mprotect can change page range by page range. `address`
+/// is a hint (MAP_HINT) or a requirement (MAP_FIXED replaces lazy mappings
+/// already there; MAP_FIXED_NOREPLACE fails instead). Anonymous only so far:
+/// `fd` must be -1.
+fn sysVmMap(address: u64, length: u64, prot: u64, flags: u64, fd: u64, offset: u64) i64 {
+    if (flags & ~(MAP_FIXED | MAP_FIXED_NOREPLACE | MAP_HINT) != 0) return EINVAL;
+    if (fd != std.math.maxInt(u64) or offset != 0) return EINVAL;
+    const t = sched.currentTask() orelse return -14;
+    const space = t.user_space orelse return -14;
+    const placement: user_vm.Placement = if (flags & MAP_FIXED_NOREPLACE != 0)
+        .fixed_noreplace
+    else if (flags & MAP_FIXED != 0)
+        .fixed
+    else if (flags & MAP_HINT != 0 and address != 0)
+        .hint
+    else
+        .anywhere;
+    io.sti();
+    defer io.cli();
+    return @intCast(user_vm.mapLazy(space, address, length, prot, placement) catch |e| return vmErrno(e));
+}
+
+/// madvise. 4 (DONTNEED) releases the frames of lazily backed pages, which
+/// read as zeros when next touched; other advice is accepted and ignored.
+fn sysVmAdvise(address: u64, length: u64, advice: u64) i64 {
+    const t = sched.currentTask() orelse return -14;
+    const space = t.user_space orelse return -14;
+    if (advice != 4) return 0;
+    io.sti();
+    defer io.cli();
+    user_vm.discard(space, address, length) catch |e| return vmErrno(e);
+    return 0;
+}
+
+/// mremap of lazily backed memory; flag 1 allows moving it.
+fn sysVmRemap(address: u64, old_length: u64, new_length: u64, flags: u64) i64 {
+    if (flags & ~@as(u64, 1) != 0) return EINVAL;
+    const t = sched.currentTask() orelse return -14;
+    const space = t.user_space orelse return -14;
+    io.sti();
+    defer io.cli();
+    return @intCast(user_vm.remap(space, address, old_length, new_length, flags & 1 != 0) catch |e| return vmErrno(e));
+}
+
 fn sysVmReserve(len: u64) i64 {
     const t = sched.currentTask() orelse return -14;
     const space = t.user_space orelse return -14;

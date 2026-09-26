@@ -100,6 +100,7 @@ def main():
             "user VM: 64 cycles return frames AND page tables",
             "user VM: subranges, hole reuse and frame conservation",
             "user VM: sparse reserve, commit, decommit and cleanup",
+            "user VM: lazy regions allocate on touch, keep contents across protection and return every page",
             "user VM: exit cleanup frees protected and writable memory",
             "user VM: address-space teardown conserves every page",
             "address space: mappings survive intermediate owner releases",
@@ -144,6 +145,11 @@ def main():
                     "posix_spawn, working directories and cross-process descriptors", 120)
         assert ("spawn-probe: PASS posix_spawn(p) with argv, env, dup2/close/open/chdir actions and close-on-exec; "
                 "stdio pipes; cross-process descriptor passing; waitpid; chdir/fchdir/*at") in guest.log(), guest.log()[-2000:]
+        guest.until(lambda: "runtime: PASS lazily backed memory for V8 and PartitionAlloc" in guest.log()
+                    or "mmap-probe: FAIL" in guest.log() or "runtime: FAIL lazily backed memory" in guest.log(),
+                    "lazily backed memory for V8 and PartitionAlloc", 180)
+        assert ("mmap-probe: PASS 16 GiB reservation, mprotect commits, aligned trims, MAP_FIXED(_NOREPLACE), hints, "
+                "DONTNEED/FREE, mremap, untouched-page copies and futex, 3 MiB stacks, sparse 256 MiB, W^X") in guest.log(), guest.log()[-2000:]
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]

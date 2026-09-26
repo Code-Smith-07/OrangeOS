@@ -19,10 +19,12 @@ const spinlock = @import("../sync/spinlock.zig");
 
 pub const Error = error{OutOfMemory} || elf.Error;
 
-/// User stack: 256 KiB, placed just below the non-canonical boundary. It
-/// also holds the arguments and environment (up to ARG_MAX).
+/// User stack: 8 MiB of addresses just below the non-canonical boundary,
+/// backed as it is touched (as on Linux). The top 64 KiB are present from the
+/// start: exec writes the arguments and environment there.
 const USER_STACK_TOP: u64 = 0x0000_7FFF_FFFF_F000;
-const USER_STACK_PAGES: usize = 64;
+const USER_STACK_SIZE: usize = 8 * 1024 * 1024;
+const USER_STACK_EAGER: usize = 64 * 1024;
 
 /// Bytes of argument and environment strings a program may be started with,
 /// and how many strings.
@@ -176,16 +178,8 @@ pub fn execNode(node: *const vfs.Node, path: []const u8, arguments: Arguments) E
 
     const loaded = try elf.loadFromNode(pml4, node);
 
-    // User stack, mapped writable and non-executable.
-    var i: usize = 0;
-    while (i < USER_STACK_PAGES) : (i += 1) {
-        const va = USER_STACK_TOP - (i + 1) * vmm.PAGE_SIZE;
-        _ = vmm.allocAndMap(
-            pml4,
-            va,
-            vmm.PRESENT | vmm.WRITABLE | vmm.USER | vmm.NO_EXECUTE,
-        ) catch return Error.OutOfMemory;
-    }
+    // User stack, writable and non-executable.
+    @import("../mm/user_vm.zig").mapStack(space, USER_STACK_TOP, USER_STACK_SIZE, USER_STACK_EAGER) catch return Error.OutOfMemory;
 
     // The CPU already points at this thread's kernel stack for the transition
     // back: every switch to a thread loads its stack top into the TSS (rsp0,
@@ -199,8 +193,8 @@ pub fn execNode(node: *const vfs.Node, path: []const u8, arguments: Arguments) E
     if (build_options.verbose_exec) {
         console.print("[ ok ] loaded ELF: entry 0x{x}, brk 0x{x}\n", .{ loaded.entry, loaded.brk });
         console.print("[ ok ] user stack: {d} KiB at 0x{x}\n", .{
-            USER_STACK_PAGES * vmm.PAGE_SIZE / 1024,
-            USER_STACK_TOP - USER_STACK_PAGES * vmm.PAGE_SIZE,
+            USER_STACK_SIZE / 1024,
+            USER_STACK_TOP - USER_STACK_SIZE,
         });
         console.info("entering ring 3...", .{});
     }

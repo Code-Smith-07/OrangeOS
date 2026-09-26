@@ -27,7 +27,13 @@ pub const MAX_MAPPINGS = 16384;
 pub const Region = struct {
     address: u64 = 0,
     size: usize = 0,
+    /// A reserve()d range whose pages are committed and decommitted
+    /// explicitly (the native vm_* calls).
     sparse: bool = false,
+    /// Pages appear when first touched, zero-filled, with `prot` (the Linux
+    /// mmap model: vm_map, the main stack, thread stacks).
+    lazy: bool = false,
+    prot: u8 = 0,
 
     fn end(self: Region) u64 {
         return self.address + self.size;
@@ -81,7 +87,7 @@ pub const State = struct {
         self.* = .{};
     }
 };
-pub const Error = error{ Invalid, Unsupported, OutOfMemory };
+pub const Error = error{ Invalid, Unsupported, OutOfMemory, Exists };
 
 /// Pages detached before one invalidation and drain. Bounds the stack buffer.
 const BATCH_PAGES = 64;
@@ -159,6 +165,10 @@ pub fn detachLocked(space: *AddressSpace, address: u64, size: usize, owned: bool
     std.debug.assert(address % vmm.PAGE_SIZE == 0 and size % vmm.PAGE_SIZE == 0);
     var off: usize = 0;
     while (off < size) {
+        // Skip stretches with no page tables: a large reservation that was
+        // barely touched costs a few lookups, not one per page.
+        const next = vmm.nextPossiblyMapped(space.pml4, address + off, address + size) orelse break;
+        off = next - address;
         const count = @min((size - off) / vmm.PAGE_SIZE, BATCH_PAGES);
         const start = address + off;
         var frames: [BATCH_PAGES]u64 = undefined;
@@ -236,11 +246,13 @@ pub fn reserve(space: *AddressSpace, length: u64) Error!u64 {
 /// Release a page-aligned subrange. A middle removal splits one owned region
 /// into two, so it needs a spare metadata slot before changing any mappings.
 pub fn unmap(space: *AddressSpace, address: u64, length: u64) Error!void {
-    const size = try sizeOf(length, MAX_RESERVATION);
+    const size = try sizeOf(length, LIMIT);
     const guard = space.lockVm();
     defer guard.unlock();
     const state = &space.anonymous_vm;
-    const index = try findContaining(state, address, length, MAX_RESERVATION);
+    const contained = findContaining(state, address, length, LIMIT) catch null;
+    if (contained == null or state.items[contained.?].lazy) return unmapLazyLocked(space, address, size);
+    const index = contained.?;
     const region = state.items[index];
     const old_end = region.end();
     const end = address + size;
@@ -262,6 +274,9 @@ pub fn protect(space: *AddressSpace, address: u64, length: u64, prot: u64) Error
     const flags = try flagsFor(prot);
     const guard = space.lockVm();
     defer guard.unlock();
+    if (findIndex(&space.anonymous_vm, address)) |i| {
+        if (space.anonymous_vm.items[i].lazy) return protectLazyLocked(space, address, length, @intCast(if (prot == 4) 5 else prot));
+    }
     _ = try findContaining(&space.anonymous_vm, address, length, MAX_MAPPING);
     const size = try sizeOf(length, MAX_MAPPING);
     // Sparse reservations can contain holes; fail before changing any page.
@@ -310,4 +325,262 @@ pub fn releaseAll(space: *AddressSpace) void {
     defer guard.unlock();
     for (space.anonymous_vm.slice()) |r| detachLocked(space, r.address, r.size, true);
     space.anonymous_vm.deinit();
+}
+
+// ── Lazy regions: the Linux mmap model ──────────────────────────────────────
+//
+// A lazy region has one protection for all its pages, and a page is only
+// given a frame when first touched (by the program, through a page fault,
+// or by the kernel copying to or from it). mprotect, munmap and madvise
+// split regions at their range boundaries, so a region never needs more
+// than one protection. Contents survive protection changes: pages made
+// PROT_NONE stay mapped for the kernel only, as a JIT expects.
+
+/// Index of the region containing `address`, if any.
+fn findIndex(state: *const State, address: u64) ?usize {
+    var low: usize = 0;
+    var high: usize = state.len;
+    while (low < high) {
+        const middle = low + (high - low) / 2;
+        if (state.items[middle].address <= address) low = middle + 1 else high = middle;
+    }
+    if (low == 0) return null;
+    return if (address < state.items[low - 1].end()) low - 1 else null;
+}
+
+/// Make `address` a region boundary, splitting the region containing it.
+fn splitAt(state: *State, address: u64) Error!void {
+    const i = findIndex(state, address) orelse return;
+    const r = state.items[i];
+    if (r.address == address) return;
+    try state.ensureSpare();
+    var right = r;
+    right.address = address;
+    right.size = @intCast(r.end() - address);
+    state.items[i].size = @intCast(address - r.address);
+    state.insertAt(i + 1, right);
+}
+
+/// Range of region indices wholly inside [address, end), after splitting.
+const Span = struct { first: usize, last: usize };
+
+fn spanOf(state: *const State, address: u64, end: u64) ?Span {
+    var first: ?usize = null;
+    var last: usize = 0;
+    for (state.slice(), 0..) |r, i| {
+        if (r.end() <= address) continue;
+        if (r.address >= end) break;
+        if (first == null) first = i;
+        last = i;
+    }
+    return if (first) |f| .{ .first = f, .last = last } else null;
+}
+
+pub const Placement = enum { anywhere, hint, fixed, fixed_noreplace };
+
+/// mmap for anonymous private memory: a lazy region of `length` bytes with
+/// `prot`. `address` is ignored (anywhere), preferred when free (hint),
+/// required with whatever lazy mappings are there replaced (fixed), or
+/// required and free (fixed_noreplace). Fixed placements stay inside the
+/// anonymous arena.
+pub fn mapLazy(space: *AddressSpace, address: u64, length: u64, prot: u64, placement: Placement) Error!u64 {
+    const size = try sizeOf(length, MAX_RESERVATION);
+    _ = try flagsFor(prot);
+    const guard = space.lockVm();
+    defer guard.unlock();
+    const state = &space.anonymous_vm;
+    const inside = address % vmm.PAGE_SIZE == 0 and address >= BASE and address <= BASE + LIMIT - size;
+    var base: u64 = 0;
+    switch (placement) {
+        .fixed, .fixed_noreplace => {
+            if (!inside) return error.Invalid;
+            if (spanOf(state, address, address + size) != null) {
+                if (placement == .fixed_noreplace) return error.Exists;
+                try unmapLazyLocked(space, address, size);
+            }
+            try checkUnmapped(space.pml4, address, size);
+            base = address;
+        },
+        .hint => {
+            if (inside and spanOf(state, address, address + size) == null and !vmm.anyMapped(space.pml4, address, size)) {
+                base = address;
+            } else base = (try firstFit(state, size)).address;
+        },
+        .anywhere => base = (try firstFit(state, size)).address,
+    }
+    try checkUnmapped(space.pml4, base, size);
+    try state.ensureSpare();
+    var at: usize = 0;
+    while (at < state.len and state.items[at].address < base) : (at += 1) {}
+    state.insertAt(at, .{ .address = base, .size = size, .lazy = true, .prot = @intCast(if (prot == 4) 5 else prot) });
+    return base;
+}
+
+/// munmap over lazy regions: every part of [address, address + size) that
+/// belongs to one goes; holes are allowed, as on Linux, but not a range
+/// that touches no region or touches one managed by the native calls.
+fn unmapLazyLocked(space: *AddressSpace, address: u64, size: usize) Error!void {
+    const state = &space.anonymous_vm;
+    const end = std.math.add(u64, address, size) catch return error.Invalid;
+    if (address % vmm.PAGE_SIZE != 0) return error.Invalid;
+    const span = spanOf(state, address, end) orelse return error.Invalid;
+    for (state.items[span.first .. span.last + 1]) |r| if (!r.lazy) return error.Invalid;
+    try splitAt(state, address);
+    try splitAt(state, end);
+    const inner = spanOf(state, address, end).?;
+    var i = inner.last + 1;
+    while (i > inner.first) {
+        i -= 1;
+        const r = state.items[i];
+        detachLocked(space, r.address, r.size, true);
+        state.removeAt(i);
+    }
+}
+
+fn protectLazyLocked(space: *AddressSpace, address: u64, length: u64, prot: u8) Error!void {
+    const state = &space.anonymous_vm;
+    const size = try sizeOf(length, LIMIT);
+    const end = address + size;
+    // The whole range must be lazy regions without holes.
+    var cursor = address;
+    const span = spanOf(state, address, end) orelse return error.Invalid;
+    for (state.items[span.first .. span.last + 1]) |r| {
+        if (!r.lazy or r.address > cursor) return error.Invalid;
+        cursor = r.end();
+    }
+    if (cursor < end) return error.Invalid;
+    try splitAt(state, address);
+    try splitAt(state, end);
+    const inner = spanOf(state, address, end).?;
+    for (state.items[inner.first .. inner.last + 1]) |*r| r.prot = prot;
+    // Pages already present take the new protection now.
+    const flags = flagsFor(prot) catch unreachable;
+    var page = address;
+    while (vmm.nextPossiblyMapped(space.pml4, page, end)) |next| {
+        page = next;
+        const block_end = @min(end, (page | (BLOCK_2M - 1)) + 1);
+        while (page < block_end) : (page += vmm.PAGE_SIZE) {
+            if (vmm.translate(space.pml4, page)) |phys| vmm.mapPage(space.pml4, page, phys, flags | vmm.OWNED) catch unreachable;
+        }
+    }
+    space.invalidateRange(address, size / vmm.PAGE_SIZE);
+}
+
+/// madvise(MADV_DONTNEED): release the frames of lazy pages in the range;
+/// the next touch reads zeros.
+pub fn discard(space: *AddressSpace, address: u64, length: u64) Error!void {
+    const size = try sizeOf(length, LIMIT);
+    if (address % vmm.PAGE_SIZE != 0) return error.Invalid;
+    const guard = space.lockVm();
+    defer guard.unlock();
+    const state = &space.anonymous_vm;
+    const end = address + size;
+    const span = spanOf(state, address, end) orelse return error.Invalid;
+    for (state.items[span.first .. span.last + 1]) |r| if (!r.lazy) return error.Invalid;
+    for (state.items[span.first .. span.last + 1]) |r| {
+        const from = @max(r.address, address);
+        const to = @min(r.end(), end);
+        detachLocked(space, from, to - from, true);
+    }
+}
+
+/// mremap of one lazy region's range: shrink in place, grow in place when
+/// the addresses after it are free, or (when allowed to move) move its
+/// pages to a new range without copying them.
+pub fn remap(space: *AddressSpace, address: u64, old_length: u64, new_length: u64, may_move: bool) Error!u64 {
+    const old_size = try sizeOf(old_length, LIMIT);
+    const new_size = try sizeOf(new_length, MAX_RESERVATION);
+    if (address % vmm.PAGE_SIZE != 0) return error.Invalid;
+    const guard = space.lockVm();
+    defer guard.unlock();
+    const state = &space.anonymous_vm;
+    const i = findIndex(state, address) orelse return error.Invalid;
+    const r = state.items[i];
+    if (!r.lazy or address + old_size > r.end()) return error.Invalid;
+    if (new_size == old_size) return address;
+    if (new_size < old_size) {
+        try unmapLazyLocked(space, address + new_size, old_size - new_size);
+        return address;
+    }
+    // Grow in place: the range must end where the region does, and what
+    // follows must be free.
+    const grow_end = address + new_size;
+    if (address + old_size == r.end() and grow_end <= BASE + LIMIT and
+        spanOf(state, r.end(), grow_end) == null and !vmm.anyMapped(space.pml4, r.end(), grow_end - r.end()))
+    {
+        state.items[i].size = @intCast(grow_end - r.address);
+        return address;
+    }
+    if (!may_move) return error.OutOfMemory;
+    // Move: a new region, the present pages carried over, the old range gone.
+    const fit = try firstFit(state, new_size);
+    try state.ensureSpare();
+    try checkUnmapped(space.pml4, fit.address, new_size);
+    const flags = flagsFor(r.prot) catch unreachable;
+    var moved: usize = 0;
+    while (moved < old_size) : (moved += vmm.PAGE_SIZE) {
+        const phys = vmm.translate(space.pml4, address + moved) orelse continue;
+        vmm.mapPage(space.pml4, fit.address + moved, phys, flags | vmm.OWNED) catch {
+            // Undo the copies made so far without freeing: the old range
+            // still owns those frames.
+            detachLocked(space, fit.address, moved + vmm.PAGE_SIZE, false);
+            return error.OutOfMemory;
+        };
+    }
+    var at: usize = 0;
+    while (at < state.len and state.items[at].address < fit.address) : (at += 1) {}
+    state.insertAt(at, .{ .address = fit.address, .size = new_size, .lazy = true, .prot = r.prot });
+    // Detach the old translations without freeing: the frames moved.
+    try splitAt(state, address);
+    try splitAt(state, address + old_size);
+    const inner = spanOf(state, address, address + old_size).?;
+    var k = inner.last + 1;
+    while (k > inner.first) {
+        k -= 1;
+        const old = state.items[k];
+        detachLocked(space, old.address, old.size, false);
+        state.removeAt(k);
+    }
+    return fit.address;
+}
+
+pub const Access = enum { read, write, execute };
+
+fn permits(prot: u8, access: Access) bool {
+    return switch (access) {
+        .read => prot & 1 != 0,
+        .write => prot & 2 != 0,
+        .execute => prot & 4 != 0,
+    };
+}
+
+/// Give the page holding `address` a frame, if it lies in a lazy region that
+/// permits `access`. True when the page is (now) present. Takes the VM lock:
+/// call with interrupts enabled and no address-space access held.
+pub fn faultIn(space: *AddressSpace, address: u64, access: Access) bool {
+    const page = address & ~@as(u64, vmm.PAGE_SIZE - 1);
+    const guard = space.lockVm();
+    defer guard.unlock();
+    const i = findIndex(&space.anonymous_vm, page) orelse return false;
+    const r = space.anonymous_vm.items[i];
+    if (!r.lazy or !permits(r.prot, access)) return false;
+    // Another thread may have faulted it in meanwhile.
+    if (vmm.translate(space.pml4, page) != null) return true;
+    const flags = flagsFor(r.prot) catch return false;
+    _ = vmm.allocAndMap(space.pml4, page, flags) catch return false;
+    return true;
+}
+
+/// The main thread's stack: a lazy read/write region of `size` bytes ending
+/// at `top`, with its top `eager` bytes present now (exec writes the
+/// arguments there). Below it nothing is mapped, so an overflow faults.
+pub fn mapStack(space: *AddressSpace, top: u64, size: usize, eager: usize) Error!void {
+    const guard = space.lockVm();
+    defer guard.unlock();
+    const state = &space.anonymous_vm;
+    const base = top - size;
+    try checkUnmapped(space.pml4, base, size);
+    try state.ensureSpare();
+    try populateLocked(space, top - eager, eager, flagsFor(3) catch unreachable);
+    state.insertAt(state.len, .{ .address = base, .size = size, .lazy = true, .prot = 3 });
 }
