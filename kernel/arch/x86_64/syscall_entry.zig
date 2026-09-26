@@ -66,6 +66,8 @@ comptime {
         \\
         \\    movq %rsp, %rdi
         \\    callq syscallDispatch
+        \\    testq %rax, %rax
+        \\    jnz 1f
         \\
         \\    popq %r15
         \\    popq %r14
@@ -90,6 +92,28 @@ comptime {
         \\
         \\    swapgs
         \\    sysretq
+        \\
+        \\    # Full restore (signal delivery, sigreturn): every register from the
+        \\    # frame, whose tail is already an interrupt-return frame. SYSRET
+        \\    # cannot do this: it overwrites rcx and r11.
+        \\1:
+        \\    popq %r15
+        \\    popq %r14
+        \\    popq %r13
+        \\    popq %r12
+        \\    popq %r11
+        \\    popq %r10
+        \\    popq %r9
+        \\    popq %r8
+        \\    popq %rbp
+        \\    popq %rdi
+        \\    popq %rsi
+        \\    popq %rdx
+        \\    popq %rcx
+        \\    popq %rbx
+        \\    popq %rax
+        \\    swapgs
+        \\    iretq
         \\.size syscallEntry, . - syscallEntry
     );
 }

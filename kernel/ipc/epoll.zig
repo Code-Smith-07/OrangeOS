@@ -212,7 +212,7 @@ pub fn wait(ep: *Epoll, out: []Event, timeout_ms: i64) Error!usize {
             sched.cancelWait();
             return count;
         }
-        if (sched.killPending()) {
+        if (sched.interruptPending()) {
             sched.cancelWait();
             return Error.Interrupted;
         }
@@ -284,7 +284,7 @@ pub fn poll(table: *fd.FileTable, entries: []PollEntry, timeout_ms: i64) Error!u
             sched.cancelWait();
             return count;
         }
-        if (sched.killPending()) {
+        if (sched.interruptPending()) {
             sched.cancelWait();
             return Error.Interrupted;
         }

@@ -62,7 +62,7 @@ pub fn read(e: *EventFd, buf: []u8, nonblock: bool) Error!usize {
             sched.cancelWait();
             return Error.WouldBlock;
         }
-        if (sched.killPending()) {
+        if (sched.interruptPending()) {
             sched.cancelWait();
             return Error.Interrupted;
         }
@@ -89,7 +89,7 @@ pub fn write(e: *EventFd, data: []const u8, nonblock: bool) Error!usize {
             sched.cancelWait();
             return Error.WouldBlock;
         }
-        if (sched.killPending()) {
+        if (sched.interruptPending()) {
             sched.cancelWait();
             return Error.Interrupted;
         }

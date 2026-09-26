@@ -172,7 +172,7 @@ pub fn portRecv(h: i64, out: []u8, blocking: bool) Error!Received {
             sched.cancelWait();
             return Error.QueueEmpty;
         }
-        if (sched.killPending()) {
+        if (sched.interruptPending()) {
             sched.cancelWait();
             return Error.Interrupted;
         }

@@ -102,6 +102,8 @@ pub const Process = struct {
     cwd_lock: @import("../sync/spinlock.zig").SpinLock = .{},
     cwd: [vfs.MAX_PATH]u8 = [_]u8{'/'} ++ [_]u8{0} ** (vfs.MAX_PATH - 1),
     cwd_len: usize = 1,
+    /// Signal dispositions and signals pending for any thread.
+    signals: @import("signal.zig").ProcessSignals = .{},
     // Boot-issued authority, never inherited by ordinary spawned programs.
     service_manager: bool = false,
     host_bridge: bool = false,
@@ -180,6 +182,13 @@ pub const Task = struct {
     /// Set (under the scheduler lock) when the program is exiting. The thread
     /// leaves at its next return towards user mode or attempt to block.
     kill_pending: bool = false,
+    /// Signals: blocked for this thread, pending for it alone, a caught
+    /// signal waiting to interrupt what it is blocked in, and its alternate
+    /// signal stack.
+    sig_blocked: u64 = 0,
+    sig_pending: u64 = 0,
+    sig_interrupt: bool = false,
+    alt_stack: @import("signal.zig").AltStack = .{},
     /// User word cleared and woken when this thread exits, so a joiner can
     /// wait on it and then free the thread's stack. Zero means none.
     exit_word: u64 = 0,

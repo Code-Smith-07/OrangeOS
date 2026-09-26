@@ -329,6 +329,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "mmap-probe", .sources = &.{"userland/bin/mmap-probe/probe.c"} },
         .{ .name = "shm-probe", .sources = &.{"userland/bin/shm-probe/probe.c"} },
         .{ .name = "random-probe", .sources = &.{"userland/bin/random-probe/probe.c"} },
+        .{ .name = "signal-probe", .sources = &.{"userland/bin/signal-probe/probe.c"} },
     };
     for (c_programs) |program| {
         const mod = b.createModule(.{
@@ -602,6 +603,8 @@ const musl_replaced_c = [_][]const u8{
     // No fork/exec: posix_spawn is built on OrangeOS's spawn_process.
     "process/posix_spawn.c",
     "process/posix_spawnp.c",
+    // The signal restorer calls OrangeOS's sigreturn (orange.zig).
+    "signal/restore.c",
 };
 
 /// libc++ sources not built: other platforms' support code, the libdispatch

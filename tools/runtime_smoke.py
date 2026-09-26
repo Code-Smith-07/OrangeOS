@@ -160,6 +160,11 @@ def main():
                     "randomness and device files", 120)
         assert re.search(r"random-probe: PASS getrandom, getentropy, 1 MiB urandom \(chi-square \d+\), /dev/random, "
                          r"/dev/null, /dev/zero, /dev listing", guest.log()), guest.log()[-2000:]
+        guest.until(lambda: "runtime: PASS POSIX signals" in guest.log()
+                    or "signal-probe: FAIL" in guest.log() or "runtime: FAIL signals" in guest.log(),
+                    "POSIX signals", 120)
+        assert ("signal-probe: PASS handlers with siginfo, masks and pending, SIG_IGN, SA_RESETHAND, sigaltstack, "
+                "SIGSEGV repair, SIGILL rip edit, SIGFPE siglongjmp, EINTR, kill of children, abort") in guest.log(), guest.log()[-2000:]
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]

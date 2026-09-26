@@ -190,6 +190,20 @@ pub fn taskSample(i: usize) ?TaskSample {
     return sample;
 }
 
+/// The program that started the caller's program, or 1 when that program
+/// has already gone (its children are orphans, as under Linux's init).
+pub fn parentOfCurrent() u32 {
+    const t = currentTask() orelse return 1;
+    const pid = t.ownerId();
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    for (all_tasks[0..all_count]) |candidate| {
+        const leader = candidate orelse continue;
+        if (leader.tid == pid) return if (leader.parent_tid == 0) 1 else leader.parent_tid;
+    }
+    return 1;
+}
+
 pub fn findByTid(tid: u32) ?*Task {
     const state = spinlock.acquireIrqSave(&lock);
     defer spinlock.releaseIrqRestore(&lock, state);
@@ -437,6 +451,8 @@ pub fn spawnUserThread(
     space.retain();
     t.user_space = space;
     t.fs_base = request.fs_base;
+    // A new thread starts with its creator's signal mask (POSIX).
+    t.sig_blocked = creator.sig_blocked;
     t.exit_word = request.exit_word;
     t.user_entry = request.entry;
     t.user_stack = request.stack;
@@ -464,6 +480,95 @@ pub fn spawnUserThread(
 pub fn killPending() bool {
     const t = currentTask() orelse return false;
     return @atomicLoad(bool, &t.kill_pending, .acquire);
+}
+
+/// Whether a blocking call should give up now: the program is exiting, or a
+/// caught signal is waiting to be delivered (the call returns EINTR and the
+/// handler runs on the way back to user mode).
+pub fn interruptPending() bool {
+    const t = currentTask() orelse return false;
+    return @atomicLoad(bool, &t.kill_pending, .acquire) or @atomicLoad(bool, &t.sig_interrupt, .acquire);
+}
+
+fn interruptedLocked(t: *const Task) bool {
+    return t.kill_pending or t.sig_interrupt;
+}
+
+/// Caller holds `lock`: make a blocked thread runnable so it notices.
+fn wakeForInterruptLocked(t: *Task) void {
+    if (t.state != .blocked) return;
+    if (t.on_wait_list) unlinkWaiter(t);
+    if (t.wake_at_ns != 0) unlinkSleeper(t);
+    t.state = .ready;
+    queues[@intFromEnum(t.priority)].push(t);
+}
+
+/// Caller holds `lock`: end every thread of `p` (SIGKILL, or a program ended
+/// from outside). The first exit code recorded wins.
+fn killProcessLocked(p: *task_mod.Process, code: i32) void {
+    if (!p.exiting) {
+        p.exiting = true;
+        p.exit_code = code;
+    }
+    for (all_tasks[0..all_count]) |candidate| {
+        const other = candidate orelse continue;
+        if (other.process != p or other.state == .zombie) continue;
+        @atomicStore(bool, &other.kill_pending, true, .release);
+        wakeForInterruptLocked(other);
+    }
+}
+
+pub const SignalError = error{ NotFound, NotPermitted, Invalid };
+
+/// kill(): signal a program. A program may signal itself and the programs it
+/// started. SIGKILL ends the target at once; a signal it would ignore is
+/// discarded; anything else becomes pending and interrupts one thread that
+/// does not block it.
+pub fn signalProcess(pid: u32, sig: u32, sender: *task_mod.Process) SignalError!void {
+    const signal = @import("signal.zig");
+    if (sig > signal.COUNT) return error.Invalid;
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    const leader = for (all_tasks[0..all_count]) |candidate| {
+        const t = candidate orelse continue;
+        if (t.tid == pid and t.process != null and t.isLeader()) break t;
+    } else return error.NotFound;
+    const p = leader.process.?;
+    if (p != sender and leader.parent_tid != sender.pid) return error.NotPermitted;
+    if (sig == 0 or p.exited) return;
+    if (sig == signal.SIGKILL) return killProcessLocked(p, 128 + signal.SIGKILL);
+    if (signal.discarded(p, sig)) return;
+    @atomicStore(u32, &p.signals.senders[sig], sender.pid, .release);
+    _ = @atomicRmw(u64, &p.signals.pending, .Or, signal.bit(sig), .acq_rel);
+    for (all_tasks[0..all_count]) |candidate| {
+        const t = candidate orelse continue;
+        if (t.process != p or t.state == .zombie) continue;
+        if (@atomicLoad(u64, &t.sig_blocked, .acquire) & signal.bit(sig) != 0) continue;
+        @atomicStore(bool, &t.sig_interrupt, true, .release);
+        wakeForInterruptLocked(t);
+        break;
+    }
+}
+
+/// tkill()/tgkill(): signal one thread of the caller's own program.
+pub fn signalThread(tid: u32, sig: u32, sender: *task_mod.Process) SignalError!void {
+    const signal = @import("signal.zig");
+    if (sig > signal.COUNT) return error.Invalid;
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    const t = for (all_tasks[0..all_count]) |candidate| {
+        const c = candidate orelse continue;
+        if (c.tid == tid and c.state != .zombie) break c;
+    } else return error.NotFound;
+    if (t.process != sender) return error.NotFound;
+    if (sig == 0) return;
+    if (sig == signal.SIGKILL) return killProcessLocked(sender, 128 + signal.SIGKILL);
+    if (signal.discarded(sender, sig)) return;
+    _ = @atomicRmw(u64, &t.sig_pending, .Or, signal.bit(sig), .acq_rel);
+    if (@atomicLoad(u64, &t.sig_blocked, .acquire) & signal.bit(sig) == 0) {
+        @atomicStore(bool, &t.sig_interrupt, true, .release);
+        wakeForInterruptLocked(t);
+    }
 }
 
 /// End every thread of the calling program; the caller exits immediately.
@@ -908,8 +1013,9 @@ pub fn sleepMs(ms: u64) void {
         return;
     };
 
-    // A thread of an exiting program never starts a new sleep.
-    if (prev.kill_pending) {
+    // A thread of an exiting program, or with a caught signal to take, never
+    // starts a new sleep.
+    if (interruptedLocked(prev)) {
         lock.release();
         if (was) io.sti();
         return;
@@ -1031,8 +1137,9 @@ pub fn commitWaitTimeout(timeout_ms: u64) void {
         if (was) io.sti();
         return;
     }
-    // The kill was published under this lock, so it cannot be missed here.
-    if (t.kill_pending) {
+    // A kill or caught signal was published under this lock, so it cannot be
+    // missed here.
+    if (interruptedLocked(t)) {
         unlinkWaiter(t);
         lock.release();
         if (was) io.sti();
@@ -1077,8 +1184,9 @@ pub fn commitWait() void {
         if (was) io.sti();
         return;
     }
-    // The kill was published under this lock, so it cannot be missed here.
-    if (t.kill_pending) {
+    // A kill or caught signal was published under this lock, so it cannot be
+    // missed here.
+    if (interruptedLocked(t)) {
         unlinkWaiter(t);
         lock.release();
         if (was) io.sti();

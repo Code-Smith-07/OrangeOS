@@ -451,7 +451,7 @@ named hold the evidence.
 | A4 | Shared memory by descriptor (`memfd`, `mmap(MAP_SHARED)`), file mappings | Done (§11.44) |
 | A5 | V8/PartitionAlloc memory: `MAP_FIXED` and hints within reservations, alignment, `madvise(DONTNEED)`, `mremap` | Done (§11.38, §11.43): demand paging, `PROT_NONE` reservations, `MAP_FIXED(_NOREPLACE)`, hints, trimming, `DONTNEED`/`FREE`, `mremap`, 8 MiB stack |
 | A6 | Entropy: `getrandom`, `/dev/urandom` | Done (§11.45) |
-| A7 | Minimal signals: `sigaction`, `kill`, `SIGCHLD`, crash handlers | To do |
+| A7 | Minimal signals: `sigaction`, `kill`, `SIGCHLD`, crash handlers | Done (§11.46), without `SIGCHLD` generation, stop/continue or queued real-time signals |
 
 **B. Platform services (Phase 3)**
 
@@ -2104,6 +2104,90 @@ checks:
 Limitations: under QEMU without RDRAND the generator is ready only after
 about 16,000 interrupts, a few seconds after boot. A virtio-rng driver
 would give it hardware entropy in VMs.
+
+### 11.46 POSIX signals
+
+This is item A7, and it completes part A (runtime and kernel). Chromium
+relies on signals in several ways:
+- terminating child processes with `kill`;
+- ignoring `SIGPIPE`;
+- crash and stack-dump handlers on `SIGSEGV`/`SIGILL`/`SIGABRT`;
+- V8's WebAssembly out-of-bounds trap handler, which catches `SIGSEGV` and
+  resumes;
+- `EINTR` handling throughout `base`.
+
+Rather than accept `sigaction` and never deliver (which would be a
+fabricated success, §2.1), signals are delivered as on Linux x86-64.
+
+**State** (`kernel/sched/signal.zig`). Per program: dispositions in Linux's
+`struct sigaction` layout, signals pending for any thread, and their senders.
+Per thread: a blocked mask (inherited by new threads), signals pending for
+it alone, and an alternate stack.
+
+**Delivery** happens on every return to user mode, from a system call or an
+interrupt:
+- A timer tick reaches a thread spinning in user code, and a caught signal
+  sent to a thread blocked in the kernel wakes it: the blocking call returns
+  `EINTR` (no `SA_RESTART`).
+- A caught signal builds Linux's frame on the user stack, or the alternate
+  stack with `SA_ONSTACK`: the restorer as return address; a `ucontext` with
+  every register in musl's `REG_*` order, the old mask and a pointer to the
+  FPU state; a `siginfo` (signal, code, sender or fault address); and the
+  `fxsave` image.
+- The handler gets `(sig, &siginfo, &ucontext)`. Its mask is blocked during
+  it (plus the signal itself unless `SA_NODEFER`), and `SA_RESETHAND` resets
+  the disposition.
+- Returning into musl's `__restore_rt`, now OrangeOS assembly, calls
+  `sigreturn` (154). It restores every register from the `ucontext`, so a
+  handler's edits take effect. It checks `rip`/`rsp` are user addresses,
+  keeps only the user-changeable flags, and validates MXCSR against the
+  CPU's mask before `fxrstor`.
+- A system call normally returns with SYSRET, which destroys `rcx` and
+  `r11`. When a handler is entered or `sigreturn` ran, the entry stub
+  instead pops every register and returns with IRETQ; the syscall frame's
+  tail was already an interrupt frame.
+- Default actions end the program (exit code 128 + the signal) or ignore the
+  signal. Stop signals are not supported and are ignored. `SIGKILL` cannot
+  be caught, blocked or ignored.
+
+**Faults** go to the program's handler for the matching signal, with
+Linux's `siginfo` codes, if one is installed and not blocked:
+- page and protection faults give `SIGSEGV` with the fault address;
+- invalid opcodes give `SIGILL`;
+- divide and x87/SIMD errors give `SIGFPE`;
+- alignment checks give `SIGBUS`.
+
+The handler may repair the problem and return, and the instruction is
+retried. Without a handler the program ends as before.
+
+**Sending.** `kill` reaches the caller itself or programs it started
+(`EPERM` otherwise, `ESRCH` for none; process groups are not offered).
+`tkill`/`tgkill` reach threads of the caller's own program. Ignored signals
+are discarded when sent. `getppid` is now real (it returned 1). `nanosleep`
+reports `EINTR` with the time left.
+
+Verified on 2026-09-26: full runtime suite (59 checks) on two and four
+vCPUs, kernel filesystem tests (23), and the desktop and Files suites.
+`/bin/signal-probe` (C, `-Werror`), with `/bin/spawn-child`, checks:
+- a `SA_SIGINFO` handler through `raise`, and `sigaction` read back;
+- a blocked signal staying pending (`sigpending`) and delivered on unblock;
+- `SIG_IGN`, `SA_RESETHAND` back to `SIG_DFL`, and `SIGKILL` refused;
+- a handler running on the `sigaltstack`;
+- a `SIGSEGV` handler receiving the exact fault address, making the page
+  writable, and the store retrying successfully;
+- a `SIGILL` handler stepping over `ud2` by editing `REG_RIP`;
+- `siglongjmp` out of a `SIGFPE` handler with the mask restored;
+- a thread blocked in `read` getting `EINTR` from `pthread_kill`, and
+  `nanosleep` returning `EINTR` early with the time left;
+- children ended by `SIGTERM` (143) and `SIGKILL` (137), a child's own
+  `SIGTERM` handler finishing cleanly, and `abort()` (134);
+- `EPERM` towards the parent, `ESRCH`, and signal 0.
+
+Not provided: `SIGCHLD` on child exit, `sigsuspend`/`sigwaitinfo`/
+`signalfd` (`ENOSYS`), queued real-time signals (a pending bit only), stop
+and continue, and `WIFSIGNALED`. A program ended by a signal reports exit
+code 128 + the signal as a normal exit. The runtime work of part A is now
+complete; part B (platform services) is next.
 
 ## 12. Security updates and distribution
 
