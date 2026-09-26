@@ -14,12 +14,50 @@ const console = @import("../console.zig");
 const build_options = @import("build_options");
 const vfs = @import("../fs/vfs/vfs.zig");
 const heap = @import("../mm/heap.zig");
+const fd_mod = @import("../fs/fd.zig");
+const spinlock = @import("../sync/spinlock.zig");
 
 pub const Error = error{OutOfMemory} || elf.Error;
 
-/// User stack: 64 KiB, placed just below the non-canonical boundary.
+/// User stack: 256 KiB, placed just below the non-canonical boundary. It
+/// also holds the arguments and environment (up to ARG_MAX).
 const USER_STACK_TOP: u64 = 0x0000_7FFF_FFFF_F000;
-const USER_STACK_PAGES: usize = 16;
+const USER_STACK_PAGES: usize = 64;
+
+/// Bytes of argument and environment strings a program may be started with,
+/// and how many strings.
+pub const ARG_MAX = 32 * 1024;
+pub const MAX_STRINGS = 1024;
+
+/// What a program is started with beyond its path: NUL-terminated argument
+/// strings followed by NUL-terminated environment strings, in one block.
+pub const Arguments = struct {
+    block: []const u8 = "",
+    argc: usize = 0,
+    envc: usize = 0,
+    /// The block is a heap allocation that exec frees once it is on the
+    /// new program's stack.
+    owned: bool = false,
+
+    pub fn free(self: Arguments) void {
+        if (self.owned and self.block.len > 0) heap.free(@constCast(self.block.ptr));
+    }
+};
+
+/// A descriptor a new program starts with: its number there, and the open
+/// file description, whose reference passes to the new program.
+pub const Grant = struct { number: i32, desc: *fd_mod.Description };
+
+pub const SpawnOptions = struct {
+    arguments: Arguments = .{},
+    /// Heap array of grants, owned by the spawn.
+    grants: []Grant = &.{},
+    /// The program starts with exactly `grants`. Otherwise it gets the
+    /// console at 0, 1 and 2 (where no grant is).
+    exact_descriptors: bool = false,
+    /// Canonical absolute working directory; null inherits the caller's.
+    cwd: ?[]const u8 = null,
+};
 
 // Auxiliary-vector keys (SysV x86-64 ABI).
 const AT_NULL = 0;
@@ -53,19 +91,23 @@ fn writeUser(pml4: u64, address: u64, bytes: []const u8) void {
 /// OrangeOS's native `_start` functions expect, so both kinds of entry work:
 ///
 ///   rsp → 0 (terminal return address)
-///         argc = 1, argv[0], NULL, (no environment) NULL, auxv…, AT_NULL
-///         … a copy of the program headers, then the path string at the top
+///         argc, argv[0..argc], NULL, envp[0..envc], NULL, auxv…, AT_NULL
+///         … a copy of the program headers, then the strings at the top
 ///
 /// argc is 16-byte aligned, where a Linux-convention `_start` expects rsp to
 /// point; rsp itself is 8 mod 16, as after a CALL. The header copy is what
 /// AT_PHDR names: the user linker script does not map the ELF headers, and a
-/// C runtime finds its thread-local-storage image through them.
-fn buildInitialStack(pml4: u64, node: *const vfs.Node, loaded: elf.Loaded, path: []const u8) Error!u64 {
+/// C runtime finds its thread-local-storage image through them. With no
+/// arguments, argv is just the path.
+fn buildInitialStack(pml4: u64, node: *const vfs.Node, loaded: elf.Loaded, path: []const u8, arguments: Arguments) Error!u64 {
     var cursor: u64 = USER_STACK_TOP;
     cursor -= path.len + 1;
     const path_address = cursor;
     writeUser(pml4, path_address, path);
     writeUser(pml4, path_address + path.len, &[_]u8{0});
+    cursor -= arguments.block.len;
+    const block_address = cursor;
+    writeUser(pml4, block_address, arguments.block);
 
     var headers_buffer: [2048]u8 = undefined;
     const headers = try elf.readProgramHeaders(node, loaded, &headers_buffer);
@@ -87,21 +129,47 @@ fn buildInitialStack(pml4: u64, node: *const vfs.Node, loaded: elf.Loaded, path:
         AT_EXECFN, path_address,
         AT_NULL,   0,
     };
-    // Words below the header copy: return slot, argc, argv[0], argv NULL,
-    // envp NULL, then the auxiliary vector.
-    const words = [_]u64{ 0, 1, path_address, 0, 0 } ++ auxv;
+    const argc = if (arguments.argc == 0) 1 else arguments.argc;
+    // Return slot, argc, argv, NULL, envp, NULL, then the auxiliary vector.
+    const count = 2 + argc + 1 + arguments.envc + 1 + auxv.len;
+    const words_raw = heap.alloc(count * 8) catch return Error.OutOfMemory;
+    defer heap.free(words_raw);
+    const words: [*]u64 = @ptrCast(@alignCast(words_raw));
+    words[0] = 0;
+    words[1] = argc;
+    var at: usize = 2;
+    if (arguments.argc == 0) {
+        words[at] = path_address;
+        at += 1;
+    }
+    // Pointers to each string of the block: arguments, NULL, environment, NULL.
+    var offset: usize = 0;
+    for ([_]usize{ arguments.argc, arguments.envc }) |strings| {
+        for (0..strings) |_| {
+            words[at] = block_address + offset;
+            at += 1;
+            offset = (std.mem.indexOfScalarPos(u8, arguments.block, offset, 0) orelse unreachable) + 1;
+        }
+        words[at] = 0;
+        at += 1;
+    }
+    @memcpy(words[at .. at + auxv.len], &auxv);
+    at += auxv.len;
+    std.debug.assert(at == count);
     // Keep argc (words[1]) 16-byte aligned.
-    cursor = std.mem.alignBackward(u64, cursor - (words.len - 1) * 8, 16) - 8;
-    writeUser(pml4, cursor, std.mem.sliceAsBytes(&words));
+    cursor = std.mem.alignBackward(u64, cursor - (count - 1) * 8, 16) - 8;
+    writeUser(pml4, cursor, std.mem.sliceAsBytes(words[0..count]));
     return cursor;
 }
 
 /// Build an address space from a filesystem node and drop into ring 3.
 /// Runs as the body of a kernel thread; never returns. Consumes the node's
 /// reference, on failure as well as success.
-pub fn execNode(node: *const vfs.Node, path: []const u8) Error!noreturn {
+pub fn execNode(node: *const vfs.Node, path: []const u8, arguments: Arguments) Error!noreturn {
     var held = true;
     defer if (held) vfs.release(node.*);
+    var holding_arguments = true;
+    defer if (holding_arguments) arguments.free();
     const space = try @import("../mm/address_space.zig").AddressSpace.create();
     errdefer space.release();
     const pml4 = space.pml4;
@@ -140,10 +208,13 @@ pub fn execNode(node: *const vfs.Node, path: []const u8) Error!noreturn {
     // Native OrangeOS entries are `callconv(.c) noreturn` functions: RSP is 8
     // mod 16 with a zero return address (a terminal frame for backtraces and
     // allocator instrumentation). The SysV block above it serves C runtimes.
-    const entry_stack = try buildInitialStack(pml4, node, loaded, path);
-    // The image is loaded; the file may now change or disappear.
+    const entry_stack = try buildInitialStack(pml4, node, loaded, path, arguments);
+    // The image is loaded; the file may now change or disappear, and the
+    // arguments are on the new stack.
     held = false;
     vfs.release(node.*);
+    holding_arguments = false;
+    arguments.free();
 
     // Record it on the task before loading, so the scheduler restores this
     // address space whenever it switches back to this thread.
@@ -152,26 +223,65 @@ pub fn execNode(node: *const vfs.Node, path: []const u8) Error!noreturn {
 }
 
 /// A pending program holds a filesystem node reference, not the ELF contents,
-/// and the path it was started by, which becomes argv[0].
+/// the path it was started by (argv[0] when no arguments are given), and
+/// what it starts with.
 pub const SpawnRequest = struct {
     node: vfs.Node,
     path: [vfs.MAX_PATH]u8,
     path_len: usize,
+    options: SpawnOptions,
+    cwd: [vfs.MAX_PATH]u8,
+    cwd_len: usize,
 };
 
 /// Start a program with its stdio bound to a PTY.
 pub fn spawnPathWithPty(path: []const u8, pty: *@import("../ipc/object.zig").Object) !u32 {
-    return spawnPathInternal(path, pty);
+    return spawnPathInternal(path, pty, .{});
 }
 
 /// Resolve a program on disk and start it as a new process. Returns its pid.
 /// The caller keeps running; use wait() to synchronise.
 pub fn spawnPath(path: []const u8) !u32 {
-    const inherited = if (sched.currentProcess()) |parent| parent.pty else null;
-    return spawnPathInternal(path, inherited);
+    return spawnWith(path, .{});
 }
 
-fn spawnPathInternal(path: []const u8, pty: ?*@import("../ipc/object.zig").Object) !u32 {
+/// spawnPath with arguments, environment, descriptors and a working
+/// directory. Takes ownership of everything in `options`, on failure too.
+pub fn spawnWith(path: []const u8, options: SpawnOptions) !u32 {
+    const inherited = if (sched.currentProcess()) |parent| parent.pty else null;
+    return spawnPathInternal(path, inherited, options);
+}
+
+fn releaseOptions(options: SpawnOptions) void {
+    options.arguments.free();
+    for (options.grants) |grant| grant.desc.release();
+    if (options.grants.len > 0) heap.free(@ptrCast(options.grants.ptr));
+}
+
+/// The calling program's working directory.
+pub fn currentDirectory(out: *[vfs.MAX_PATH]u8) []const u8 {
+    const proc = sched.currentProcess() orelse {
+        out[0] = '/';
+        return out[0..1];
+    };
+    const state = spinlock.acquireIrqSave(&proc.cwd_lock);
+    defer spinlock.releaseIrqRestore(&proc.cwd_lock, state);
+    @memcpy(out[0..proc.cwd_len], proc.cwd[0..proc.cwd_len]);
+    return out[0..proc.cwd_len];
+}
+
+/// Set the calling program's working directory (already canonical and
+/// checked to be a directory).
+pub fn setCurrentDirectory(path: []const u8) void {
+    const proc = sched.currentProcess() orelse return;
+    const state = spinlock.acquireIrqSave(&proc.cwd_lock);
+    defer spinlock.releaseIrqRestore(&proc.cwd_lock, state);
+    @memcpy(proc.cwd[0..path.len], path);
+    proc.cwd_len = path.len;
+}
+
+fn spawnPathInternal(path: []const u8, pty: ?*@import("../ipc/object.zig").Object, options: SpawnOptions) !u32 {
+    errdefer releaseOptions(options);
     if (!vfs.isMounted()) return error.NotMounted;
 
     const node = vfs.resolve(path) catch return error.NotFound;
@@ -180,8 +290,12 @@ fn spawnPathInternal(path: []const u8, pty: ?*@import("../ipc/object.zig").Objec
 
     const req = heap.create(SpawnRequest) catch return error.OutOfMemory;
     errdefer heap.destroy(req);
-    req.* = .{ .node = node, .path = undefined, .path_len = path.len };
+    req.* = .{ .node = node, .path = undefined, .path_len = path.len, .options = options, .cwd = undefined, .cwd_len = 0 };
     @memcpy(req.path[0..path.len], path);
+    if (options.cwd) |dir| {
+        @memcpy(req.cwd[0..dir.len], dir);
+        req.cwd_len = dir.len;
+    } else req.cwd_len = currentDirectory(&req.cwd).len;
     const service_manager = if (sched.currentProcess()) |p| p.service_manager else false;
 
     // Name the task after the last path component, so `ps` is readable.
@@ -211,9 +325,18 @@ fn spawnThread(arg: ?*anyopaque) void {
     var path: [vfs.MAX_PATH]u8 = undefined;
     const path_len = req.path_len;
     @memcpy(path[0..path_len], req.path[0..path_len]);
+    const options = req.options;
+    setCurrentDirectory(req.cwd[0..req.cwd_len]);
     heap.destroy(req);
 
-    execNode(&node, path[0..path_len]) catch |e| {
+    // What the program starts with: granted descriptors, then (unless the
+    // grants are exact) the console wherever 0-2 are still free.
+    const proc = sched.currentProcess() orelse unreachable;
+    for (options.grants) |grant| fd_mod.installAt(&proc.files, grant.desc, grant.number, false) catch {};
+    if (options.grants.len > 0) heap.free(@ptrCast(options.grants.ptr));
+    if (!options.exact_descriptors) fd_mod.installConsole(&proc.files) catch {};
+
+    execNode(&node, path[0..path_len], options.arguments) catch |e| {
         console.err("exec failed: {s}", .{@errorName(e)});
         sched.exit(1);
     };
@@ -269,7 +392,8 @@ fn initThread(arg: ?*anyopaque) void {
     }
     console.print("[ ok ] loading {s} from disk ({d} bytes)\n", .{ path, node.size() });
 
-    execNode(&node, path) catch |e| {
+    if (sched.currentProcess()) |proc| fd_mod.installConsole(&proc.files) catch {};
+    execNode(&node, path, .{}) catch |e| {
         console.err("failed to exec {s}: {s}", .{ path, @errorName(e) });
         sched.exit(1);
     };

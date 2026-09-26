@@ -55,6 +55,11 @@ const OR = struct {
     const sendmsg = 139;
     const recvmsg = 140;
     const shutdown = 141;
+    const wait = 9;
+    const chdir = 35;
+    const getcwd = 36;
+    const resolve_path = 142;
+    const spawn_process = 143;
     const thread_create = 40;
     const thread_exit = 41;
     const gettid = 45;
@@ -133,6 +138,9 @@ const SYS = struct {
     const recvmsg = 47;
     const shutdown = 48;
     const socketpair = 53;
+    const wait4 = 61;
+    const chdir = 80;
+    const fchdir = 81;
     const epoll_create = 213;
     const epoll_wait = 232;
     const epoll_ctl = 233;
@@ -268,25 +276,19 @@ fn cString(address: u64) ?[]const u8 {
     return std.mem.span(pointer);
 }
 
-/// Resolve a path relative to the (fixed) working directory "/".
-fn absolute(path: []const u8, buffer: []u8) ?[]const u8 {
-    if (path.len == 0) return null;
-    if (path[0] == '/') return path;
-    if (path.len + 1 > buffer.len) return null;
-    buffer[0] = '/';
-    @memcpy(buffer[1 .. path.len + 1], path);
-    return buffer[0 .. path.len + 1];
-}
-
-/// A path argument of an *at() call as an absolute path, or a negative
-/// errno. Directory descriptors other than AT_FDCWD are not supported for
-/// relative paths yet.
+/// A path argument of an *at() call, or a negative errno. Relative to a
+/// directory descriptor, the kernel resolves it to an absolute path first.
 fn pathAt(dirfd: i64, address: u64, buffer: *[256]u8) union(enum) { path: []const u8, errno: i64 } {
     const path = cString(address) orelse return .{ .errno = err(E.FAULT) };
     if (path.len == 0) return .{ .errno = err(E.NOENT) };
-    if (path[0] != '/' and dirfd != AT_FDCWD) return .{ .errno = err(E.NOSYS) };
-    if (path.len >= buffer.len) return .{ .errno = err(E.NAMETOOLONG) };
-    return .{ .path = absolute(path, buffer) orelse return .{ .errno = err(E.NAMETOOLONG) } };
+    if (path.len > buffer.len) return .{ .errno = err(E.NAMETOOLONG) };
+    // Absolute paths, and relative ones from the working directory, go to
+    // the kernel as they are; relative to a directory descriptor, the kernel
+    // resolves them first.
+    if (path[0] == '/' or dirfd == AT_FDCWD) return .{ .path = path };
+    const len = raw(OR.resolve_path, @bitCast(dirfd), @intFromPtr(path.ptr), path.len, @intFromPtr(buffer), buffer.len);
+    if (len < 0) return .{ .errno = len };
+    return .{ .path = buffer[0..@intCast(len)] };
 }
 
 fn pathCall(nr: u64, dirfd: i64, address: u64) i64 {
@@ -341,9 +343,10 @@ fn statusOf(dirfd: i64, path_address: u64, flags: u64, out: *Status) i64 {
         return raw2(OR.fstat, @bitCast(dirfd), @intFromPtr(out));
     }
     var buffer: [256]u8 = undefined;
-    if (path[0] != '/' and dirfd != AT_FDCWD) return err(E.NOSYS);
-    const full = absolute(path, &buffer) orelse return err(E.NOENT);
-    return raw3(OR.stat, @intFromPtr(full.ptr), full.len, @intFromPtr(out));
+    return switch (pathAt(dirfd, path_address, &buffer)) {
+        .path => |full| raw3(OR.stat, @intFromPtr(full.ptr), full.len, @intFromPtr(out)),
+        .errno => |code| code,
+    };
 }
 
 /// Linux `struct stat` for x86-64 (musl's kstat).
@@ -535,6 +538,240 @@ fn receiveMessage(fd: u64, header_address: u64, flags: u64) i64 {
         header.controllen = std.mem.alignForward(u64, length, 8);
     } else header.controllen = 0;
     return r;
+}
+
+// ── Waiting for children ────────────────────────────────────────────────────
+
+const WNOHANG: u64 = 1;
+
+/// wait4 for one child: its exit code in a normal-exit status word. Waiting
+/// for any child (pid <= 0) is not offered.
+fn wait4(pid: i64, status: u64, options: u64, usage: u64) i64 {
+    if (pid <= 0) return err(E.NOSYS);
+    if (options & ~WNOHANG != 0) return err(E.INVAL);
+    const r = raw2(OR.wait, @intCast(pid), if (options & WNOHANG != 0) 1 else 0);
+    if (r == err(E.AGAIN)) return 0; // WNOHANG and still running
+    if (r < 0 and r > -4096) return r;
+    if (status != 0) @as(*c_int, @ptrFromInt(status)).* = (@as(c_int, @truncate(r)) & 0xff) << 8;
+    if (usage != 0) @memset(@as([*]u8, @ptrFromInt(usage))[0..144], 0); // struct rusage
+    return pid;
+}
+
+// ── posix_spawn ─────────────────────────────────────────────────────────────
+// There is no fork or exec. A spawn request carries everything the new
+// program starts with: path, arguments, environment, working directory and
+// an exact descriptor list. posix_spawn works that list out here from the
+// caller's descriptors and the file actions, as the child would see its
+// table just before exec.
+
+extern fn malloc(size: usize) ?[*]u8;
+extern fn free(pointer: ?*anyopaque) void;
+extern fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+
+const FDOP_CLOSE = 1;
+const FDOP_DUP2 = 2;
+const FDOP_OPEN = 3;
+const FDOP_CHDIR = 4;
+const FDOP_FCHDIR = 5;
+
+/// musl's struct fdop; `path` (a flexible array) starts at byte 36.
+const FdOp = extern struct { next: ?*FdOp, prev: ?*FdOp, cmd: c_int, fd: c_int, srcfd: c_int, oflag: c_int, mode: u32 };
+const FileActions = extern struct { pad0: [2]c_int, actions: ?*FdOp, pad: [16]c_int };
+
+const POSIX_SPAWN_RESETIDS = 1;
+const POSIX_SPAWN_SETSIGDEF = 4;
+const POSIX_SPAWN_SETSIGMASK = 8;
+const POSIX_SPAWN_USEVFORK = 64;
+/// Signal settings mean nothing without signals, and ids are all 0.
+const SPAWN_FLAGS_HONOURED = POSIX_SPAWN_RESETIDS | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_USEVFORK;
+
+const SpawnRequest = extern struct {
+    path: u64,
+    path_len: u64,
+    args: u64,
+    args_len: u64,
+    env: u64,
+    env_len: u64,
+    fds: u64,
+    fd_count: u64,
+    cwd: u64,
+    cwd_len: u64,
+};
+
+const MAX_DESCRIPTORS = 256;
+const ARG_MAX = 32 * 1024;
+const Slot = struct { parent: i32 = -1, cloexec: bool = false };
+const StringList = [*]const ?[*:0]const u8;
+
+fn pack(list: ?StringList, out: []u8, used: *usize) bool {
+    const strings = list orelse return true;
+    var i: usize = 0;
+    while (strings[i]) |string| : (i += 1) {
+        const text = std.mem.span(string);
+        if (used.* + text.len + 1 > out.len) return false;
+        @memcpy(out[used.* .. used.* + text.len], text);
+        out[used.* + text.len] = 0;
+        used.* += text.len + 1;
+    }
+    return true;
+}
+
+/// `path` relative to `base` (or absolute), as a canonical absolute path in
+/// `out`. Returns its length or a negative errno.
+fn join(base: []const u8, path: []const u8, out: *[256]u8) i64 {
+    var joined: [520]u8 = undefined;
+    const full = if (path.len > 0 and path[0] == '/') path else blk: {
+        if (base.len + 1 + path.len > joined.len) return err(E.NAMETOOLONG);
+        @memcpy(joined[0..base.len], base);
+        joined[base.len] = '/';
+        @memcpy(joined[base.len + 1 .. base.len + 1 + path.len], path);
+        break :blk joined[0 .. base.len + 1 + path.len];
+    };
+    return raw(OR.resolve_path, std.math.maxInt(u64), @intFromPtr(full.ptr), full.len, @intFromPtr(out), out.len);
+}
+
+export fn posix_spawn(
+    pid_out: ?*c_int,
+    path: [*:0]const u8,
+    file_actions: ?*const FileActions,
+    attributes: ?*const c_int,
+    argv: ?StringList,
+    envp: ?StringList,
+) callconv(.c) c_int {
+    if (attributes) |flags| if (flags.* & ~@as(c_int, SPAWN_FLAGS_HONOURED) != 0) return E.OPNOTSUPP;
+
+    // The descriptor table the child would have before exec.
+    var slots: [MAX_DESCRIPTORS]Slot = [_]Slot{.{}} ** MAX_DESCRIPTORS;
+    for (&slots, 0..) |*slot, fd| {
+        const flags = raw3(OR.fd_control, fd, 2, 0); // GETFD
+        if (flags >= 0) slot.* = .{ .parent = @intCast(fd), .cloexec = flags & 1 != 0 };
+    }
+    var temporaries: [MAX_DESCRIPTORS]i32 = undefined;
+    var temporary_count: usize = 0;
+    defer for (temporaries[0..temporary_count]) |fd| {
+        _ = raw1(OR.close, @intCast(fd));
+    };
+    var cwd_buffer: [256]u8 = undefined;
+    var cwd: ?[]const u8 = null;
+
+    if (file_actions) |fa| if (fa.actions) |first| {
+        var op: ?*FdOp = first;
+        while (op.?.next) |next| op = next;
+        while (op) |action| : (op = action.prev) {
+            // Chdir actions carry no descriptor (musl stores -1).
+            const uses_fd = action.cmd == FDOP_CLOSE or action.cmd == FDOP_DUP2 or action.cmd == FDOP_OPEN or action.cmd == FDOP_FCHDIR;
+            if (uses_fd and (action.fd < 0 or action.fd >= MAX_DESCRIPTORS)) return E.BADF;
+            const fd: usize = if (uses_fd) @intCast(action.fd) else 0;
+            const action_path = std.mem.span(@as([*:0]const u8, @ptrFromInt(@intFromPtr(action) + 36)));
+            switch (action.cmd) {
+                FDOP_CLOSE => slots[fd] = .{},
+                FDOP_DUP2 => {
+                    const source: usize = @intCast(action.srcfd);
+                    if (source >= MAX_DESCRIPTORS or slots[source].parent < 0) return E.BADF;
+                    slots[fd] = .{ .parent = slots[source].parent, .cloexec = false };
+                },
+                FDOP_OPEN => {
+                    var here: [256]u8 = undefined;
+                    const base = cwd orelse blk: {
+                        const len = raw2(OR.getcwd, @intFromPtr(&here), here.len);
+                        if (len < 0) return @intCast(-len);
+                        break :blk here[0..@intCast(len - 1)];
+                    };
+                    var full: [257]u8 = undefined;
+                    const len = join(base, action_path, full[0..256]);
+                    if (len < 0) return @intCast(-len);
+                    full[@intCast(len)] = 0;
+                    const opened = openPath(AT_FDCWD, @intFromPtr(&full), @as(u64, @bitCast(@as(i64, action.oflag))) | O_CLOEXEC);
+                    if (opened < 0) return @intCast(-opened);
+                    temporaries[temporary_count] = @intCast(opened);
+                    temporary_count += 1;
+                    slots[fd] = .{ .parent = @intCast(opened), .cloexec = false };
+                },
+                FDOP_CHDIR => {
+                    var here: [256]u8 = undefined;
+                    const base = cwd orelse blk: {
+                        const len = raw2(OR.getcwd, @intFromPtr(&here), here.len);
+                        if (len < 0) return @intCast(-len);
+                        break :blk here[0..@intCast(len - 1)];
+                    };
+                    const len = join(base, action_path, &cwd_buffer);
+                    if (len < 0) return @intCast(-len);
+                    cwd = cwd_buffer[0..@intCast(len)];
+                },
+                FDOP_FCHDIR => {
+                    if (slots[fd].parent < 0) return E.BADF;
+                    const len = raw(OR.resolve_path, @intCast(slots[fd].parent), @intFromPtr("."), 1, @intFromPtr(&cwd_buffer), cwd_buffer.len);
+                    if (len < 0) return @intCast(-len);
+                    cwd = cwd_buffer[0..@intCast(len)];
+                },
+                else => return E.INVAL,
+            }
+        }
+    };
+
+    var pairs: [MAX_DESCRIPTORS][2]i32 = undefined;
+    var pair_count: usize = 0;
+    for (slots, 0..) |slot, fd| {
+        if (slot.parent < 0 or slot.cloexec) continue;
+        pairs[pair_count] = .{ @intCast(fd), slot.parent };
+        pair_count += 1;
+    }
+
+    const strings = malloc(ARG_MAX) orelse return E.NOMEM;
+    defer free(strings);
+    var args_len: usize = 0;
+    if (!pack(argv, strings[0..ARG_MAX], &args_len)) return 7; // E2BIG
+    var env_len: usize = 0;
+    if (!pack(envp, strings[args_len..ARG_MAX], &env_len)) return 7;
+
+    const program = std.mem.span(path);
+    var request = SpawnRequest{
+        .path = @intFromPtr(program.ptr),
+        .path_len = program.len,
+        .args = @intFromPtr(strings),
+        .args_len = args_len,
+        .env = @intFromPtr(strings + args_len),
+        .env_len = env_len,
+        .fds = @intFromPtr(&pairs),
+        .fd_count = pair_count,
+        .cwd = if (cwd) |dir| @intFromPtr(dir.ptr) else 0,
+        .cwd_len = if (cwd) |dir| dir.len else 0,
+    };
+    const pid = raw1(OR.spawn_process, @intFromPtr(&request));
+    if (pid < 0) return @intCast(-pid);
+    if (pid_out) |out| out.* = @intCast(pid);
+    return 0;
+}
+
+/// posix_spawn with a PATH search when `file` has no slash.
+export fn posix_spawnp(
+    pid_out: ?*c_int,
+    file: [*:0]const u8,
+    file_actions: ?*const FileActions,
+    attributes: ?*const c_int,
+    argv: ?StringList,
+    envp: ?StringList,
+) callconv(.c) c_int {
+    const name = std.mem.span(file);
+    if (name.len == 0) return E.NOENT;
+    if (std.mem.indexOfScalar(u8, name, '/') != null) return posix_spawn(pid_out, file, file_actions, attributes, argv, envp);
+    const search = if (getenv("PATH")) |value| std.mem.span(value) else "/usr/local/bin:/bin:/usr/bin";
+    var last: c_int = E.NOENT;
+    var it = std.mem.splitScalar(u8, search, ':');
+    while (it.next()) |dir| {
+        var candidate: [257]u8 = undefined;
+        const base = if (dir.len == 0) "." else dir;
+        if (base.len + 1 + name.len > 256) continue;
+        @memcpy(candidate[0..base.len], base);
+        candidate[base.len] = '/';
+        @memcpy(candidate[base.len + 1 .. base.len + 1 + name.len], name);
+        candidate[base.len + 1 + name.len] = 0;
+        var status: Status = undefined;
+        if (raw3(OR.stat, @intFromPtr(&candidate), base.len + 1 + name.len, @intFromPtr(&status)) < 0) continue;
+        last = posix_spawn(pid_out, @ptrCast(&candidate), file_actions, attributes, argv, envp);
+        if (last != E.NOENT and last != E.ACCES) return last;
+    }
+    return last;
 }
 
 // ── Readiness ───────────────────────────────────────────────────────────────
@@ -904,13 +1141,15 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
         SYS.exit => raw1(OR.thread_exit, a),
         SYS.exit_group => raw1(OR.exit, a),
         SYS.uname => uname(a),
-        SYS.getcwd => blk: {
-            if (b < 2) break :blk err(34); // ERANGE
-            const out: [*]u8 = @ptrFromInt(a);
-            out[0] = '/';
-            out[1] = 0;
-            break :blk 2;
+        SYS.getcwd => raw2(OR.getcwd, a, b),
+        SYS.chdir => pathCall(OR.chdir, AT_FDCWD, a),
+        SYS.fchdir => blk: {
+            var buffer: [256]u8 = undefined;
+            const len = raw(OR.resolve_path, a, @intFromPtr("."), 1, @intFromPtr(&buffer), buffer.len);
+            if (len < 0) break :blk len;
+            break :blk raw2(OR.chdir, @intFromPtr(&buffer), @intCast(len));
         },
+        SYS.wait4 => wait4(a1, b, c, d),
         SYS.prlimit64 => blk: {
             // Only queries of this process; no limit is enforced beyond the
             // kernel's own tables, which report the descriptor limit.

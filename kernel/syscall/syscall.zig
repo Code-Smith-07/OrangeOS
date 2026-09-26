@@ -105,6 +105,10 @@ pub const Nr = enum(u64) {
     sendmsg = 139,
     recvmsg = 140,
     shutdown = 141,
+    chdir = 35,
+    getcwd = 36,
+    resolve_path = 142,
+    spawn_process = 143,
     readdir = 34,
     readdir_page = 38,
     port_create = 50,
@@ -202,6 +206,10 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .sendmsg => sysSendMsg(frame.rdi, frame.rsi, frame.rdx),
         .recvmsg => sysRecvMsg(frame.rdi, frame.rsi, frame.rdx),
         .shutdown => sysShutdown(frame.rdi, frame.rsi),
+        .chdir => sysChdir(frame.rdi, frame.rsi),
+        .getcwd => sysGetcwd(frame.rdi, frame.rsi),
+        .resolve_path => sysResolvePath(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
+        .spawn_process => sysSpawnProcess(frame.rdi),
         .close => sysClose(frame.rdi),
         .read => sysRead(frame.rdi, frame.rsi, frame.rdx),
         .spawn => sysSpawn(frame.rdi, frame.rsi),
@@ -513,17 +521,16 @@ fn descriptionOf(fd: u64) ?*fd_mod.Description {
 
 fn sysSeek(fd: u64, offset: u64, whence: u64) i64 {
     if (whence > 2) return EINVAL;
-    const desc = descriptionOf(fd) orelse return if (fd <= 2) ESPIPE else EBADF;
+    const desc = descriptionOf(fd) orelse return EBADF;
     defer desc.release();
     const position = fd_mod.seek(desc, @bitCast(offset), @enumFromInt(whence)) catch |e| return vfsErrno(e);
     return @intCast(position);
 }
 
 fn sysStat(path_ptr: u64, path_len: u64, out: u64) i64 {
-    if (path_len == 0 or path_len > vfs.MAX_PATH) return ENAMETOOLONG;
     var path: [vfs.MAX_PATH]u8 = undefined;
-    validate.copyFromUser(vmm.currentCr3(), &path, path_ptr, @intCast(path_len)) catch return EFAULT;
-    const node = vfs.resolve(path[0..@intCast(path_len)]) catch |e| return vfsErrno(e);
+    const name = copyPath(&path, path_ptr, path_len) catch |e| return pathErrno(e);
+    const node = vfs.resolve(name) catch |e| return vfsErrno(e);
     defer vfs.release(node);
     return copyStatus(out, .{
         .size = node.size(),
@@ -533,10 +540,7 @@ fn sysStat(path_ptr: u64, path_len: u64, out: u64) i64 {
 }
 
 fn sysFstat(fd: u64, out: u64) i64 {
-    const desc = descriptionOf(fd) orelse {
-        if (fd <= 2) return copyStatus(out, .{ .size = 0, .kind = 3, .mode = vfs.OPEN_READ | vfs.OPEN_WRITE });
-        return EBADF;
-    };
+    const desc = descriptionOf(fd) orelse return EBADF;
     defer desc.release();
     const status = fd_mod.stat(desc);
     return copyStatus(out, .{ .size = status.size, .kind = @intFromEnum(status.kind), .mode = status.mode });
@@ -554,35 +558,17 @@ fn sysClockNs(clock: u64) i64 {
 }
 
 fn sysWrite(fd: u64, buf: u64, len: u64) i64 {
-    if (fd > std.math.maxInt(i32)) return EBADF;
     if (len == 0) return 0;
     if (len > 4096) return EFAULT;
-
-    const pml4 = vmm.currentCr3();
-
     var kbuf: [4096]u8 = undefined;
-    validate.copyFromUser(pml4, &kbuf, buf, @intCast(len)) catch return EFAULT;
-
-    if (descriptionOf(fd)) |desc| {
-        defer desc.release();
-        // A pipe or eventfd write may block until a reader makes room.
-        io.sti();
-        defer io.cli();
-        const n = fd_mod.write(desc, kbuf[0..@intCast(len)]) catch |e| return vfsErrno(e);
-        return @intCast(n);
-    }
-    if (fd > 2) return EBADF;
-
-    // A task with a PTY writes into it rather than to the console. That is
-    // what puts a shell's output in a terminal window without the shell
-    // knowing anything about windows.
-    if (fd == 0) return EBADF;
-    if (currentPty()) |obj| {
-        return @intCast(pty_mod.slaveWrite(&obj.data.pty, kbuf[0..@intCast(len)]));
-    }
-
-    console.write(kbuf[0..@intCast(len)]);
-    return @intCast(len);
+    validate.copyFromUser(vmm.currentCr3(), &kbuf, buf, @intCast(len)) catch return EFAULT;
+    const desc = descriptionOf(fd) orelse return EBADF;
+    defer desc.release();
+    // A pipe, socket or eventfd write may block until a reader makes room.
+    io.sti();
+    defer io.cli();
+    const n = fd_mod.write(desc, kbuf[0..@intCast(len)]) catch |e| return vfsErrno(e);
+    return @intCast(n);
 }
 
 /// Map a VFS error onto the ABI's errno values.
@@ -621,11 +607,26 @@ fn sysOpen(path_ptr: u64, path_len: u64, flags: u64) i64 {
     return fd;
 }
 
-/// Copy a user path into `buffer`; the error is a negative errno.
+/// Copy a user path into `buffer` as a canonical absolute path: a relative
+/// path is taken from the program's working directory.
 fn copyPath(buffer: *[vfs.MAX_PATH]u8, pointer: u64, len: u64) error{ ENAMETOOLONG, EFAULT }![]const u8 {
     if (len == 0 or len > vfs.MAX_PATH) return error.ENAMETOOLONG;
-    validate.copyFromUser(vmm.currentCr3(), buffer, pointer, @intCast(len)) catch return error.EFAULT;
-    return buffer[0..@intCast(len)];
+    var raw: [vfs.MAX_PATH]u8 = undefined;
+    validate.copyFromUser(vmm.currentCr3(), &raw, pointer, @intCast(len)) catch return error.EFAULT;
+    return absolutePath(null, raw[0..@intCast(len)], buffer) catch error.ENAMETOOLONG;
+}
+
+/// `path` made absolute against a directory (a canonical path) or, by
+/// default, the working directory, then normalized into `out`.
+fn absolutePath(base: ?[]const u8, path: []const u8, out: *[vfs.MAX_PATH]u8) vfs.Error![]const u8 {
+    if (path.len > 0 and path[0] == '/') return vfs.normalize(path, out);
+    var joined: [2 * vfs.MAX_PATH + 1]u8 = undefined;
+    var cwd: [vfs.MAX_PATH]u8 = undefined;
+    const dir = base orelse process.currentDirectory(&cwd);
+    @memcpy(joined[0..dir.len], dir);
+    joined[dir.len] = '/';
+    @memcpy(joined[dir.len + 1 .. dir.len + 1 + path.len], path);
+    return vfs.normalize(joined[0 .. dir.len + 1 + path.len], out);
 }
 
 fn pathErrno(e: error{ ENAMETOOLONG, EFAULT }) i64 {
@@ -659,7 +660,7 @@ fn sysRename(from_ptr: u64, from_len: u64, to_ptr: u64, to_len: u64) i64 {
 }
 
 fn sysPread(fd: u64, buf: u64, len: u64, offset: u64) i64 {
-    const desc = descriptionOf(fd) orelse return if (fd <= 2) ESPIPE else EBADF;
+    const desc = descriptionOf(fd) orelse return EBADF;
     defer desc.release();
     if (len == 0) return 0;
     if (len > 4096) return EFAULT;
@@ -671,7 +672,7 @@ fn sysPread(fd: u64, buf: u64, len: u64, offset: u64) i64 {
 }
 
 fn sysPwrite(fd: u64, buf: u64, len: u64, offset: u64) i64 {
-    const desc = descriptionOf(fd) orelse return if (fd <= 2) ESPIPE else EBADF;
+    const desc = descriptionOf(fd) orelse return EBADF;
     defer desc.release();
     if (len == 0) return 0;
     if (len > 4096) return EFAULT;
@@ -683,7 +684,7 @@ fn sysPwrite(fd: u64, buf: u64, len: u64, offset: u64) i64 {
 }
 
 fn sysFtruncate(fd: u64, length: u64) i64 {
-    const desc = descriptionOf(fd) orelse return if (fd <= 2) EINVAL else EBADF;
+    const desc = descriptionOf(fd) orelse return EBADF;
     defer desc.release();
     if (length > std.math.maxInt(i64)) return EINVAL;
     fd_mod.truncate(desc, length) catch |e| return vfsErrno(e);
@@ -730,19 +731,8 @@ fn sysFdControl(fd: u64, command: u64, arg: u64) i64 {
     if (fd > std.math.maxInt(i32)) return EBADF;
     const proc = sched.currentProcess() orelse return EIO;
     const n: i32 = @intCast(fd);
-    const installed = fd_mod.lookup(&proc.files, n);
-    defer if (installed) |d| d.release();
-    if (installed == null) {
-        // The console behind 0-2 has no description to duplicate or flag.
-        if (fd > 2) return EBADF;
-        return switch (command) {
-            2 => 0,
-            3 => 0,
-            4 => vfs.OPEN_READ | vfs.OPEN_WRITE,
-            5 => 0,
-            else => EBADF,
-        };
-    }
+    const installed = fd_mod.lookup(&proc.files, n) orelse return EBADF;
+    defer installed.release();
     return switch (command) {
         0, 1 => blk: {
             if (arg >= fd_mod.MAX_OPEN) break :blk EINVAL;
@@ -750,7 +740,7 @@ fn sysFdControl(fd: u64, command: u64, arg: u64) i64 {
         },
         2 => if (fd_mod.cloexecOf(&proc.files, n)) |c| @intFromBool(c) else |e| vfsErrno(e),
         3 => if (fd_mod.setCloexec(&proc.files, n, arg & 1 != 0)) |_| 0 else |e| vfsErrno(e),
-        4 => installed.?.statusFlags(),
+        4 => installed.statusFlags(),
         5 => if (fd_mod.setStatus(&proc.files, n, @truncate(arg))) |_| 0 else |e| vfsErrno(e),
         else => EINVAL,
     };
@@ -1094,94 +1084,186 @@ fn sysClose(fd: u64) i64 {
 fn sysRead(fd: u64, buf: u64, len: u64) i64 {
     if (len == 0) return 0;
     if (len > 4096) return EFAULT;
-    if (fd > std.math.maxInt(i32)) return EBADF;
+    const desc = descriptionOf(fd) orelse return EBADF;
+    defer desc.release();
+    // Read into kernel memory first, then copy out: the object never writes
+    // through an unvalidated user pointer. Pipe, socket, eventfd and console
+    // reads may block, which needs interrupts on.
+    io.sti();
+    defer io.cli();
+    var kbuf: [4096]u8 = undefined;
+    const n = fd_mod.read(desc, kbuf[0..@intCast(len)]) catch |e| return vfsErrno(e);
+    validate.copyToUser(vmm.currentCr3(), buf, kbuf[0..n], n) catch return EFAULT;
+    return @intCast(n);
+}
 
+// ── Working directory, paths and program launch ─────────────────────────────
+
+const ERANGE: i64 = -34;
+const E2BIG: i64 = -7;
+
+fn sysChdir(path_ptr: u64, path_len: u64) i64 {
+    var path: [vfs.MAX_PATH]u8 = undefined;
+    const name = copyPath(&path, path_ptr, path_len) catch |e| return pathErrno(e);
+    const node = vfs.resolve(name) catch |e| return vfsErrno(e);
+    defer vfs.release(node);
+    if (!node.isDir()) return ENOTDIR;
+    process.setCurrentDirectory(name);
+    return 0;
+}
+
+/// Writes the working directory and a NUL; returns the length with the NUL.
+fn sysGetcwd(out: u64, size: u64) i64 {
+    var cwd: [vfs.MAX_PATH + 1]u8 = undefined;
+    const path = process.currentDirectory(cwd[0..vfs.MAX_PATH]);
+    if (size < path.len + 1) return ERANGE;
+    cwd[path.len] = 0;
+    validate.copyToUser(vmm.currentCr3(), out, cwd[0 .. path.len + 1], path.len + 1) catch return EFAULT;
+    return @intCast(path.len + 1);
+}
+
+/// The canonical absolute form of `path`, taken relative to the directory
+/// behind `dirfd` (or, for -1, the working directory). For the *at() calls.
+fn sysResolvePath(dirfd: u64, path_ptr: u64, path_len: u64, out: u64, capacity: u64) i64 {
+    if (path_len == 0 or path_len > vfs.MAX_PATH) return ENAMETOOLONG;
+    var raw: [vfs.MAX_PATH]u8 = undefined;
+    validate.copyFromUser(vmm.currentCr3(), &raw, path_ptr, @intCast(path_len)) catch return EFAULT;
+    const path = raw[0..@intCast(path_len)];
+    var base_buffer: [vfs.MAX_PATH]u8 = undefined;
+    const base: ?[]const u8 = if (dirfd == std.math.maxInt(u64) or path[0] == '/') null else blk: {
+        if (dirfd > std.math.maxInt(i32)) return EBADF;
+        const proc = sched.currentProcess() orelse return EIO;
+        break :blk fd_mod.directoryPath(&proc.files, @intCast(dirfd), &base_buffer) catch |e| return vfsErrno(e);
+    };
+    var result: [vfs.MAX_PATH]u8 = undefined;
+    const canonical = absolutePath(base, path, &result) catch |e| return vfsErrno(e);
+    if (capacity < canonical.len) return ERANGE;
+    validate.copyToUser(vmm.currentCr3(), out, canonical, canonical.len) catch return EFAULT;
+    return @intCast(canonical.len);
+}
+
+/// What spawn_process takes. `args` and `env` are NUL-terminated strings
+/// back to back; `fds` pairs {child: i32, parent: i32}, and the program
+/// starts with exactly those descriptors; `cwd` (length 0: the caller's).
+const SpawnRequest = extern struct {
+    path: u64,
+    path_len: u64,
+    args: u64,
+    args_len: u64,
+    env: u64,
+    env_len: u64,
+    fds: u64,
+    fd_count: u64,
+    cwd: u64,
+    cwd_len: u64,
+};
+
+fn countStrings(block: []const u8) ?usize {
+    if (block.len == 0) return 0;
+    if (block[block.len - 1] != 0) return null;
+    return std.mem.count(u8, block, &[_]u8{0});
+}
+
+fn sysSpawnProcess(request_ptr: u64) i64 {
     const pml4 = vmm.currentCr3();
+    var request: SpawnRequest = undefined;
+    validate.copyFromUser(pml4, std.mem.asBytes(&request), request_ptr, @sizeOf(SpawnRequest)) catch return EFAULT;
+    var path_buffer: [vfs.MAX_PATH]u8 = undefined;
+    const path = copyPath(&path_buffer, request.path, request.path_len) catch |e| return pathErrno(e);
+    if (request.args_len + request.env_len > process.ARG_MAX) return E2BIG;
+    if (request.fd_count > fd_mod.MAX_OPEN) return EINVAL;
+    const proc = sched.currentProcess() orelse return EIO;
 
-    if (descriptionOf(fd)) |desc| {
-        defer desc.release();
-        // Read into kernel memory first, then copy out: the object never
-        // writes through an unvalidated user pointer. A pipe or eventfd read
-        // may block, which needs interrupts on.
-        io.sti();
-        defer io.cli();
-        var kbuf: [4096]u8 = undefined;
-        const n = fd_mod.read(desc, kbuf[0..@intCast(len)]) catch |e| return vfsErrno(e);
-        validate.copyToUser(pml4, buf, kbuf[0..n], n) catch return EFAULT;
-        return @intCast(n);
-    }
-    if (fd != 0) return EBADF;
+    var cwd_buffer: [vfs.MAX_PATH]u8 = undefined;
+    const cwd: ?[]const u8 = if (request.cwd_len == 0) null else blk: {
+        const dir = copyPath(&cwd_buffer, request.cwd, request.cwd_len) catch |e| return pathErrno(e);
+        const node = vfs.resolve(dir) catch |e| return vfsErrno(e);
+        defer vfs.release(node);
+        if (!node.isDir()) return ENOTDIR;
+        break :blk dir;
+    };
 
-    // fd 0 is the console. Block until at least one byte is available, then
-    // return what is there rather than waiting for the full request: a shell
-    // wants each keystroke as it arrives, not a full buffer.
-    {
-        var kbuf: [256]u8 = undefined;
-        const want = @min(len, kbuf.len);
-
-        // Bound to a PTY: block on that instead of the serial line.
-        if (currentPty()) |obj| {
-            io.sti();
-            defer io.cli();
-
-            const chan = pty_mod.waitChannel(&obj.data.pty);
-            var n: usize = 0;
-            while (n == 0) {
-                if (sched.killPending()) return EINTR;
-                // Register before reading, so a write arriving in between
-                // cancels the wait instead of being missed.
-                sched.prepareWait(chan);
-                n = pty_mod.slaveRead(&obj.data.pty, kbuf[0..@intCast(want)]);
-                if (n != 0) {
-                    sched.cancelWait();
-                    break;
-                }
-                sched.commitWait();
-            }
-            validate.copyToUser(pml4, buf, kbuf[0..n], n) catch return EFAULT;
-            return @intCast(n);
+    // Arguments and environment, copied into one block the spawn will own.
+    const block_len: usize = @intCast(request.args_len + request.env_len);
+    var arguments: process.Arguments = .{};
+    if (block_len > 0) {
+        const block = heap.alloc(block_len) catch return ENOMEM;
+        const args = block[0..@intCast(request.args_len)];
+        const env = block[@intCast(request.args_len)..block_len];
+        validate.copyFromUser(pml4, args, request.args, args.len) catch {
+            heap.free(block);
+            return EFAULT;
+        };
+        validate.copyFromUser(pml4, env, request.env, env.len) catch {
+            heap.free(block);
+            return EFAULT;
+        };
+        const argc = countStrings(args);
+        const envc = countStrings(env);
+        if (argc == null or envc == null or argc.? + envc.? > process.MAX_STRINGS) {
+            heap.free(block);
+            return EINVAL;
         }
-
-        // MSR_FMASK clears IF on syscall entry, so we arrive with interrupts
-        // disabled. That is right for the fast path, but a blocking read has
-        // to re-enable them: the bytes we are waiting for arrive via the
-        // serial RX interrupt, so spinning with IF clear waits forever.
-        io.sti();
-        defer io.cli();
-
-        const chan = serial.waitChannel();
-        var n: usize = 0;
-        while (n == 0) {
-            if (sched.killPending()) return EINTR;
-            sched.prepareWait(chan);
-            while (n < want) {
-                const c = serial.readByte() orelse break;
-                kbuf[n] = c;
-                n += 1;
-            }
-            if (n != 0) {
-                sched.cancelWait();
-                break;
-            }
-            sched.commitWait();
-        }
-
-        validate.copyToUser(pml4, buf, kbuf[0..n], n) catch return EFAULT;
-        return @intCast(n);
+        arguments = .{ .block = block[0..block_len], .argc = argc.?, .envc = envc.?, .owned = true };
     }
+
+    // Descriptors: a reference on each granted description.
+    const grant_count: usize = @intCast(request.fd_count);
+    var grants: []process.Grant = &.{};
+    if (grant_count > 0) {
+        const pairs_raw = heap.alloc(grant_count * 8) catch {
+            arguments.free();
+            return ENOMEM;
+        };
+        defer heap.free(pairs_raw);
+        validate.copyFromUser(pml4, pairs_raw[0 .. grant_count * 8], request.fds, grant_count * 8) catch {
+            arguments.free();
+            return EFAULT;
+        };
+        const pairs: [*]const [2]i32 = @ptrCast(@alignCast(pairs_raw));
+        const grants_raw = heap.alloc(grant_count * @sizeOf(process.Grant)) catch {
+            arguments.free();
+            return ENOMEM;
+        };
+        const list: [*]process.Grant = @ptrCast(@alignCast(grants_raw));
+        var taken: usize = 0;
+        var seen = std.StaticBitSet(fd_mod.MAX_OPEN).initEmpty();
+        const failure: ?i64 = for (pairs[0..grant_count]) |pair| {
+            if (pair[0] < 0 or pair[0] >= fd_mod.MAX_OPEN or seen.isSet(@intCast(pair[0]))) break EINVAL;
+            seen.set(@intCast(pair[0]));
+            const desc = fd_mod.lookup(&proc.files, pair[1]) orelse break EBADF;
+            list[taken] = .{ .number = pair[0], .desc = desc };
+            taken += 1;
+        } else null;
+        if (failure) |code| {
+            for (list[0..taken]) |grant| grant.desc.release();
+            heap.free(grants_raw);
+            arguments.free();
+            return code;
+        }
+        grants = list[0..grant_count];
+    }
+
+    const tid = process.spawnWith(path, .{
+        .arguments = arguments,
+        .grants = grants,
+        .exact_descriptors = true,
+        .cwd = cwd,
+    }) catch |e| return switch (e) {
+        error.NotFound, error.NotMounted => ENOENT,
+        error.OutOfMemory => ENOMEM,
+        error.BadImage => ENOEXEC,
+    };
+    return @intCast(tid);
 }
 
 const ECHILD: i64 = -10;
 const ENOEXEC: i64 = -8;
 
 fn sysSpawn(path_ptr: u64, path_len: u64) i64 {
-    if (path_len == 0 or path_len > vfs.MAX_PATH) return ENAMETOOLONG;
-
-    const pml4 = vmm.currentCr3();
     var path: [vfs.MAX_PATH]u8 = undefined;
-    validate.copyFromUser(pml4, &path, path_ptr, @intCast(path_len)) catch return EFAULT;
-
-    const tid = process.spawnPath(path[0..@intCast(path_len)]) catch |e| {
+    const name = copyPath(&path, path_ptr, path_len) catch |e| return pathErrno(e);
+    const tid = process.spawnPath(name) catch |e| {
         return switch (e) {
             error.NotFound, error.NotMounted => ENOENT,
             error.OutOfMemory => -12,
@@ -1295,15 +1377,13 @@ fn collectEntry(ctx_ptr: *anyopaque, name: []const u8, ino: u32, dtype: u8) bool
 }
 
 fn sysReaddir(path_ptr: u64, path_len: u64, out: u64, max: u64, skip: u64) i64 {
-    if (path_len == 0 or path_len > vfs.MAX_PATH) return ENAMETOOLONG;
     if (max == 0) return 0;
-
     const pml4 = vmm.currentCr3();
     var path: [vfs.MAX_PATH]u8 = undefined;
-    validate.copyFromUser(pml4, &path, path_ptr, @intCast(path_len)) catch return EFAULT;
+    const name = copyPath(&path, path_ptr, path_len) catch |e| return pathErrno(e);
 
     var ctx = ReaddirCtx{ .max = @min(max, 32), .skip = skip };
-    vfs.iterateDir(path[0..@intCast(path_len)], &ctx, collectEntry) catch |e| {
+    vfs.iterateDir(name, &ctx, collectEntry) catch |e| {
         return vfsErrno(e);
     };
 

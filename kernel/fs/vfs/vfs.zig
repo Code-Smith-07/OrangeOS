@@ -115,7 +115,8 @@ pub fn superblock() *const citrusfs.Superblock {
 /// is "/"). The result lives in `out`.
 pub fn normalize(path: []const u8, out: *[MAX_PATH]u8) Error![]const u8 {
     if (path.len == 0 or path[0] != '/') return Error.NotFound;
-    if (path.len > MAX_PATH) return Error.NameTooLong;
+    // The input may be longer than MAX_PATH (a directory joined with a
+    // relative path); the canonical result may not.
     var len: usize = 0;
     var it = std.mem.tokenizeScalar(u8, path, '/');
     while (it.next()) |component| {

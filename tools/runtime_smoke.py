@@ -139,6 +139,11 @@ def main():
                     or "runtime: FAIL socket pairs" in guest.log(), "socket pairs and descriptor passing", 120)
         assert ("unix-probe: PASS stream, seqpacket, datagram, SCM_RIGHTS (pipes, shared offsets, CTRUNC, CLOEXEC), "
                 "EOF/EPIPE/shutdown, 256 KiB, epoll and 200 descriptor-passing rounds") in guest.log(), guest.log()[-2000:]
+        guest.until(lambda: "runtime: PASS posix_spawn, working directories and cross-process descriptors" in guest.log()
+                    or "spawn-probe: FAIL" in guest.log() or "runtime: FAIL program launch" in guest.log(),
+                    "posix_spawn, working directories and cross-process descriptors", 120)
+        assert ("spawn-probe: PASS posix_spawn(p) with argv, env, dup2/close/open/chdir actions and close-on-exec; "
+                "stdio pipes; cross-process descriptor passing; waitpid; chdir/fchdir/*at") in guest.log(), guest.log()[-2000:]
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]

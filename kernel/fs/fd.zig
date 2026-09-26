@@ -10,8 +10,9 @@
 //! progress each hold a reference, and the last release closes the object;
 //! that is the moment a pipe's reader sees end of file.
 //!
-//! Descriptors 0, 1 and 2 are the console (or the program's terminal) unless
-//! a description is installed there with dup2. New descriptors start at 3.
+//! Every program starts with console descriptions (its terminal, if it has
+//! one) at 0, 1 and 2, or with exactly the descriptors its spawner granted.
+//! New descriptors take the lowest free number.
 
 const std = @import("std");
 const heap = @import("../mm/heap.zig");
@@ -22,10 +23,13 @@ const eventfd = @import("../ipc/eventfd.zig");
 const readiness = @import("../ipc/readiness.zig");
 const epoll = @import("../ipc/epoll.zig");
 const unix_socket = @import("../ipc/unix_socket.zig");
+const console_file = @import("console_file.zig");
 
 pub const Error = vfs.Error;
 pub const MAX_OPEN = 256;
-pub const FD_BASE: i32 = 3;
+/// New descriptors take the lowest free number. 0-2 start as the console,
+/// so files begin at 3 unless the program closed one of those.
+pub const FD_BASE: i32 = 0;
 /// Status bits a description can carry (vfs.OPEN_* values).
 const STATUS_MASK: u32 = vfs.OPEN_READ | vfs.OPEN_WRITE | vfs.OPEN_APPEND | vfs.OPEN_NONBLOCK;
 
@@ -36,11 +40,19 @@ pub const Object = union(enum) {
     eventfd: *eventfd.EventFd,
     epoll: *epoll.Epoll,
     socket: SocketEnd,
+    /// The console or the program's terminal (what 0, 1 and 2 start as).
+    console,
 };
 
 pub const SocketEnd = struct { pair: *unix_socket.Pair, end: u1 };
 
-pub const NodeFile = struct { node: vfs.Node, offset: u64 = 0 };
+pub const NodeFile = struct {
+    node: vfs.Node,
+    offset: u64 = 0,
+    /// A directory's canonical path, for *at() calls relative to it. It is
+    /// the path it was opened by; a directory renamed since keeps the old one.
+    path: ?[]u8 = null,
+};
 
 pub const Description = struct {
     refs: u32 = 1,
@@ -75,7 +87,11 @@ pub const Description = struct {
         std.debug.assert(previous > 0);
         if (previous != 1) return;
         switch (self.object) {
-            .node => |n| vfs.release(n.node),
+            .node => |n| {
+                vfs.release(n.node);
+                if (n.path) |path| heap.free(path.ptr);
+            },
+            .console => {},
             .pipe_read => |p| pipe.closeEnd(p, false),
             .pipe_write => |p| pipe.closeEnd(p, true),
             .eventfd => |e| eventfd.destroy(e),
@@ -98,7 +114,7 @@ pub const Description = struct {
     /// nesting epoll instances is not supported.
     pub fn source(self: *Description) ?*readiness.Source {
         return switch (self.object) {
-            .node, .epoll => null,
+            .node, .epoll, .console => null,
             .pipe_read => |p| pipe.source(p, false),
             .pipe_write => |p| pipe.source(p, true),
             .eventfd => |e| &e.source,
@@ -246,12 +262,24 @@ pub fn setStatus(table: *FileTable, fd: i32, flags: u32) Error!void {
 /// open(): resolve (and maybe create) `path`, then install it.
 pub fn open(table: *FileTable, path: []const u8, flags: u32) Error!i32 {
     if (flags & ~vfs.OPEN_KNOWN != 0) return Error.InvalidArgument;
+    var canonical_buffer: [vfs.MAX_PATH]u8 = undefined;
+    const canonical = try vfs.normalize(path, &canonical_buffer);
     // Path resolution reads the disk; it runs before taking the table lock.
-    const node = try vfs.openNode(path, flags);
+    const node = try vfs.openNode(canonical, flags);
     const access = (if (flags & vfs.OPEN_WRITE != 0) vfs.OPEN_WRITE | (flags & vfs.OPEN_APPEND) else 0) |
         (if (flags & vfs.OPEN_READ != 0 or flags & vfs.OPEN_WRITE == 0) vfs.OPEN_READ else 0);
-    const desc = Description.create(.{ .node = .{ .node = node } }, access | (flags & vfs.OPEN_NONBLOCK)) catch |e| {
+    var file: NodeFile = .{ .node = node };
+    if (node.isDir()) {
+        const copy = heap.alloc(canonical.len) catch {
+            vfs.release(node);
+            return Error.OutOfMemory;
+        };
+        @memcpy(copy[0..canonical.len], canonical);
+        file.path = copy[0..canonical.len];
+    }
+    const desc = Description.create(.{ .node = file }, access | (flags & vfs.OPEN_NONBLOCK)) catch |e| {
         vfs.release(node);
+        if (file.path) |p| heap.free(p.ptr);
         return e;
     };
     return install(table, desc, FD_BASE, flags & vfs.OPEN_CLOEXEC != 0) catch |e| {
@@ -352,6 +380,7 @@ pub fn read(desc: *Description, buf: []u8) Error!usize {
             for (got.rights[0..got.right_count]) |carried| carried.release();
             return got.bytes;
         },
+        .console => return console_file.read(buf) catch Error.Interrupted,
         .pipe_write, .epoll => return Error.BadFd,
     }
 }
@@ -371,6 +400,7 @@ pub fn write(desc: *Description, data: []const u8) Error!usize {
         .pipe_write => |p| return pipe.write(p, data, desc.nonblocking()) catch |e| pipeError(e),
         .eventfd => |e| return eventfd.write(e, data, desc.nonblocking()) catch |err| eventError(err),
         .socket => |sock| return unix_socket.send(sock.pair, sock.end, data, &.{}, desc.nonblocking()) catch |e| socketError(e),
+        .console => return console_file.write(data),
         .pipe_read, .epoll => return Error.BadFd,
     }
 }
@@ -452,6 +482,7 @@ pub fn stat(desc: *Description) Status {
         .pipe_write => .{ .size = 0, .kind = .pipe, .mode = mode },
         .eventfd, .epoll => .{ .size = 0, .kind = .anonymous, .mode = mode },
         .socket => |sock| .{ .size = unix_socket.pending(sock.pair, sock.end), .kind = .socket, .mode = mode },
+        .console => .{ .size = 0, .kind = .console, .mode = mode },
     };
 }
 
@@ -482,6 +513,8 @@ pub fn readinessOf(desc: *Description) u32 {
             break :blk bits;
         },
         .epoll => 0,
+        // Output never blocks; input readiness is not tracked yet.
+        .console => epoll.OUT | epoll.WRNORM,
         .socket => |sock| blk: {
             const r = unix_socket.poll(sock.pair, sock.end);
             var bits: u32 = 0;
@@ -595,4 +628,30 @@ pub fn statFd(table: *FileTable, fd: i32) Error!Status {
     const desc = try get(table, fd);
     defer desc.release();
     return stat(desc);
+}
+
+/// Give a new program the console at 0, 1 and 2, where nothing was
+/// installed for it.
+pub fn installConsole(table: *FileTable) Error!void {
+    for (0..3) |i| {
+        const number: i32 = @intCast(i);
+        if (lookup(table, number)) |existing| {
+            existing.release();
+            continue;
+        }
+        const desc = try Description.create(.console, vfs.OPEN_READ | vfs.OPEN_WRITE);
+        installAt(table, desc, number, false) catch {};
+    }
+}
+
+/// The canonical path of the directory behind `fd`, copied into `out`.
+pub fn directoryPath(table: *FileTable, number: i32, out: *[vfs.MAX_PATH]u8) Error![]const u8 {
+    const desc = try get(table, number);
+    defer desc.release();
+    const path = switch (desc.object) {
+        .node => |*file| file.path orelse return Error.NotDirectory,
+        else => return Error.NotDirectory,
+    };
+    @memcpy(out[0..path.len], path);
+    return out[0..path.len];
 }
