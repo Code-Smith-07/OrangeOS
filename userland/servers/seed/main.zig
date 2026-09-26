@@ -215,6 +215,13 @@ export fn _start() callconv(.c) noreturn {
             pulp.exit(204);
         }
         pulp.puts("runtime: PASS shared memory and file mappings\n");
+        const random_program = pulp.spawn("/bin/random-probe") catch pulp.exit(205);
+        const random_code = pulp.wait(random_program) catch pulp.exit(206);
+        if (random_code != 0) {
+            pulp.print("runtime: FAIL randomness exit {d}\n", .{random_code});
+            pulp.exit(207);
+        }
+        pulp.puts("runtime: PASS randomness and device files\n");
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.
         for (0..2) |_| {

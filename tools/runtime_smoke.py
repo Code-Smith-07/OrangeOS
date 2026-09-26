@@ -155,6 +155,11 @@ def main():
                     "shared memory and file mappings", 120)
         assert ("shm-probe: PASS memfd, aliasing shared views, a child sharing a memfd, seals, DONTNEED, "
                 "unlinked mappings, MAP_PRIVATE files, pages returned") in guest.log(), guest.log()[-2000:]
+        guest.until(lambda: "runtime: PASS randomness and device files" in guest.log()
+                    or "random-probe: FAIL" in guest.log() or "runtime: FAIL randomness" in guest.log(),
+                    "randomness and device files", 120)
+        assert re.search(r"random-probe: PASS getrandom, getentropy, 1 MiB urandom \(chi-square \d+\), /dev/random, "
+                         r"/dev/null, /dev/zero, /dev listing", guest.log()), guest.log()[-2000:]
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]

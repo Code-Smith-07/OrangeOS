@@ -64,6 +64,7 @@ const OR = struct {
     const vm_advise = 145;
     const vm_remap = 146;
     const memfd = 147;
+    const getrandom = 148;
     const thread_create = 40;
     const thread_exit = 41;
     const gettid = 45;
@@ -146,6 +147,7 @@ const SYS = struct {
     const chdir = 80;
     const fchdir = 81;
     const memfd_create = 319;
+    const getrandom = 318;
     const epoll_create = 213;
     const epoll_wait = 232;
     const epoll_ctl = 233;
@@ -329,7 +331,8 @@ const S_IFIFO: u32 = 0o010000;
 const S_IFSOCK: u32 = 0o140000;
 
 /// Native kinds: 1 file, 2 directory, 3 console, 4 pipe, 5 socket,
-/// 6 anonymous (eventfd, epoll), which Linux reports with no type bits.
+/// 6 anonymous (eventfd, epoll), which Linux reports with no type bits,
+/// 7 device (/dev/null, /dev/urandom, ...).
 fn modeOf(kind: u32) u32 {
     return switch (kind) {
         2 => S_IFDIR | 0o755,
@@ -337,6 +340,7 @@ fn modeOf(kind: u32) u32 {
         4 => S_IFIFO | 0o600,
         5 => S_IFSOCK | 0o777,
         6 => 0o600,
+        7 => S_IFCHR | 0o666,
         else => S_IFREG | 0o644,
     };
 }
@@ -1157,6 +1161,9 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
             break :blk raw2(OR.chdir, @intFromPtr(&buffer), @intCast(len));
         },
         SYS.wait4 => wait4(a1, b, c, d),
+        // GRND_NONBLOCK (1) and GRND_INSECURE (4); GRND_RANDOM (2) changes
+        // nothing here, as on current Linux.
+        SYS.getrandom => if (c & ~@as(u64, 7) != 0) err(E.INVAL) else raw3(OR.getrandom, a, b, (c & 1) | (if (c & 4 != 0) @as(u64, 2) else 0)),
         SYS.memfd_create => blk: {
             const MFD_CLOEXEC = 1;
             const MFD_ALLOW_SEALING = 2;
@@ -1233,9 +1240,10 @@ fn getdents(fd: u64, out: u64, len: u64) i64 {
         const next: i64 = if (position < 0) @intCast(i + 1) else position - count + @as(i64, @intCast(i)) + 1;
         std.mem.writeInt(i64, at[8..16], next, .little);
         std.mem.writeInt(u16, at[16..18], @intCast(record), .little);
-        at[18] = switch (entry.type) { // DT_DIR, DT_REG, DT_UNKNOWN
+        at[18] = switch (entry.type) { // DT_DIR, DT_REG, DT_CHR, DT_UNKNOWN
             2 => 4,
             1 => 8,
+            3 => 2,
             else => 0,
         };
         @memcpy(at[DIRENT_HEADER .. DIRENT_HEADER + entry.name_len], entry.name[0..entry.name_len]);

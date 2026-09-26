@@ -1360,6 +1360,12 @@ futex waits fault pages in the same way before their access begins. The
 older `mmap` (10) and `vm_reserve`/`vm_commit` calls keep their eager
 semantics.
 
+Devices (2026-09-26): `/dev` holds `null`, `zero`, `random` (waits for the
+generator's first seeding) and `urandom` (never waits); nothing can be
+created or removed there. The generator (`kernel/lib/random.zig`) is keyed
+from a BLAKE2s pool fed by RDSEED/RDRAND when the CPU has them and by
+per-CPU interrupt timing (one bit credited per 64 interrupts).
+
 Filesystems (2026-09-25): the CitrusFS root is read-only; a tmpfs mounted at
 `/tmp` holds writable files and directories in memory, up to a quarter of
 physical memory. Paths are normalized (`.`, `..`, repeated slashes) before
@@ -1439,6 +1445,7 @@ link musl 1.2.5, whose Linux-numbered calls are translated in userland by
 | 147 | `memfd` | `(flags) → fd` — an anonymous tmpfs file; flags 2 close-on-exec, 8 allow sealing; seals through `fd_control` 6 (add) and 7 (get) (implemented) | P5 runtime |
 | 145 | `vm_advise` | `(address, length, advice)` — 4 DONTNEED releases lazily backed pages, which read zero afterwards; other advice ignored (implemented) | P5 runtime |
 | 146 | `vm_remap` | `(address, old_length, new_length, flags) → address` — shrink, grow in place, or (flag 1) move a lazily backed range without copying (implemented) | P5 runtime |
+| 148 | `getrandom` | `(buf, len, flags) → count` — up to 4096 bytes of ChaCha20 output; flags 1 fail with `-EAGAIN` before the first seeding, 2 use the pool as it stands (implemented) | P5 runtime |
 | 143 | `spawn_process` | `(*{path, args, env, fds, cwd})` → pid — NUL-separated argument and environment blocks (together ≤ 32 KiB, ≤ 1024 strings), `{child, parent}` descriptor pairs the program starts with exactly, and a working directory (implemented) | P5 runtime |
 | | **── Threads ──** | | |
 | 40 | `thread_create` | `(entry, stack, arg, tls_base, exit_word) → tid` (implemented; `entry(arg)` in ring 3, kernel stores 0 to `exit_word` and wakes it at thread exit) | P4 runtime |

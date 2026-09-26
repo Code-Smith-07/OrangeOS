@@ -40,6 +40,8 @@ mkdir -p "$ROOTFS/share/wallpapers"
 mkdir -p "$ROOTFS/Trash"
 # Mount point for the in-memory tmpfs, so listings of / show it.
 mkdir -p "$ROOTFS/tmp"
+# Mount point for the device files (/dev/null, /dev/urandom, ...).
+mkdir -p "$ROOTFS/dev"
 cp assets/fonts/OFL-Inter.txt "$ROOTFS/share/licenses/OFL-Inter.txt"
 cp assets/fonts/OFL-JetBrainsMono.txt "$ROOTFS/share/licenses/OFL-JetBrainsMono.txt"
 # C programs link musl (MIT), compiled from the copy bundled with the pinned
@@ -76,7 +78,7 @@ if [ ! -f zig-out/bin/init ]; then
 fi
 
 cp zig-out/bin/init "$ROOTFS/sbin/init"
-for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe cxx-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe tls-probe futex-probe futex-waiter thread-probe thread-exit-probe thread-fault-probe thread-last-probe net-thread-probe net-exit-probe tcp-probe jit-probe fault-wx musl-probe cxx-probe file-probe thread-capacity pipe-probe epoll-probe unix-probe spawn-probe spawn-child mmap-probe shm-probe fault-null fault-ro fault-nx fault-opcode; do
+for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe cxx-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe tls-probe futex-probe futex-waiter thread-probe thread-exit-probe thread-fault-probe thread-last-probe net-thread-probe net-exit-probe tcp-probe jit-probe fault-wx musl-probe cxx-probe file-probe thread-capacity pipe-probe epoll-probe unix-probe spawn-probe spawn-child mmap-probe shm-probe random-probe fault-null fault-ro fault-nx fault-opcode; do
     if [ -f "zig-out/bin/$prog" ]; then
         cp "zig-out/bin/$prog" "$ROOTFS/bin/$prog"
     fi

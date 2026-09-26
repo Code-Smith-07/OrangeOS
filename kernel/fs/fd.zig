@@ -467,7 +467,7 @@ pub fn seek(desc: *Description, offset: i64, whence: Whence) Error!u64 {
     return file.offset;
 }
 
-pub const Kind = enum(u32) { file = 1, directory = 2, console = 3, pipe = 4, socket = 5, anonymous = 6 };
+pub const Kind = enum(u32) { file = 1, directory = 2, console = 3, pipe = 4, socket = 5, anonymous = 6, device = 7 };
 pub const Status = struct { size: u64, kind: Kind, mode: u32 };
 
 pub fn stat(desc: *Description) Status {
@@ -475,7 +475,7 @@ pub fn stat(desc: *Description) Status {
     return switch (desc.object) {
         .node => |*file| .{
             .size = file.node.size(),
-            .kind = if (file.node.isDir()) .directory else .file,
+            .kind = if (file.node.isDir()) .directory else if (file.node == .device) .device else .file,
             .mode = mode,
         },
         .pipe_read => |p| .{ .size = pipe.bytesAvailable(p), .kind = .pipe, .mode = mode },
