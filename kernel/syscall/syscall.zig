@@ -10,6 +10,7 @@ const validate = @import("validate.zig");
 const vmm = @import("../mm/vmm.zig");
 const vfs = @import("../fs/vfs/vfs.zig");
 const fd_mod = @import("../fs/fd.zig");
+const tmpfs = @import("../fs/tmpfs/tmpfs.zig");
 const epoll = @import("../ipc/epoll.zig");
 const unix_socket = @import("../ipc/unix_socket.zig");
 const heap = @import("../mm/heap.zig");
@@ -112,6 +113,7 @@ pub const Nr = enum(u64) {
     vm_map = 144,
     vm_advise = 145,
     vm_remap = 146,
+    memfd = 147,
     readdir = 34,
     readdir_page = 38,
     port_create = 50,
@@ -169,6 +171,8 @@ const EFBIG: i64 = -27;
 const EBUSY: i64 = -16;
 const ESPIPE: i64 = -29;
 const EPIPE: i64 = -32;
+const EACCES: i64 = -13;
+const ENODEV: i64 = -19;
 const ENOTSOCK: i64 = -88;
 const EPERM: i64 = -1;
 const ENOMEM: i64 = -12;
@@ -216,6 +220,7 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .vm_map => sysVmMap(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9),
         .vm_advise => sysVmAdvise(frame.rdi, frame.rsi, frame.rdx),
         .vm_remap => sysVmRemap(frame.rdi, frame.rsi, frame.rdx, frame.r10),
+        .memfd => sysMemfd(frame.rdi),
         .close => sysClose(frame.rdi),
         .read => sysRead(frame.rdi, frame.rsi, frame.rdx),
         .spawn => sysSpawn(frame.rdi, frame.rsi),
@@ -328,6 +333,8 @@ fn sysMprotect(address: u64, len: u64, prot: u64) i64 {
 const MAP_FIXED: u64 = 1;
 const MAP_FIXED_NOREPLACE: u64 = 2;
 const MAP_HINT: u64 = 4;
+/// With a descriptor: share the file's pages instead of copying them.
+const MAP_SHARED: u64 = 8;
 
 /// Memory in the Linux mmap model: backed as it is touched, with one
 /// protection that mprotect can change page range by page range. `address`
@@ -335,10 +342,38 @@ const MAP_HINT: u64 = 4;
 /// already there; MAP_FIXED_NOREPLACE fails instead). Anonymous only so far:
 /// `fd` must be -1.
 fn sysVmMap(address: u64, length: u64, prot: u64, flags: u64, fd: u64, offset: u64) i64 {
-    if (flags & ~(MAP_FIXED | MAP_FIXED_NOREPLACE | MAP_HINT) != 0) return EINVAL;
-    if (fd != std.math.maxInt(u64) or offset != 0) return EINVAL;
+    if (flags & ~(MAP_FIXED | MAP_FIXED_NOREPLACE | MAP_HINT | MAP_SHARED) != 0) return EINVAL;
     const t = sched.currentTask() orelse return -14;
     const space = t.user_space orelse return -14;
+    // A descriptor: share a tmpfs file's frames (memfd, /tmp), or copy any
+    // file's pages privately on first touch.
+    var backing: user_vm.Backing = .anonymous;
+    if (fd != std.math.maxInt(u64)) {
+        if (offset % vmm.PAGE_SIZE != 0) return EINVAL;
+        const desc = descriptionOf(fd) orelse return EBADF;
+        defer desc.release();
+        const file = switch (desc.object) {
+            .node => |*f| f,
+            else => return ENODEV,
+        };
+        if (file.node.isDir()) return ENODEV;
+        const status = desc.statusFlags();
+        if (status & vfs.OPEN_READ == 0) return EACCES;
+        const want_write = prot & 2 != 0;
+        if (flags & MAP_SHARED != 0 and file.node == .tmp) {
+            if (want_write and status & vfs.OPEN_WRITE == 0) return EACCES;
+            tmpfs.beginMapping(file.node.tmp, want_write, true) catch return EPERM;
+            backing = .{ .shared = .{ .inode = file.node.tmp, .offset = offset } };
+        } else {
+            // A read-only filesystem cannot share writes.
+            if (flags & MAP_SHARED != 0 and want_write) return EACCES;
+            const ref = user_vm.FileRef.create(vfs.retain(file.node)) catch {
+                vfs.release(file.node);
+                return ENOMEM;
+            };
+            backing = .{ .file = .{ .ref = ref, .offset = offset } };
+        }
+    } else if (offset != 0 or flags & MAP_SHARED != 0) return EINVAL;
     const placement: user_vm.Placement = if (flags & MAP_FIXED_NOREPLACE != 0)
         .fixed_noreplace
     else if (flags & MAP_FIXED != 0)
@@ -349,7 +384,30 @@ fn sysVmMap(address: u64, length: u64, prot: u64, flags: u64, fd: u64, offset: u
         .anywhere;
     io.sti();
     defer io.cli();
-    return @intCast(user_vm.mapLazy(space, address, length, prot, placement) catch |e| return vmErrno(e));
+    return @intCast(user_vm.mapBacked(space, address, length, prot, placement, backing) catch |e| {
+        switch (backing) {
+            .anonymous => {},
+            .shared => |b| tmpfs.endMapping(b.inode, prot & 2 != 0),
+            .file => |b| b.ref.release(),
+        }
+        return vmErrno(e);
+    });
+}
+
+/// memfd_create: an anonymous tmpfs file. Flags: 2 close-on-exec, 8 allow
+/// sealing.
+fn sysMemfd(flags: u64) i64 {
+    if (flags & ~(FD_CLOEXEC | 8) != 0) return EINVAL;
+    const proc = sched.currentProcess() orelse return EIO;
+    const inode = tmpfs.createAnonymous(flags & 8 != 0) catch return ENOMEM;
+    const desc = fd_mod.Description.create(.{ .node = .{ .node = .{ .tmp = inode } } }, vfs.OPEN_READ | vfs.OPEN_WRITE) catch {
+        tmpfs.release(inode);
+        return ENOMEM;
+    };
+    return fd_mod.install(&proc.files, desc, fd_mod.FD_BASE, flags & FD_CLOEXEC != 0) catch |e| {
+        desc.release();
+        return vfsErrno(e);
+    };
 }
 
 /// madvise. 4 (DONTNEED) releases the frames of lazily backed pages, which
@@ -648,6 +706,7 @@ fn vfsErrno(e: vfs.Error) i64 {
         vfs.Error.NotSeekable => ESPIPE,
         vfs.Error.OutOfMemory => ENOMEM,
         vfs.Error.MessageTooLong => EMSGSIZE,
+        vfs.Error.NotPermitted => EPERM,
         vfs.Error.NameTooLong => ENAMETOOLONG,
         vfs.Error.TooManyOpen => EMFILE,
         vfs.Error.BadFd => EBADF,
@@ -799,6 +858,20 @@ fn sysFdControl(fd: u64, command: u64, arg: u64) i64 {
         3 => if (fd_mod.setCloexec(&proc.files, n, arg & 1 != 0)) |_| 0 else |e| vfsErrno(e),
         4 => installed.statusFlags(),
         5 => if (fd_mod.setStatus(&proc.files, n, @truncate(arg))) |_| 0 else |e| vfsErrno(e),
+        // Seals, for tmpfs files and memfds.
+        6, 7 => switch (installed.object) {
+            .node => |f| switch (f.node) {
+                .tmp => |inode| if (command == 7)
+                    @as(i64, tmpfs.seals(inode))
+                else if (tmpfs.addSeals(inode, @truncate(arg))) |_| 0 else |e| switch (e) {
+                    error.Sealed => EPERM,
+                    error.Busy => EBUSY,
+                    else => EINVAL,
+                },
+                else => EINVAL,
+            },
+            else => EINVAL,
+        },
         else => EINVAL,
     };
 }

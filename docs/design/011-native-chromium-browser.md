@@ -448,7 +448,7 @@ named hold the evidence.
 | A1 | Browser-scale task table and per-program thread capacity | Done (§11.38) |
 | A2 | Pipes, `socketpair`/Unix sockets with descriptor passing, `poll`/`epoll`, `eventfd` | Done (§11.39–§11.41); passing between *processes* needs A3's inherited descriptors; named Unix sockets deferred to B8 |
 | A3 | POSIX process launch (`posix_spawn`: argv, environment, inherited descriptors), `chdir`, `*at()` relative to directory descriptors | Done (§11.42); Chromium's `LaunchProcess` needs a recorded patch to use `posix_spawn` |
-| A4 | Shared memory by descriptor (`memfd`, `mmap(MAP_SHARED)`), file mappings | To do |
+| A4 | Shared memory by descriptor (`memfd`, `mmap(MAP_SHARED)`), file mappings | Done (§11.44) |
 | A5 | V8/PartitionAlloc memory: `MAP_FIXED` and hints within reservations, alignment, `madvise(DONTNEED)`, `mremap` | Done (§11.38, §11.43): demand paging, `PROT_NONE` reservations, `MAP_FIXED(_NOREPLACE)`, hints, trimming, `DONTNEED`/`FREE`, `mremap`, 8 MiB stack |
 | A6 | Entropy: `getrandom`, `/dev/urandom` | To do |
 | A7 | Minimal signals: `sigaction`, `kill`, `SIGCHLD`, crash handlers | To do |
@@ -1990,9 +1990,68 @@ vCPUs, plus the desktop and Files suites.
   256 MiB `malloc` and 64 MiB `calloc`, and W^X generated code with RWX
   refused.
 
-Not yet: shared memory by descriptor and file mappings (A4, next);
-randomized placement (ASLR); swap and overcommit accounting, since running
+Not yet: randomized placement (ASLR); swap and overcommit accounting, since running
 out of frames at a fault ends the program.
+
+### 11.44 Shared memory by descriptor and file mappings
+
+This is item A4. Chromium on Linux creates shared memory with
+`memfd_create`, sizes it with `ftruncate`, seals read-only regions, passes
+the descriptor to another process, and maps it there with
+`mmap(MAP_SHARED)`. It loads ICU data, fonts and resource packs with
+`mmap(MAP_PRIVATE)` of files.
+
+**memfd** (147) creates a tmpfs file in no directory. Everything that works
+on a `/tmp` file works on it, and it is freed with its last reference. Seals
+follow Linux:
+- `F_SEAL_WRITE` blocks writes and new writable mappings, and is refused
+  (`EBUSY`) while a writable shared mapping exists; `F_SEAL_FUTURE_WRITE`
+  blocks only future ones;
+- `F_SEAL_SHRINK` and `F_SEAL_GROW` block size changes;
+- `F_SEAL_SEAL` blocks further seals;
+- without `MFD_ALLOW_SEALING`, a memfd starts sealed against sealing.
+
+**Lazy regions gain a backing** (`kernel/mm/user_vm.zig`):
+- **Anonymous:** zeroed frames of their own, as before.
+- **Shared:** the frames of a tmpfs file, including memfds. A fault maps the
+  file's page, allocating it if it was a hole, *without* the owned bit.
+  Unmapping, `MADV_DONTNEED` and teardown only remove translations, so
+  every mapping in every process sees the same bytes as the descriptor's
+  `read`/`write`.
+- **File:** private copies of any file's pages. The page is read on first
+  touch, outside the VM lock since it may wait for the disk, and then mapped
+  if the region is still there.
+- Every region piece holds its own reference on the backing, so splits by
+  `mprotect`/`munmap` duplicate it and removals release it. File nodes live
+  in a small shared box, which keeps region-table entries small.
+- A file mapped shared cannot shrink (`EBUSY`), since its frames are in
+  those address spaces; Linux would instead deliver `SIGBUS` on access.
+- Making a shared mapping writable with `mprotect` respects write seals.
+- `mremap` stays anonymous-only.
+
+musl maps `mmap` with a descriptor (`MAP_SHARED`, `MAP_SHARED_VALIDATE`,
+`MAP_PRIVATE`), `memfd_create`, and `F_ADD_SEALS`/`F_GET_SEALS` onto these.
+Shared anonymous memory is private, which is equivalent without `fork`.
+Writable shared mappings of the read-only disk are refused with `EACCES`;
+read-only ones behave as private copies of an unchanging file.
+
+Verified on 2026-09-26: full runtime suite (57 checks) on two and four
+vCPUs, kernel filesystem tests (23), and the desktop and Files suites.
+`/bin/shm-probe` (C, `-Werror`) checks:
+- a 4 MiB memfd with two views aliasing each other and the descriptor's
+  `pread`/`pwrite`, with untouched pages reading zero;
+- a spawned child mapping the inherited memfd, verifying the parent's
+  pattern and writing a reply the parent then sees;
+- `MADV_DONTNEED` keeping shared contents, and `EBUSY` for shrinking a
+  mapped memfd (growing still works);
+- seals: `EBUSY` while writably mapped; writes, writable mappings and
+  `mprotect` to writable refused once sealed; read-only mappings allowed;
+  `F_SEAL_SEAL`; and `EPERM` without `MFD_ALLOW_SEALING`;
+- a shared mapping of a `/tmp` file outliving `unlink` and `close`;
+- `MAP_PRIVATE` of `/etc/motd`, a private writable copy leaving the file
+  untouched, `EACCES` for writable sharing of the disk, and read-only
+  sharing;
+- `statvfs("/tmp")` free space back to its starting value.
 
 ## 12. Security updates and distribution
 

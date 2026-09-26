@@ -44,6 +44,7 @@ pub const Error = error{
     NotSeekable,
     OutOfMemory,
     MessageTooLong,
+    NotPermitted,
 };
 
 pub const MAX_PATH = 256;
@@ -157,6 +158,8 @@ fn tmpError(e: tmpfs.Error) Error {
         tmpfs.Error.NameTooLong => Error.NameTooLong,
         tmpfs.Error.InvalidArgument => Error.InvalidArgument,
         tmpfs.Error.FileTooBig => Error.FileTooBig,
+        tmpfs.Error.Sealed => Error.NotPermitted,
+        tmpfs.Error.Busy => Error.Busy,
     };
 }
 

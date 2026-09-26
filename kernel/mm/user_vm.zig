@@ -12,6 +12,8 @@ const std = @import("std");
 const vmm = @import("vmm.zig");
 const pmm = @import("pmm.zig");
 const heap = @import("heap.zig");
+const vfs = @import("../fs/vfs/vfs.zig");
+const tmpfs = @import("../fs/tmpfs/tmpfs.zig");
 const AddressSpace = @import("address_space.zig").AddressSpace;
 
 pub const BASE: u64 = 0x0000_4000_0000_0000;
@@ -34,11 +36,86 @@ pub const Region = struct {
     /// mmap model: vm_map, the main stack, thread stacks).
     lazy: bool = false,
     prot: u8 = 0,
+    /// What a lazy region's pages come from.
+    backing: Backing = .anonymous,
 
     fn end(self: Region) u64 {
         return self.address + self.size;
     }
 };
+
+pub const Backing = union(enum) {
+    /// Zeroed frames of its own.
+    anonymous,
+    /// The frames of a tmpfs file (memfd or /tmp), shared with every other
+    /// mapping of it; never freed by unmapping. `offset` is the file offset
+    /// of the region's first byte.
+    shared: struct { inode: *tmpfs.Inode, offset: u64 },
+    /// Private copies of a file's pages, read on first touch.
+    file: struct { ref: *FileRef, offset: u64 },
+};
+
+/// A file node shared by the region pieces mapping it (a vfs.Node is large;
+/// region table entries stay small).
+pub const FileRef = struct {
+    refs: u32 = 1,
+    node: vfs.Node,
+
+    /// Takes over one reference on `node`.
+    pub fn create(node: vfs.Node) Error!*FileRef {
+        const ref = heap.create(FileRef) catch return error.OutOfMemory;
+        ref.* = .{ .node = node };
+        return ref;
+    }
+
+    pub fn release(self: *FileRef) void {
+        if (@atomicRmw(u32, &self.refs, .Sub, 1, .acq_rel) != 1) return;
+        vfs.release(self.node);
+        heap.destroy(self);
+    }
+};
+
+fn ownsFrames(r: Region) bool {
+    return r.backing != .shared;
+}
+
+fn writable(prot: u8) bool {
+    return prot & 2 != 0;
+}
+
+/// Another region piece now refers to the backing (a split).
+fn duplicateBacking(r: Region) void {
+    switch (r.backing) {
+        .anonymous => {},
+        .shared => |b| tmpfs.beginMapping(b.inode, writable(r.prot), false) catch unreachable,
+        .file => |b| _ = @atomicRmw(u32, &b.ref.refs, .Add, 1, .monotonic),
+    }
+}
+
+fn releaseBacking(r: Region) void {
+    switch (r.backing) {
+        .anonymous => {},
+        .shared => |b| tmpfs.endMapping(b.inode, writable(r.prot)),
+        .file => |b| b.ref.release(),
+    }
+}
+
+/// The backing of the part of `r` starting at `address`.
+fn backingFrom(r: Region, address: u64) Backing {
+    const delta = address - r.address;
+    return switch (r.backing) {
+        .anonymous => .anonymous,
+        .shared => |b| .{ .shared = .{ .inode = b.inode, .offset = b.offset + delta } },
+        .file => |b| .{ .file = .{ .ref = b.ref, .offset = b.offset + delta } },
+    };
+}
+
+/// Regions in the first table: one page, counting the heap's 16-byte header.
+/// That is more than the largest slab class, so the table is whole pages.
+const INITIAL_REGIONS = (vmm.PAGE_SIZE - 16) / @sizeOf(Region);
+comptime {
+    std.debug.assert(INITIAL_REGIONS * @sizeOf(Region) > 2048);
+}
 
 /// Region metadata: sorted by address, never overlapping, grown on demand
 /// from the kernel heap. Guarded by the owning AddressSpace's VM lock.
@@ -58,7 +135,7 @@ pub const State = struct {
     fn ensureSpare(self: *State) Error!void {
         if (self.len < self.capacity) return;
         if (self.capacity >= MAX_MAPPINGS) return error.OutOfMemory;
-        const grown: usize = @min(@max(128, self.capacity * 2), MAX_MAPPINGS);
+        const grown: usize = @min(@max(INITIAL_REGIONS, self.capacity * 2), MAX_MAPPINGS);
         const raw = heap.alloc(grown * @sizeOf(Region)) catch return error.OutOfMemory;
         const items: [*]Region = @ptrCast(@alignCast(raw));
         if (self.capacity != 0) {
@@ -323,7 +400,10 @@ pub fn decommit(space: *AddressSpace, address: u64, length: u64) Error!void {
 pub fn releaseAll(space: *AddressSpace) void {
     const guard = space.lockVm();
     defer guard.unlock();
-    for (space.anonymous_vm.slice()) |r| detachLocked(space, r.address, r.size, true);
+    for (space.anonymous_vm.slice()) |r| {
+        detachLocked(space, r.address, r.size, ownsFrames(r));
+        releaseBacking(r);
+    }
     space.anonymous_vm.deinit();
 }
 
@@ -357,6 +437,8 @@ fn splitAt(state: *State, address: u64) Error!void {
     var right = r;
     right.address = address;
     right.size = @intCast(r.end() - address);
+    right.backing = backingFrom(r, address);
+    duplicateBacking(r);
     state.items[i].size = @intCast(address - r.address);
     state.insertAt(i + 1, right);
 }
@@ -384,6 +466,12 @@ pub const Placement = enum { anywhere, hint, fixed, fixed_noreplace };
 /// required and free (fixed_noreplace). Fixed placements stay inside the
 /// anonymous arena.
 pub fn mapLazy(space: *AddressSpace, address: u64, length: u64, prot: u64, placement: Placement) Error!u64 {
+    return mapBacked(space, address, length, prot, placement, .anonymous);
+}
+
+/// mapLazy with a backing. On success the region owns the backing's
+/// reference (see duplicateBacking); on failure the caller keeps it.
+pub fn mapBacked(space: *AddressSpace, address: u64, length: u64, prot: u64, placement: Placement, backing: Backing) Error!u64 {
     const size = try sizeOf(length, MAX_RESERVATION);
     _ = try flagsFor(prot);
     const guard = space.lockVm();
@@ -412,7 +500,7 @@ pub fn mapLazy(space: *AddressSpace, address: u64, length: u64, prot: u64, place
     try state.ensureSpare();
     var at: usize = 0;
     while (at < state.len and state.items[at].address < base) : (at += 1) {}
-    state.insertAt(at, .{ .address = base, .size = size, .lazy = true, .prot = @intCast(if (prot == 4) 5 else prot) });
+    state.insertAt(at, .{ .address = base, .size = size, .lazy = true, .prot = @intCast(if (prot == 4) 5 else prot), .backing = backing });
     return base;
 }
 
@@ -432,7 +520,8 @@ fn unmapLazyLocked(space: *AddressSpace, address: u64, size: usize) Error!void {
     while (i > inner.first) {
         i -= 1;
         const r = state.items[i];
-        detachLocked(space, r.address, r.size, true);
+        detachLocked(space, r.address, r.size, ownsFrames(r));
+        releaseBacking(r);
         state.removeAt(i);
     }
 }
@@ -452,15 +541,29 @@ fn protectLazyLocked(space: *AddressSpace, address: u64, length: u64, prot: u8) 
     try splitAt(state, address);
     try splitAt(state, end);
     const inner = spanOf(state, address, end).?;
-    for (state.items[inner.first .. inner.last + 1]) |*r| r.prot = prot;
-    // Pages already present take the new protection now.
-    const flags = flagsFor(prot) catch unreachable;
-    var page = address;
-    while (vmm.nextPossiblyMapped(space.pml4, page, end)) |next| {
-        page = next;
-        const block_end = @min(end, (page | (BLOCK_2M - 1)) + 1);
-        while (page < block_end) : (page += vmm.PAGE_SIZE) {
-            if (vmm.translate(space.pml4, page)) |phys| vmm.mapPage(space.pml4, page, phys, flags | vmm.OWNED) catch unreachable;
+    // A shared mapping made writable must be allowed by the file's seals.
+    for (state.items[inner.first .. inner.last + 1]) |r| switch (r.backing) {
+        .shared => |b| if (!writable(r.prot) and writable(prot)) {
+            tmpfs.changeMappingAccess(b.inode, true) catch return error.Unsupported;
+            tmpfs.changeMappingAccess(b.inode, false) catch unreachable;
+        },
+        else => {},
+    };
+    for (state.items[inner.first .. inner.last + 1]) |*r| {
+        switch (r.backing) {
+            .shared => |b| if (writable(r.prot) != writable(prot)) tmpfs.changeMappingAccess(b.inode, writable(prot)) catch unreachable,
+            else => {},
+        }
+        r.prot = prot;
+        // Pages already present take the new protection now.
+        const flags = (flagsFor(prot) catch unreachable) | (if (ownsFrames(r.*)) vmm.OWNED else 0);
+        var page = r.address;
+        while (vmm.nextPossiblyMapped(space.pml4, page, r.end())) |next| {
+            page = next;
+            const block_end = @min(r.end(), (page | (BLOCK_2M - 1)) + 1);
+            while (page < block_end) : (page += vmm.PAGE_SIZE) {
+                if (vmm.translate(space.pml4, page)) |phys| vmm.mapPage(space.pml4, page, phys, flags) catch unreachable;
+            }
         }
     }
     space.invalidateRange(address, size / vmm.PAGE_SIZE);
@@ -480,7 +583,8 @@ pub fn discard(space: *AddressSpace, address: u64, length: u64) Error!void {
     for (state.items[span.first .. span.last + 1]) |r| {
         const from = @max(r.address, address);
         const to = @min(r.end(), end);
-        detachLocked(space, from, to - from, true);
+        // Shared pages are only unmapped: their contents stay in the file.
+        detachLocked(space, from, to - from, ownsFrames(r));
     }
 }
 
@@ -496,7 +600,7 @@ pub fn remap(space: *AddressSpace, address: u64, old_length: u64, new_length: u6
     const state = &space.anonymous_vm;
     const i = findIndex(state, address) orelse return error.Invalid;
     const r = state.items[i];
-    if (!r.lazy or address + old_size > r.end()) return error.Invalid;
+    if (!r.lazy or r.backing != .anonymous or address + old_size > r.end()) return error.Invalid;
     if (new_size == old_size) return address;
     if (new_size < old_size) {
         try unmapLazyLocked(space, address + new_size, old_size - new_size);
@@ -559,16 +663,62 @@ fn permits(prot: u8, access: Access) bool {
 /// call with interrupts enabled and no address-space access held.
 pub fn faultIn(space: *AddressSpace, address: u64, access: Access) bool {
     const page = address & ~@as(u64, vmm.PAGE_SIZE - 1);
-    const guard = space.lockVm();
-    defer guard.unlock();
-    const i = findIndex(&space.anonymous_vm, page) orelse return false;
+    var file_copy: ?u64 = null;
+    defer if (file_copy) |frame| pmm.freePage(frame);
+    while (true) {
+        const step = blk: {
+            const guard = space.lockVm();
+            defer guard.unlock();
+            break :blk faultStepLocked(space, page, access, &file_copy);
+        };
+        switch (step) {
+            .resolved => return true,
+            .refused => return false,
+            // Read the file without the VM lock (it may wait for the disk),
+            // then look again: the region may have changed meanwhile.
+            .read => |request| {
+                defer vfs.release(request.node);
+                const frame = pmm.allocPageZeroed() catch return false;
+                const bytes: [*]u8 = @ptrFromInt(pmm.physToVirt(frame));
+                _ = vfs.readAt(&request.node, request.offset, bytes[0..vmm.PAGE_SIZE]) catch 0;
+                file_copy = frame;
+            },
+        }
+    }
+}
+
+const FaultStep = union(enum) {
+    resolved,
+    refused,
+    read: struct { node: vfs.Node, offset: u64 },
+};
+
+/// Caller holds the VM lock. A file page read earlier arrives in `file_copy`
+/// and is taken (set to null) when mapped.
+fn faultStepLocked(space: *AddressSpace, page: u64, access: Access, file_copy: *?u64) FaultStep {
+    const i = findIndex(&space.anonymous_vm, page) orelse return .refused;
     const r = space.anonymous_vm.items[i];
-    if (!r.lazy or !permits(r.prot, access)) return false;
+    if (!r.lazy or !permits(r.prot, access)) return .refused;
     // Another thread may have faulted it in meanwhile.
-    if (vmm.translate(space.pml4, page) != null) return true;
-    const flags = flagsFor(r.prot) catch return false;
-    _ = vmm.allocAndMap(space.pml4, page, flags) catch return false;
-    return true;
+    if (vmm.translate(space.pml4, page) != null) return .resolved;
+    const flags = flagsFor(r.prot) catch return .refused;
+    switch (r.backing) {
+        .anonymous => {
+            _ = vmm.allocAndMap(space.pml4, page, flags) catch return .refused;
+            return .resolved;
+        },
+        .shared => |b| {
+            const phys = tmpfs.frameOf(b.inode, (b.offset + (page - r.address)) / vmm.PAGE_SIZE) orelse return .refused;
+            vmm.mapPage(space.pml4, page, phys, flags) catch return .refused;
+            return .resolved;
+        },
+        .file => |b| {
+            const frame = file_copy.* orelse return .{ .read = .{ .node = vfs.retain(b.ref.node), .offset = b.offset + (page - r.address) } };
+            vmm.mapPage(space.pml4, page, frame, flags | vmm.OWNED) catch return .refused;
+            file_copy.* = null;
+            return .resolved;
+        },
+    }
 }
 
 /// The main thread's stack: a lazy read/write region of `size` bytes ending

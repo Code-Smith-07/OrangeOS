@@ -208,6 +208,13 @@ export fn _start() callconv(.c) noreturn {
             pulp.exit(201);
         }
         pulp.puts("runtime: PASS lazily backed memory for V8 and PartitionAlloc\n");
+        const shm_program = pulp.spawn("/bin/shm-probe") catch pulp.exit(202);
+        const shm_code = pulp.wait(shm_program) catch pulp.exit(203);
+        if (shm_code != 0) {
+            pulp.print("runtime: FAIL shared memory exit {d}\n", .{shm_code});
+            pulp.exit(204);
+        }
+        pulp.puts("runtime: PASS shared memory and file mappings\n");
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.
         for (0..2) |_| {

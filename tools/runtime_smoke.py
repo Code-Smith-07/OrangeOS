@@ -150,6 +150,11 @@ def main():
                     "lazily backed memory for V8 and PartitionAlloc", 180)
         assert ("mmap-probe: PASS 16 GiB reservation, mprotect commits, aligned trims, MAP_FIXED(_NOREPLACE), hints, "
                 "DONTNEED/FREE, mremap, untouched-page copies and futex, 3 MiB stacks, sparse 256 MiB, W^X") in guest.log(), guest.log()[-2000:]
+        guest.until(lambda: "runtime: PASS shared memory and file mappings" in guest.log()
+                    or "shm-probe: FAIL" in guest.log() or "runtime: FAIL shared memory" in guest.log(),
+                    "shared memory and file mappings", 120)
+        assert ("shm-probe: PASS memfd, aliasing shared views, a child sharing a memfd, seals, DONTNEED, "
+                "unlinked mappings, MAP_PRIVATE files, pages returned") in guest.log(), guest.log()[-2000:]
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]
