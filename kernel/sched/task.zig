@@ -98,6 +98,10 @@ pub const Process = struct {
     handles: handle.Table = .{},
     /// Files opened by this process. Ordinary spawn does not inherit them.
     files: @import("../fs/fd.zig").FileTable = .{},
+    /// Working directory: a canonical absolute path, guarded by `cwd_lock`.
+    cwd_lock: @import("../sync/spinlock.zig").SpinLock = .{},
+    cwd: [vfs.MAX_PATH]u8 = [_]u8{'/'} ++ [_]u8{0} ** (vfs.MAX_PATH - 1),
+    cwd_len: usize = 1,
     // Boot-issued authority, never inherited by ordinary spawned programs.
     service_manager: bool = false,
     host_bridge: bool = false,

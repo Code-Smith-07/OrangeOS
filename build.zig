@@ -324,6 +324,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "pipe-probe", .sources = &.{"userland/bin/pipe-probe/probe.c"} },
         .{ .name = "epoll-probe", .sources = &.{"userland/bin/epoll-probe/probe.c"} },
         .{ .name = "unix-probe", .sources = &.{"userland/bin/unix-probe/probe.c"} },
+        .{ .name = "spawn-probe", .sources = &.{"userland/bin/spawn-probe/probe.c"} },
+        .{ .name = "spawn-child", .sources = &.{"userland/bin/spawn-child/child.c"} },
     };
     for (c_programs) |program| {
         const mod = b.createModule(.{
@@ -594,6 +596,9 @@ const musl_replaced_c = [_][]const u8{
     "thread/__unmapself.c",
     "thread/clone.c",
     "thread/__set_thread_area.c",
+    // No fork/exec: posix_spawn is built on OrangeOS's spawn_process.
+    "process/posix_spawn.c",
+    "process/posix_spawnp.c",
 };
 
 /// libc++ sources not built: other platforms' support code, the libdispatch

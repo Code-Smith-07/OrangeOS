@@ -447,7 +447,7 @@ named hold the evidence.
 |---|---|---|
 | A1 | Browser-scale task table and per-program thread capacity | Done (§11.38) |
 | A2 | Pipes, `socketpair`/Unix sockets with descriptor passing, `poll`/`epoll`, `eventfd` | Done (§11.39–§11.41); passing between *processes* needs A3's inherited descriptors; named Unix sockets deferred to B8 |
-| A3 | POSIX process launch (`posix_spawn`: argv, environment, inherited descriptors), `chdir`, `*at()` relative to directory descriptors | To do |
+| A3 | POSIX process launch (`posix_spawn`: argv, environment, inherited descriptors), `chdir`, `*at()` relative to directory descriptors | Done (§11.42); Chromium's `LaunchProcess` needs a recorded patch to use `posix_spawn` |
 | A4 | Shared memory by descriptor (`memfd`, `mmap(MAP_SHARED)`), file mappings | To do |
 | A5 | V8/PartitionAlloc memory: `MAP_FIXED` and hints within reservations, alignment, `madvise(DONTNEED)`, `mremap` | Region capacity and arena size done (§11.38); the rest to do |
 | A6 | Entropy: `getrandom`, `/dev/urandom` | To do |
@@ -1851,6 +1851,79 @@ checks:
 
 Passing descriptors between *processes* works the same way, but a second
 process can only get a socket end by inheriting it, which is item A3.
+
+### 11.42 Launching programs: posix_spawn, working directories, console descriptors
+
+This is item A3. Chromium's Linux `LaunchProcess` forks and then execs, and
+its zygote forks without exec. OrangeOS has no `fork`: copying an address
+space for a child that immediately replaces it is not worth building for
+this.
+
+A program is instead started in one step, with everything it needs (§2.1).
+Chromium's platform patch set will therefore include two changes:
+- `base::LaunchProcess` uses `posix_spawn` instead of fork/exec;
+- the zygote is disabled, since every renderer launches fresh.
+
+`fork`, `vfork` and `execve` return `ENOSYS`.
+
+**spawn_process (143)** takes a program path, NUL-separated argument and
+environment blocks (together at most 32 KiB and 1,024 strings), `{child,
+parent}` descriptor pairs, and a working directory.
+- The program starts with *exactly* the granted descriptors, each sharing the
+  parent's open file description, as inheritance does.
+- The new program's first kernel code installs the grants, sets the
+  directory, and builds a SysV stack with real `argc`/`argv`/`envp`.
+- The user stack grows from 64 to 256 KiB to hold the strings.
+
+**musl's `posix_spawn` and `posix_spawnp`** are replaced by an implementation
+in the translation layer:
+- It models the child's descriptor table as it would stand just before
+  `exec`: every open descriptor, marked close-on-exec or not.
+- It replays the file actions oldest first, as musl stores them: close,
+  dup2 (which clears close-on-exec, even onto itself), open (performed in
+  the parent into a temporary descriptor), chdir and fchdir.
+- It then grants exactly the descriptors not marked close-on-exec.
+- `posix_spawnp` searches `PATH`. Spawn flags that concern signals or ids
+  are accepted, since they mean nothing here; process groups, sessions and
+  scheduling return `ENOTSUP`.
+- musl's `system()` and `popen()` are built on `posix_spawn`; they need a
+  shell, which OrangeOS does not ship.
+
+**Console descriptions.** Descriptors 0–2 are now real descriptions of the
+console (or the program's terminal), installed for every legacy-spawned
+program. So `dup(1)`, stdout redirection, closing stdio and passing it to
+children all behave as POSIX says. New descriptors take the lowest free
+number. `TIOCGWINSZ` answers only for the console kind.
+
+**Working directory.** Each program has one, inherited by what it spawns.
+`chdir` (35) and `getcwd` (36) manage it, and every path system call
+resolves relative paths against it. Directory descriptions remember their
+canonical path, and `resolve_path` (142) turns a path relative to a
+directory descriptor into an absolute one; musl uses it for all `*at()`
+calls and `fchdir`. A directory renamed after it was opened keeps its old
+path.
+
+**Waiting.** `wait4`/`waitpid` for a given child, with `WNOHANG`, report the
+exit code in a normal-exit status word. Waiting for any child (pid ≤ 0) is
+not offered.
+
+Verified on 2026-09-26: full runtime suite (55 checks) on two and four
+vCPUs, kernel filesystem tests (23), and the desktop and Files suites.
+`/bin/spawn-probe` (C, `-Werror`), with `/bin/spawn-child`, checks:
+- `dup(1)` of the console;
+- working directory: `chdir`, relative create/`mkdir`, `openat`/`fstatat`/
+  `mkdirat` relative to a directory descriptor, `fchdir`, and `ENOENT`/
+  `ENOTDIR`;
+- arguments, including empty and spaced ones, and the environment;
+- the child holding exactly the non-close-on-exec descriptors;
+- `addopen`, `addchdir` and `addclose` (a closed stdout gives the child
+  `EBADF`), and the working directory inherited;
+- stdin and stdout both redirected through pipes;
+- a socket end handed to a child, then a pipe end passed to it over that
+  socket, written by the child, with end of file once it exits;
+- exit codes, `ECHILD` after collection, and `WNOHANG` while running;
+- `posix_spawnp` through `PATH`, `ENOENT` for missing programs, and `fork`
+  returning `ENOSYS`.
 
 ## 12. Security updates and distribution
 

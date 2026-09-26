@@ -244,13 +244,6 @@ fn notifyPoll(watcher: *readiness.Watcher) void {
     sched.wakeChannel(entry.channel);
 }
 
-/// Readiness of the console behind descriptors 0-2 with nothing installed:
-/// output never blocks; input readiness is not tracked yet, so it is never
-/// reported ready.
-fn consoleReadiness(number: i32) u32 {
-    return if (number == 1 or number == 2) OUT | WRNORM else 0;
-}
-
 /// poll(): fill `returned` for every entry and return how many are nonzero.
 /// Negative descriptor numbers are ignored, as POSIX specifies. Call with
 /// interrupts enabled.
@@ -283,12 +276,7 @@ pub fn poll(table: *fd.FileTable, entries: []PollEntry, timeout_ms: i64) Error!u
         for (entries) |*entry| {
             entry.returned = 0;
             if (entry.number < 0) continue;
-            const state = if (entry.desc) |desc|
-                fd.readinessOf(desc)
-            else if (entry.number <= 2)
-                consoleReadiness(entry.number)
-            else
-                NVAL;
+            const state = if (entry.desc) |desc| fd.readinessOf(desc) else NVAL;
             entry.returned = state & (entry.requested | ALWAYS | NVAL);
             if (entry.returned != 0) count += 1;
         }

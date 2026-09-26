@@ -1345,9 +1345,13 @@ program; `spawn` fails with `-ENOMEM` and `thread_create` with `-EAGAIN` beyond
 them.
 
 Descriptors (2026-09-25): 256 per program. Each refers to a reference-counted
-open file description (file with offset, pipe end, eventfd) that `dup` shares;
-close-on-exec is per descriptor. Descriptors 0–2 are the console unless a
-description is installed there with `dup`.
+open file description (file with offset, pipe end, eventfd, socket, epoll,
+console) that `dup` shares; close-on-exec is per descriptor. New descriptors
+take the lowest free number. A program started by `spawn` (8) gets console
+descriptions at 0–2; one started by `spawn_process` (143) gets exactly the
+descriptors granted. There is no `fork`/`exec`: `posix_spawn` is built on
+`spawn_process`. Programs start with a SysV stack (argc, argv, envp, auxv) in
+a 256 KiB user stack.
 
 Filesystems (2026-09-25): the CitrusFS root is read-only; a tmpfs mounted at
 `/tmp` holds writable files and directories in memory, up to a quarter of
@@ -1402,8 +1406,8 @@ link musl 1.2.5, whose Linux-numbered calls are translated in userland by
 | 32 | `unlink` | `(path_ptr, path_len) → !void` (implemented; an open file stays usable until closed) | P5 |
 | 33 | `rename` | `(old_ptr, old_len, new_ptr, new_len) → !void` (implemented; replaces a file or empty directory; `-EXDEV` across filesystems) | P5 |
 | 34 | `readdir` | `(path_ptr, path_len, out, max) → count` (current read-only ABI; max 32 per call) | P5 |
-| 35 | `chdir` | `(path) → !void` | P5 |
-| 36 | `getcwd` | `(buf, len) → !usize` | P5 |
+| 35 | `chdir` | `(path_ptr, path_len) → !void` — per-program working directory; relative paths in every path call resolve against it (implemented) | P5 |
+| 36 | `getcwd` | `(buf, size) → length including the NUL` (implemented) | P5 |
 | 37 | `mount` | `(src, dst, fstype, flags) → !void` | P5 |
 | 38 | `readdir_page` | `(path_ptr, path_len, out, max, skip) → count` (implemented; ordinal continuation, max 32 per call) | P5 |
 | 120 | `ftruncate` | `(fd, length) → !void` (implemented; growing leaves a hole that reads as zeros) | P5 runtime |
@@ -1423,6 +1427,8 @@ link musl 1.2.5, whose Linux-numbered calls are translated in userland by
 | 139 | `sendmsg` | `(fd, *{iov, iov_count, fds, fd_count: u32, flags: u32}, flags) → count` — passes up to 64 descriptions; flag 1 don't wait (implemented) | P5 runtime |
 | 140 | `recvmsg` | `(fd, *message, flags) → count` — installs received descriptions and writes back how many; message flags 1 truncated, 2 descriptions dropped; flags 1 don't wait, 2 close-on-exec (implemented) | P5 runtime |
 | 141 | `shutdown` | `(fd, how) → !void` — 0 read, 1 write, 2 both (implemented) | P5 runtime |
+| 142 | `resolve_path` | `(dirfd, path_ptr, path_len, out, capacity) → length` — the canonical absolute path, relative to a directory descriptor (-1: the working directory); for the `*at()` calls (implemented) | P5 runtime |
+| 143 | `spawn_process` | `(*{path, args, env, fds, cwd})` → pid — NUL-separated argument and environment blocks (together ≤ 32 KiB, ≤ 1024 strings), `{child, parent}` descriptor pairs the program starts with exactly, and a working directory (implemented) | P5 runtime |
 | | **── Threads ──** | | |
 | 40 | `thread_create` | `(entry, stack, arg, tls_base, exit_word) → tid` (implemented; `entry(arg)` in ring 3, kernel stores 0 to `exit_word` and wakes it at thread exit) | P4 runtime |
 | 41 | `thread_exit` | `(status) noreturn` — ends the calling thread; the last thread's status becomes the program's (implemented) | P4 runtime |

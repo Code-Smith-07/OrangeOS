@@ -194,6 +194,13 @@ export fn _start() callconv(.c) noreturn {
             pulp.exit(195);
         }
         pulp.puts("runtime: PASS socket pairs and descriptor passing\n");
+        const spawn_program = pulp.spawn("/bin/spawn-probe") catch pulp.exit(196);
+        const spawn_code = pulp.wait(spawn_program) catch pulp.exit(197);
+        if (spawn_code != 0) {
+            pulp.print("runtime: FAIL program launch exit {d}\n", .{spawn_code});
+            pulp.exit(198);
+        }
+        pulp.puts("runtime: PASS posix_spawn, working directories and cross-process descriptors\n");
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.
         for (0..2) |_| {
