@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -45,6 +46,20 @@ static int upper(void)
 			return 2;
 	}
 	return n == 0 ? 0 : 3;
+}
+
+/* Map the memfd inherited at 3, check the parent's pattern, answer on the
+ * second page. */
+static int shared_memory_child(void)
+{
+	unsigned char *view = mmap(NULL, 2 * 4096, PROT_READ | PROT_WRITE, MAP_SHARED, 3, 0);
+	if (view == MAP_FAILED)
+		return 9;
+	for (int i = 0; i < 4096; i++)
+		if (view[i] != (unsigned char)(i * 7))
+			return 10;
+	memcpy(view + 4096, "child was here", 15);
+	return munmap(view, 2 * 4096) == 0 ? 0 : 11;
 }
 
 static int socket_child(void)
@@ -86,6 +101,8 @@ int main(int argc, char **argv)
 	}
 	if (strcmp(mode, "socket") == 0)
 		return socket_child();
+	if (strcmp(mode, "shm") == 0)
+		return shared_memory_child();
 	if (strcmp(mode, "exit") == 0 && argc > 2)
 		return atoi(argv[2]);
 	if (strcmp(mode, "sleep") == 0 && argc > 2) {

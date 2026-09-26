@@ -63,6 +63,7 @@ const OR = struct {
     const vm_map = 144;
     const vm_advise = 145;
     const vm_remap = 146;
+    const memfd = 147;
     const thread_create = 40;
     const thread_exit = 41;
     const gettid = 45;
@@ -144,6 +145,7 @@ const SYS = struct {
     const wait4 = 61;
     const chdir = 80;
     const fchdir = 81;
+    const memfd_create = 319;
     const epoll_create = 213;
     const epoll_wait = 232;
     const epoll_ctl = 233;
@@ -1155,6 +1157,12 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
             break :blk raw2(OR.chdir, @intFromPtr(&buffer), @intCast(len));
         },
         SYS.wait4 => wait4(a1, b, c, d),
+        SYS.memfd_create => blk: {
+            const MFD_CLOEXEC = 1;
+            const MFD_ALLOW_SEALING = 2;
+            if (b & ~@as(u64, MFD_CLOEXEC | MFD_ALLOW_SEALING) != 0) break :blk err(E.INVAL);
+            break :blk raw1(OR.memfd, (if (b & MFD_CLOEXEC != 0) FD_CLOEXEC else 0) | (if (b & MFD_ALLOW_SEALING != 0) @as(u64, 8) else 0));
+        },
         SYS.prlimit64 => blk: {
             // Only queries of this process; no limit is enforced beyond the
             // kernel's own tables, which report the descriptor limit.
@@ -1302,17 +1310,18 @@ const MAP_FIXED_NOREPLACE: u64 = 0x100000;
 const VM_FIXED: u64 = 1;
 const VM_FIXED_NOREPLACE: u64 = 2;
 const VM_HINT: u64 = 4;
+const VM_SHARED: u64 = 8;
+const MAP_SHARED: u64 = 0x01;
+/// MAP_SHARED_VALIDATE: shared, with unknown flags refused (which they are).
+const MAP_SHARED_VALIDATE: u64 = 0x03;
 
 fn mmap(address: u64, length: u64, prot: u64, flags: u64, fd: i64, offset: u64) i64 {
-    // Anonymous private memory, backed as it is touched. File and shared
-    // mappings are not available yet.
-    if (flags & MAP_ANONYMOUS == 0 or fd != -1) return err(19); // ENODEV
-    if (offset != 0) return err(E.INVAL);
     // MAP_POPULATE only prefetches, and pages appear on first touch anyway.
-    const ignored = MAP_NORESERVE | MAP_STACK | MAP_POPULATE | MAP_FIXED | MAP_FIXED_NOREPLACE;
-    if (flags & ~ignored != MAP_PRIVATE | MAP_ANONYMOUS) return err(E.INVAL);
+    const ignored = MAP_NORESERVE | MAP_STACK | MAP_POPULATE | MAP_FIXED | MAP_FIXED_NOREPLACE | MAP_ANONYMOUS;
+    const sharing = flags & ~ignored;
+    if (sharing != MAP_PRIVATE and sharing != MAP_SHARED and sharing != MAP_SHARED_VALIDATE) return err(E.INVAL);
     const native = translateProt(prot) orelse return err(E.ACCES);
-    const placement: u64 = if (flags & MAP_FIXED_NOREPLACE != 0)
+    var placement: u64 = if (flags & MAP_FIXED_NOREPLACE != 0)
         VM_FIXED_NOREPLACE
     else if (flags & MAP_FIXED != 0)
         VM_FIXED
@@ -1320,7 +1329,14 @@ fn mmap(address: u64, length: u64, prot: u64, flags: u64, fd: i64, offset: u64) 
         VM_HINT
     else
         0;
-    return raw6(OR.vm_map, address, length, native, placement, std.math.maxInt(u64), 0);
+    if (flags & MAP_ANONYMOUS != 0) {
+        // Shared anonymous memory is only shared with fork()ed children, and
+        // there is no fork: it is private memory.
+        if (offset != 0) return err(E.INVAL);
+        return raw6(OR.vm_map, address, length, native, placement, std.math.maxInt(u64), 0);
+    }
+    if (sharing != MAP_PRIVATE) placement |= VM_SHARED;
+    return raw6(OR.vm_map, address, length, native, placement, @bitCast(fd), offset);
 }
 
 fn ioctl(fd: u64, request: u64, argument: u64) i64 {
@@ -1354,6 +1370,8 @@ const F_SETFD = 2;
 const F_GETFL = 3;
 const F_SETFL = 4;
 const F_DUPFD_CLOEXEC = 1030;
+const F_ADD_SEALS = 1033;
+const F_GET_SEALS = 1034;
 const FD_CLOEXEC_BIT = 1;
 
 fn fcntl(fd: u64, command: u64, argument: u64) i64 {
@@ -1373,6 +1391,8 @@ fn fcntl(fd: u64, command: u64, argument: u64) i64 {
             if (status & OPEN_NONBLOCK != 0) linux |= O_NONBLOCK;
             break :blk @intCast(linux);
         },
+        F_ADD_SEALS => raw3(OR.fd_control, fd, 6, argument),
+        F_GET_SEALS => raw3(OR.fd_control, fd, 7, 0),
         F_SETFL => raw3(OR.fd_control, fd, 5, (if (argument & O_APPEND != 0) OPEN_APPEND else 0) |
             (if (argument & O_NONBLOCK != 0) OPEN_NONBLOCK else 0)),
         else => err(E.INVAL),

@@ -34,7 +34,18 @@ pub const Error = error{
     NameTooLong,
     InvalidArgument,
     FileTooBig,
+    /// The file is sealed against this change.
+    Sealed,
+    /// The file is mapped shared, and this would take pages away from it.
+    Busy,
 };
+
+/// Seals (fcntl F_ADD_SEALS), with Linux's values.
+pub const SEAL_SEAL: u32 = 1;
+pub const SEAL_SHRINK: u32 = 2;
+pub const SEAL_GROW: u32 = 4;
+pub const SEAL_WRITE: u32 = 8;
+pub const SEAL_FUTURE_WRITE: u32 = 16;
 
 pub const Kind = enum { file, directory };
 
@@ -52,6 +63,11 @@ pub const Inode = struct {
     name_len: u8 = 0,
     name: [MAX_NAME]u8 = undefined,
     size: u64 = 0,
+    seals: u32 = 0,
+    /// Shared mappings of this file, and how many are writable. A file mapped
+    /// shared cannot shrink: its frames are in those address spaces.
+    mappings: u32 = 0,
+    writable_mappings: u32 = 0,
     /// Physical frame per file page; 0 is a hole.
     frames: ?[*]u64 = null,
     frame_capacity: usize = 0,
@@ -318,6 +334,8 @@ pub fn write(inode: *Inode, offset: ?u64, data: []const u8) Error!Written {
     defer spinlock.releaseIrqRestore(&lock, state);
     const start = offset orelse inode.size;
     if (start > MAX_FILE_SIZE or data.len > MAX_FILE_SIZE - start) return Error.FileTooBig;
+    if (inode.seals & (SEAL_WRITE | SEAL_FUTURE_WRITE) != 0) return Error.Sealed;
+    if (inode.seals & SEAL_GROW != 0 and start + data.len > inode.size) return Error.Sealed;
     const end = start + data.len;
     try ensureCapacityLocked(inode, @intCast((end + PAGE - 1) / PAGE));
     var done: usize = 0;
@@ -345,6 +363,10 @@ pub fn truncate(inode: *Inode, length: u64) Error!void {
     if (length > MAX_FILE_SIZE) return Error.FileTooBig;
     const state = spinlock.acquireIrqSave(&lock);
     defer spinlock.releaseIrqRestore(&lock, state);
+    if (length < inode.size) {
+        if (inode.seals & SEAL_SHRINK != 0) return Error.Sealed;
+        if (inode.mappings > 0) return Error.Busy;
+    } else if (length > inode.size and inode.seals & SEAL_GROW != 0) return Error.Sealed;
     truncateLocked(inode, length);
 }
 
@@ -393,4 +415,82 @@ pub fn iterate(
     while (cursor) |child| : (cursor = child.sibling) {
         if (!visit(ctx, child.nameSlice(), child.id, if (child.kind == .directory) 2 else 1)) return;
     }
+}
+
+// ── Anonymous files and shared mappings ─────────────────────────────────────
+
+/// memfd_create: a file in no directory, alive while referenced. Without
+/// `sealable`, it starts sealed against further seals.
+pub fn createAnonymous(sealable: bool) Error!*Inode {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    const inode = try newInodeLocked(.file, "memfd");
+    inode.linked = false;
+    inode.refs = 1;
+    inode.seals = if (sealable) 0 else SEAL_SEAL;
+    return inode;
+}
+
+pub fn seals(inode: *Inode) u32 {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    return inode.seals;
+}
+
+/// F_ADD_SEALS. Sealing writes while a writable shared mapping exists is
+/// refused (Busy), as on Linux.
+pub fn addSeals(inode: *Inode, add: u32) Error!void {
+    if (add & ~(SEAL_SEAL | SEAL_SHRINK | SEAL_GROW | SEAL_WRITE | SEAL_FUTURE_WRITE) != 0) return Error.InvalidArgument;
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    if (inode.seals & SEAL_SEAL != 0) return Error.Sealed;
+    if (add & SEAL_WRITE != 0 and inode.writable_mappings > 0) return Error.Busy;
+    inode.seals |= add;
+}
+
+/// A shared mapping of the file begins: it holds a reference, and a new
+/// writable one is refused on a write-sealed file. (A mapping split in two by
+/// mprotect or munmap is not new: `check_seals` is false.)
+pub fn beginMapping(inode: *Inode, writable: bool, check_seals: bool) Error!void {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    if (check_seals and writable and inode.seals & (SEAL_WRITE | SEAL_FUTURE_WRITE) != 0) return Error.Sealed;
+    inode.refs += 1;
+    inode.mappings += 1;
+    if (writable) inode.writable_mappings += 1;
+}
+
+pub fn endMapping(inode: *Inode, writable: bool) void {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    inode.mappings -= 1;
+    if (writable) inode.writable_mappings -= 1;
+    inode.refs -= 1;
+    reapLocked(inode);
+}
+
+/// A mapping's writability changed (mprotect).
+pub fn changeMappingAccess(inode: *Inode, writable: bool) Error!void {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    if (writable) {
+        if (inode.seals & (SEAL_WRITE | SEAL_FUTURE_WRITE) != 0) return Error.Sealed;
+        inode.writable_mappings += 1;
+    } else inode.writable_mappings -= 1;
+}
+
+/// The frame holding page `index` of the file, allocated (zeroed) if it is
+/// a hole; null past the end of the file or when memory runs out.
+pub fn frameOf(inode: *Inode, index: u64) ?u64 {
+    const state = spinlock.acquireIrqSave(&lock);
+    defer spinlock.releaseIrqRestore(&lock, state);
+    if (index * PAGE >= inode.size) return null;
+    ensureCapacityLocked(inode, @intCast(index + 1)) catch return null;
+    const slot = &inode.frames.?[@intCast(index)];
+    if (slot.* == 0) {
+        if (used_pages >= quota_pages) return null;
+        slot.* = pmm.allocPageZeroed() catch return null;
+        used_pages += 1;
+    }
+    return slot.*;
 }
