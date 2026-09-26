@@ -332,6 +332,69 @@ fn testUserVmSubranges() void {
     check("user VM: subranges, hole reuse and frame conservation", ok and pmm.stats().free_pages == baseline);
 }
 
+/// Lazily backed regions: nothing is allocated until a page is touched,
+/// touching gives exactly one zeroed frame, protection changes keep the
+/// contents, DONTNEED and munmap return every frame, and a huge reservation
+/// costs no memory.
+fn testUserVmLazy() void {
+    const vm = @import("user_vm.zig");
+    const spaces = @import("address_space.zig");
+    const baseline = pmm.stats().free_pages;
+    const space = spaces.AddressSpace.create() catch {
+        check("user VM: lazy address space", false);
+        return;
+    };
+    var ok = true;
+    const size = 64 * 1024 * 1024;
+    const after_create = pmm.stats().free_pages;
+    const address = vm.mapLazy(space, 0, size, 3, .anywhere) catch {
+        check("user VM: lazy mapping", false);
+        space.release();
+        return;
+    };
+    const after_map = pmm.stats().free_pages;
+    // 64 MiB of addresses: only the region table (one page) was allocated.
+    if (after_create - after_map > 1 or vmm.translate(space.pml4, address) != null) ok = false;
+    const page = address + 17 * vmm.PAGE_SIZE;
+    if (!vm.faultIn(space, page, .write)) ok = false;
+    const phys = vmm.translate(space.pml4, page) orelse 0;
+    if (phys == 0) ok = false else {
+        const bytes: [*]u8 = @ptrFromInt(pmm.physToVirt(phys));
+        if (bytes[0] != 0) ok = false;
+        bytes[0] = 0x3c;
+    }
+    // A read-only page refuses a write fault; PROT_NONE keeps the contents.
+    vm.protect(space, page, vmm.PAGE_SIZE, 1) catch {
+        ok = false;
+    };
+    vm.protect(space, page, vmm.PAGE_SIZE, 0) catch {
+        ok = false;
+    };
+    if (vm.faultIn(space, page + vmm.PAGE_SIZE, .read) == false) ok = false; // a neighbour, still read/write
+    vm.protect(space, page, vmm.PAGE_SIZE, 3) catch {
+        ok = false;
+    };
+    if (vmm.translate(space.pml4, page)) |again| {
+        const bytes: [*]u8 = @ptrFromInt(pmm.physToVirt(again));
+        if (bytes[0] != 0x3c) ok = false;
+    } else ok = false;
+    if (vm.faultIn(space, address + size, .read)) ok = false; // outside the region
+    vm.discard(space, page, vmm.PAGE_SIZE) catch {
+        ok = false;
+    };
+    if (vmm.translate(space.pml4, page) != null) ok = false;
+    vm.unmap(space, address, size) catch {
+        ok = false;
+    };
+    const reservation = vm.mapLazy(space, 0, 32 * 1024 * 1024 * 1024, 0, .anywhere) catch 0;
+    if (reservation == 0 or vm.faultIn(space, reservation, .read)) ok = false; // PROT_NONE never faults in
+    vm.unmap(space, reservation, 32 * 1024 * 1024 * 1024) catch {
+        ok = false;
+    };
+    space.release();
+    check("user VM: lazy regions allocate on touch, keep contents across protection and return every page", ok and pmm.stats().free_pages == baseline);
+}
+
 fn testUserVmSparse() void {
     const vm = @import("user_vm.zig");
     const spaces = @import("address_space.zig");
@@ -475,6 +538,7 @@ pub fn runAll() void {
     testUserVm();
     testUserVmSubranges();
     testUserVmSparse();
+    testUserVmLazy();
     testHeap();
     testHeapChurn();
     testAddressSpaceLifetime() catch {

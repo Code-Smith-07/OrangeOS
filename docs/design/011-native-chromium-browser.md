@@ -449,7 +449,7 @@ named hold the evidence.
 | A2 | Pipes, `socketpair`/Unix sockets with descriptor passing, `poll`/`epoll`, `eventfd` | Done (§11.39–§11.41); passing between *processes* needs A3's inherited descriptors; named Unix sockets deferred to B8 |
 | A3 | POSIX process launch (`posix_spawn`: argv, environment, inherited descriptors), `chdir`, `*at()` relative to directory descriptors | Done (§11.42); Chromium's `LaunchProcess` needs a recorded patch to use `posix_spawn` |
 | A4 | Shared memory by descriptor (`memfd`, `mmap(MAP_SHARED)`), file mappings | To do |
-| A5 | V8/PartitionAlloc memory: `MAP_FIXED` and hints within reservations, alignment, `madvise(DONTNEED)`, `mremap` | Region capacity and arena size done (§11.38); the rest to do |
+| A5 | V8/PartitionAlloc memory: `MAP_FIXED` and hints within reservations, alignment, `madvise(DONTNEED)`, `mremap` | Done (§11.38, §11.43): demand paging, `PROT_NONE` reservations, `MAP_FIXED(_NOREPLACE)`, hints, trimming, `DONTNEED`/`FREE`, `mremap`, 8 MiB stack |
 | A6 | Entropy: `getrandom`, `/dev/urandom` | To do |
 | A7 | Minimal signals: `sigaction`, `kill`, `SIGCHLD`, crash handlers | To do |
 
@@ -1924,6 +1924,75 @@ vCPUs, kernel filesystem tests (23), and the desktop and Files suites.
 - exit codes, `ECHILD` after collection, and `WNOHANG` while running;
 - `posix_spawnp` through `PATH`, `ENOENT` for missing programs, and `fork`
   returning `ENOSYS`.
+
+### 11.43 Demand paging and the Linux mmap model
+
+This is item A5. V8 and PartitionAlloc reserve gigabytes with `PROT_NONE`,
+commit pieces with `mprotect`, place mappings with `MAP_FIXED` inside their
+own reservations, trim over-sized reservations to get alignment, and give
+memory back with `madvise`. All of that assumes that memory costs nothing
+until it is touched. Until now OrangeOS mapped every page eagerly, with at
+most 64 MiB per call.
+
+**Lazy regions** (`kernel/mm/user_vm.zig`). A region created by the new
+`vm_map` call (144) carries one protection, and its pages get frames only
+when first touched:
+- A not-present user page fault inside a lazy region, with an access its
+  protection allows, gets a zeroed frame (the trap handler enables
+  interrupts to take the VM lock) and the instruction retries. Anything else
+  still ends the program.
+- Kernel copies to and from user memory, and futex waits, fault such pages
+  in first. They do so *before* starting their address-space access, since
+  taking the VM lock while holding an access could deadlock with a remover
+  draining accesses.
+- `mprotect`, `munmap` and `madvise` split regions at their range
+  boundaries, so every region keeps a single protection.
+- Present pages take a new protection immediately. Pages made `PROT_NONE`
+  stay mapped for the kernel only, so their contents survive the round trip
+  a JIT makes.
+- `munmap` accepts holes and spans several lazy regions, as on Linux.
+- `MAP_FIXED` replaces lazy mappings in its range. `MAP_FIXED_NOREPLACE`
+  fails with `EEXIST` instead, and a free hint address is honoured. Fixed
+  placement stays inside the 16 TiB anonymous arena.
+- `madvise(MADV_DONTNEED)` and `MADV_FREE` (native `vm_advise`, 145) release
+  frames, which read zero afterwards.
+- `mremap` (native `vm_remap`, 146) shrinks, grows in place when the
+  following addresses are free, or with `MREMAP_MAYMOVE` moves the pages'
+  translations without copying them.
+- Tearing down a large, barely touched range skips absent page tables
+  (`vmm.nextPossiblyMapped`), instead of visiting each of its pages.
+- **Main stack.** Each program's main stack is an 8 MiB lazy region with only
+  its top 64 KiB (arguments and environment) present at start; below it
+  nothing is mapped, so an overflow still faults. Thread stacks from musl
+  are lazy too.
+
+musl's `mmap` (anonymous private, including `PROT_NONE`, `MAP_FIXED`,
+`MAP_FIXED_NOREPLACE`, hints, and `MAP_NORESERVE`/`MAP_POPULATE`/`MAP_STACK`
+as no-ops), `madvise` and `mremap` now use these calls. The older native
+`mmap` (10) and `vm_reserve`/`vm_commit` keep their eager semantics for
+existing programs and tests.
+
+Verified on 2026-09-26: full runtime suite (56 checks) on two and four
+vCPUs, plus the desktop and Files suites.
+- A kernel test checks that a 64 MiB lazy mapping costs only its region-table
+  page, that touching gives one zeroed frame, that contents survive
+  read-only and `PROT_NONE` round trips, that a `PROT_NONE` 32 GiB
+  reservation never faults in, and that every page returns.
+- `/bin/mmap-probe` (C, `-Werror`) checks a 16 GiB `PROT_NONE` reservation
+  committed by `mprotect`, contents kept across protection changes,
+  `MAP_FIXED` replacing a page, `MAP_FIXED_NOREPLACE` refusing, a 4 GiB
+  aligned reservation trimmed from both ends, hints, `MADV_DONTNEED`/
+  `MADV_FREE` zeroing, and `mremap` shrinking, growing, refusing without
+  permission to move, then moving with the contents.
+- It also checks `read()`/`write()` on untouched pages, a futex wait on an
+  untouched page timing out, `munmap` over a hole, 3 MiB of recursion on the
+  main thread and a 3 MiB frame on a thread with a 4 MiB stack, a sparse
+  256 MiB `malloc` and 64 MiB `calloc`, and W^X generated code with RWX
+  refused.
+
+Not yet: shared memory by descriptor and file mappings (A4, next);
+randomized placement (ASLR); swap and overcommit accounting, since running
+out of frames at a fault ends the program.
 
 ## 12. Security updates and distribution
 

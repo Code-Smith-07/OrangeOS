@@ -30,6 +30,8 @@ fn resolve(pml4: u64, address: u64) Error!Word {
 /// A zero timeout waits indefinitely. Return success after a wake (which may
 /// be spurious), WouldBlock if the value changed, or Timeout on expiry.
 pub fn wait(pml4: u64, address: u64, expected: u32, timeout_ms: u64) Error!void {
+    // A futex word on a page never touched yet reads as zero, as on Linux.
+    validate.prefault(pml4, address, @sizeOf(u32), false);
     {
         // The word is read through its frame, which another thread could
         // unmap; the access ends before sleeping. A frame reused after that

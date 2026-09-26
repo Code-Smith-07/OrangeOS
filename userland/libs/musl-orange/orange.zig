@@ -60,6 +60,9 @@ const OR = struct {
     const getcwd = 36;
     const resolve_path = 142;
     const spawn_process = 143;
+    const vm_map = 144;
+    const vm_advise = 145;
+    const vm_remap = 146;
     const thread_create = 40;
     const thread_exit = 41;
     const gettid = 45;
@@ -1030,9 +1033,11 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
         SYS.munmap => raw2(OR.munmap, a, b),
         // No program break: musl's allocator then uses mmap alone.
         SYS.brk => 0,
-        SYS.mremap => err(E.NOMEM),
-        // Advice only; MADV_DONTNEED's zero-fill guarantee is not offered.
-        SYS.madvise => if (c == 4) err(E.NOSYS) else 0,
+        // MREMAP_MAYMOVE (1) is offered; MREMAP_FIXED is not.
+        SYS.mremap => if (d & ~@as(u64, 1) != 0) err(E.INVAL) else raw(OR.vm_remap, a, b, c, d, 0),
+        // MADV_DONTNEED (4) and MADV_FREE (8) release pages, which read as
+        // zeros afterwards; the rest is advice and changes nothing.
+        SYS.madvise => if (c == 4 or c == 8) raw3(OR.vm_advise, a, b, 4) else 0,
         SYS.rt_sigaction => err(E.NOSYS),
         // No signal is ever delivered, so every mask is equivalent.
         SYS.rt_sigprocmask => blk: {
@@ -1291,17 +1296,31 @@ const MAP_ANONYMOUS: u64 = 0x20;
 const MAP_NORESERVE: u64 = 0x4000;
 const MAP_STACK: u64 = 0x20000;
 
+const MAP_POPULATE: u64 = 0x8000;
+const MAP_FIXED_NOREPLACE: u64 = 0x100000;
+/// Native vm_map flags.
+const VM_FIXED: u64 = 1;
+const VM_FIXED_NOREPLACE: u64 = 2;
+const VM_HINT: u64 = 4;
+
 fn mmap(address: u64, length: u64, prot: u64, flags: u64, fd: i64, offset: u64) i64 {
-    // Anonymous private memory only; hints are ignored, fixed placement and
-    // file mappings are not available yet.
-    if (flags & MAP_FIXED != 0) return err(E.NOMEM);
+    // Anonymous private memory, backed as it is touched. File and shared
+    // mappings are not available yet.
     if (flags & MAP_ANONYMOUS == 0 or fd != -1) return err(19); // ENODEV
-    const kind = flags & ~(MAP_NORESERVE | MAP_STACK);
-    if (kind != MAP_PRIVATE | MAP_ANONYMOUS) return err(E.INVAL);
-    _ = address;
-    _ = offset;
+    if (offset != 0) return err(E.INVAL);
+    // MAP_POPULATE only prefetches, and pages appear on first touch anyway.
+    const ignored = MAP_NORESERVE | MAP_STACK | MAP_POPULATE | MAP_FIXED | MAP_FIXED_NOREPLACE;
+    if (flags & ~ignored != MAP_PRIVATE | MAP_ANONYMOUS) return err(E.INVAL);
     const native = translateProt(prot) orelse return err(E.ACCES);
-    return raw6(OR.mmap, 0, length, native, 0x22, std.math.maxInt(u64), 0);
+    const placement: u64 = if (flags & MAP_FIXED_NOREPLACE != 0)
+        VM_FIXED_NOREPLACE
+    else if (flags & MAP_FIXED != 0)
+        VM_FIXED
+    else if (address != 0)
+        VM_HINT
+    else
+        0;
+    return raw6(OR.vm_map, address, length, native, placement, std.math.maxInt(u64), 0);
 }
 
 fn ioctl(fd: u64, request: u64, argument: u64) i64 {

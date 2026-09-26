@@ -216,6 +216,12 @@ export fn isrDispatch(frame: *TrapFrame) callconv(.c) void {
             0, 4, 5, 6, 7, 10, 11, 12, 13, 14, 16, 17, 19 => true,
             else => false,
         };
+        // A not-present fault in a lazily backed user region: give the page a
+        // frame and retry the instruction.
+        if (vec == 14 and frame.cs & 3 == 3 and frame.error_code & 1 == 0 and resolveDemandFault(frame)) {
+            if (sched.killPending()) sched.exit(0);
+            return;
+        }
         if (frame.cs & 3 == 3 and app_fault) {
             if (sched.currentTask()) |t| {
                 console.print("[app fault] pid {d} tid {d} {s}: {s} at 0x{x}\n", .{ t.ownerId(), t.tid, t.nameSlice(), exception_names[vec], frame.rip });
@@ -228,6 +234,19 @@ export fn isrDispatch(frame: *TrapFrame) callconv(.c) void {
 
     // Unhandled non-exception vector: report and continue.
     console.print("[warn] unhandled interrupt vector {d}\n", .{vec});
+}
+
+fn resolveDemandFault(frame: *TrapFrame) bool {
+    const address = readCr2();
+    const sched = @import("../../sched/sched.zig");
+    const user_vm = @import("../../mm/user_vm.zig");
+    const task = sched.currentTask() orelse return false;
+    const space = task.user_space orelse return false;
+    const access: user_vm.Access = if (frame.error_code & 0x10 != 0) .execute else if (frame.error_code & 2 != 0) .write else .read;
+    // From ring 3 no kernel lock is held; the VM lock needs interrupts on.
+    asm volatile ("sti");
+    defer asm volatile ("cli");
+    return user_vm.faultIn(space, address, access);
 }
 
 /// Read CR2, which holds the faulting address for a page fault.

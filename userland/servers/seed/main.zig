@@ -201,6 +201,13 @@ export fn _start() callconv(.c) noreturn {
             pulp.exit(198);
         }
         pulp.puts("runtime: PASS posix_spawn, working directories and cross-process descriptors\n");
+        const mmap_program = pulp.spawn("/bin/mmap-probe") catch pulp.exit(199);
+        const mmap_code = pulp.wait(mmap_program) catch pulp.exit(200);
+        if (mmap_code != 0) {
+            pulp.print("runtime: FAIL lazily backed memory exit {d}\n", .{mmap_code});
+            pulp.exit(201);
+        }
+        pulp.puts("runtime: PASS lazily backed memory for V8 and PartitionAlloc\n");
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.
         for (0..2) |_| {

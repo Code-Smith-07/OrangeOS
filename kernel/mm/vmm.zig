@@ -183,6 +183,33 @@ pub fn anyMapped(pml4_phys: u64, virt: u64, size: u64) bool {
     return false;
 }
 
+/// The first address in [virt, end) whose page table exists (so a page there
+/// may be mapped), skipping absent tables whole; null if there is none.
+pub fn nextPossiblyMapped(pml4_phys: u64, virt: u64, end: u64) ?u64 {
+    var address = virt;
+    const pml4 = tableAt(pml4_phys);
+    while (address < end) {
+        const e3 = loadEntry(&pml4[indexOf(address, 3)]);
+        if (e3 & PRESENT == 0) {
+            address = (address | ((1 << 39) - 1)) + 1;
+            continue;
+        }
+        const e2 = loadEntry(&tableAt(e3)[indexOf(address, 2)]);
+        if (e2 & PRESENT == 0) {
+            address = (address | ((1 << 30) - 1)) + 1;
+            continue;
+        }
+        if (e2 & HUGE != 0) return address;
+        const e1 = loadEntry(&tableAt(e2)[indexOf(address, 1)]);
+        if (e1 & PRESENT == 0) {
+            address = (address | ((1 << 21) - 1)) + 1;
+            continue;
+        }
+        return address;
+    }
+    return null;
+}
+
 /// Return the leaf page-table entry flags for `virt`, or null if unmapped.
 /// Used to verify that W^X actually took effect rather than assuming it did.
 pub fn leafFlags(pml4_phys: u64, virt: u64) ?u64 {
