@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <time.h>
@@ -48,6 +49,12 @@ static int upper(void)
 	return n == 0 ? 0 : 3;
 }
 
+static void pause_or_sleep(void)
+{
+	struct timespec pause = { 0, 5 * 1000 * 1000 };
+	nanosleep(&pause, NULL);
+}
+
 /* Map the memfd inherited at 3, check the parent's pattern, answer on the
  * second page. */
 static int shared_memory_child(void)
@@ -60,6 +67,27 @@ static int shared_memory_child(void)
 			return 10;
 	memcpy(view + 4096, "child was here", 15);
 	return munmap(view, 2 * 4096) == 0 ? 0 : 11;
+}
+
+static volatile int terminated;
+static void on_term(int sig)
+{
+	(void)sig;
+	terminated = 1;
+}
+
+/* Say "ready" on stdout, then wait for SIGTERM and report it. */
+static int trap_term(void)
+{
+	struct sigaction action = { .sa_handler = on_term };
+	sigemptyset(&action.sa_mask);
+	if (sigaction(SIGTERM, &action, NULL) != 0)
+		return 12;
+	if (write(1, "ready\n", 6) != 6)
+		return 13;
+	while (!terminated)
+		pause_or_sleep();
+	return write(1, "term\n", 5) == 5 ? 0 : 14;
 }
 
 static int socket_child(void)
@@ -103,6 +131,10 @@ int main(int argc, char **argv)
 		return socket_child();
 	if (strcmp(mode, "shm") == 0)
 		return shared_memory_child();
+	if (strcmp(mode, "trap-term") == 0)
+		return trap_term();
+	if (strcmp(mode, "abort") == 0)
+		abort();
 	if (strcmp(mode, "exit") == 0 && argc > 2)
 		return atoi(argv[2]);
 	if (strcmp(mode, "sleep") == 0 && argc > 2) {

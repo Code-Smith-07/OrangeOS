@@ -26,7 +26,7 @@ pub fn read(buf: []u8) Error!usize {
     if (currentPty()) |obj| {
         const channel = pty_mod.waitChannel(&obj.data.pty);
         while (true) {
-            if (sched.killPending()) return Error.Interrupted;
+            if (sched.interruptPending()) return Error.Interrupted;
             // Register before reading, so a write arriving in between
             // cancels the wait instead of being missed.
             sched.prepareWait(channel);
@@ -40,7 +40,7 @@ pub fn read(buf: []u8) Error!usize {
     }
     const channel = serial.waitChannel();
     while (true) {
-        if (sched.killPending()) return Error.Interrupted;
+        if (sched.interruptPending()) return Error.Interrupted;
         sched.prepareWait(channel);
         var n: usize = 0;
         while (n < want) {

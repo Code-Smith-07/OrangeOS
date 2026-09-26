@@ -12,6 +12,7 @@ const vfs = @import("../fs/vfs/vfs.zig");
 const fd_mod = @import("../fs/fd.zig");
 const tmpfs = @import("../fs/tmpfs/tmpfs.zig");
 const epoll = @import("../ipc/epoll.zig");
+const signal = @import("../sched/signal.zig");
 const unix_socket = @import("../ipc/unix_socket.zig");
 const heap = @import("../mm/heap.zig");
 const serial = @import("../drivers/char/serial.zig");
@@ -60,6 +61,7 @@ pub const Nr = enum(u64) {
     exit = 0,
     write = 1,
     getpid = 4,
+    getppid = 5,
     yield = 7,
     spawn = 8,
     wait = 9,
@@ -115,6 +117,13 @@ pub const Nr = enum(u64) {
     vm_remap = 146,
     memfd = 147,
     getrandom = 148,
+    sigaction = 150,
+    sigmask = 151,
+    kill = 152,
+    tkill = 153,
+    sigreturn = 154,
+    sigaltstack = 155,
+    sigpending = 156,
     readdir = 34,
     readdir_page = 38,
     port_create = 50,
@@ -182,9 +191,19 @@ const EINTR: i64 = -4;
 
 var syscall_count: u64 = 0;
 
-/// The single entry point from assembly.
-export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
+/// The single entry point from assembly. Returns 1 when the saved registers
+/// must all be restored (the return goes through IRETQ), 0 for SYSRET.
+export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) u64 {
     syscall_count += 1;
+
+    // sigreturn replaces every saved register, rax included.
+    if (frame.rax == @intFromEnum(Nr.sigreturn)) {
+        const t = sched.currentTask() orelse sched.exit(1);
+        if (!signal.restore(frame, t, frame.rdi)) sched.exitGroup(128 + signal.SIGSEGV);
+        if (sched.killPending()) sched.exit(0);
+        _ = signal.deliver(frame);
+        return 1;
+    }
 
     // Arguments: rdi, rsi, rdx, r10, r8, r9. Note r10, not rcx — the syscall
     // instruction clobbers rcx with the return address.
@@ -192,6 +211,7 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .exit => sysExit(@bitCast(frame.rdi)),
         .write => sysWrite(frame.rdi, frame.rsi, frame.rdx),
         .getpid => sysGetpid(),
+        .getppid => @intCast(sched.parentOfCurrent()),
         .open => sysOpen(frame.rdi, frame.rsi, frame.rdx),
         .mkdir => sysMkdir(frame.rdi, frame.rsi),
         .rmdir => sysRemove(frame.rdi, frame.rsi, true),
@@ -223,6 +243,13 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
         .vm_remap => sysVmRemap(frame.rdi, frame.rsi, frame.rdx, frame.r10),
         .memfd => sysMemfd(frame.rdi),
         .getrandom => sysGetrandom(frame.rdi, frame.rsi, frame.rdx),
+        .sigaction => sysSigaction(frame.rdi, frame.rsi, frame.rdx),
+        .sigmask => sysSigmask(frame.rdi, frame.rsi, frame.rdx),
+        .kill => sysKill(frame.rdi, frame.rsi),
+        .tkill => sysTkill(frame.rdi, frame.rsi),
+        .sigreturn => unreachable, // handled before the switch
+        .sigaltstack => sysSigaltstack(frame.rdi, frame.rsi),
+        .sigpending => sysSigpending(frame.rdi),
         .close => sysClose(frame.rdi),
         .read => sysRead(frame.rdi, frame.rsi, frame.rdx),
         .spawn => sysSpawn(frame.rdi, frame.rsi),
@@ -290,6 +317,8 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) void {
     frame.rax = @bitCast(result);
     // A thread of an exiting program never returns to user mode.
     if (sched.killPending()) sched.exit(0);
+    // Pending signals are acted on here; a handler means a full restore.
+    return @intFromBool(signal.deliver(frame));
 }
 
 const snapshot_sync = @import("../sync/spinlock.zig");
@@ -394,6 +423,105 @@ fn sysVmMap(address: u64, length: u64, prot: u64, flags: u64, fd: u64, offset: u
         }
         return vmErrno(e);
     });
+}
+
+// ── Signals ─────────────────────────────────────────────────────────────────
+
+fn sysSigaction(sig: u64, new_ptr: u64, old_ptr: u64) i64 {
+    const proc = sched.currentProcess() orelse return EIO;
+    if (sig == 0 or sig > signal.COUNT) return EINVAL;
+    const pml4 = vmm.currentCr3();
+    var new: ?signal.Action = null;
+    if (new_ptr != 0) {
+        var action: signal.Action = undefined;
+        validate.copyFromUser(pml4, std.mem.asBytes(&action), new_ptr, @sizeOf(signal.Action)) catch return EFAULT;
+        if (action.handler >= validate.USER_MAX or action.restorer >= validate.USER_MAX) return EFAULT;
+        new = action;
+    }
+    var old: signal.Action = undefined;
+    signal.setAction(proc, @intCast(sig), new, &old) catch return EINVAL;
+    if (old_ptr != 0) validate.copyToUser(pml4, old_ptr, std.mem.asBytes(&old), @sizeOf(signal.Action)) catch return EFAULT;
+    return 0;
+}
+
+/// how: 0 block, 1 unblock, 2 set. The old mask is written when asked.
+fn sysSigmask(how: u64, set_ptr: u64, old_ptr: u64) i64 {
+    const t = sched.currentTask() orelse return EIO;
+    const pml4 = vmm.currentCr3();
+    const old = t.sig_blocked;
+    if (set_ptr != 0) {
+        var set: u64 = undefined;
+        validate.copyFromUser(pml4, std.mem.asBytes(&set), set_ptr, 8) catch return EFAULT;
+        const updated = switch (how) {
+            0 => old | set,
+            1 => old & ~set,
+            2 => set,
+            else => return EINVAL,
+        };
+        @atomicStore(u64, &t.sig_blocked, updated & ~signal.UNBLOCKABLE, .release);
+    }
+    if (old_ptr != 0) validate.copyToUser(pml4, old_ptr, std.mem.asBytes(&old), 8) catch return EFAULT;
+    return 0;
+}
+
+fn signalErrno(e: sched.SignalError) i64 {
+    return switch (e) {
+        error.NotFound => -3, // ESRCH
+        error.NotPermitted => EPERM,
+        error.Invalid => EINVAL,
+    };
+}
+
+/// kill: a program (pid > 0) the caller may signal: itself or one it
+/// started. Process groups (pid <= 0) are not offered.
+fn sysKill(pid: u64, sig: u64) i64 {
+    const proc = sched.currentProcess() orelse return EIO;
+    const target: i64 = @bitCast(pid);
+    if (target <= 0 or target > std.math.maxInt(u32)) return EINVAL;
+    sched.signalProcess(@intCast(target), @intCast(@min(sig, 1000)), proc) catch |e| return signalErrno(e);
+    return 0;
+}
+
+/// tkill: a thread of the caller's own program.
+fn sysTkill(tid: u64, sig: u64) i64 {
+    const proc = sched.currentProcess() orelse return EIO;
+    if (tid == 0 or tid > std.math.maxInt(u32)) return EINVAL;
+    sched.signalThread(@intCast(tid), @intCast(@min(sig, 1000)), proc) catch |e| return signalErrno(e);
+    return 0;
+}
+
+/// stack_t: sp, flags (1 on stack, 2 disabled), size.
+const StackT = extern struct { sp: u64, flags: i32, pad: i32 = 0, size: u64 };
+
+fn sysSigaltstack(new_ptr: u64, old_ptr: u64) i64 {
+    const t = sched.currentTask() orelse return EIO;
+    const pml4 = vmm.currentCr3();
+    const current = t.alt_stack;
+    if (old_ptr != 0) {
+        const old = StackT{ .sp = current.sp, .flags = if (current.disabled) 2 else 0, .size = current.size };
+        validate.copyToUser(pml4, old_ptr, std.mem.asBytes(&old), @sizeOf(StackT)) catch return EFAULT;
+    }
+    if (new_ptr != 0) {
+        var new: StackT = undefined;
+        validate.copyFromUser(pml4, std.mem.asBytes(&new), new_ptr, @sizeOf(StackT)) catch return EFAULT;
+        if (new.flags & ~@as(i32, 2) != 0) return EINVAL;
+        if (new.flags & 2 != 0) {
+            t.alt_stack = .{};
+        } else {
+            if (new.size < 2048) return -12; // ENOMEM: below MINSIGSTKSZ
+            if (new.sp >= validate.USER_MAX or new.size > validate.USER_MAX - new.sp) return EFAULT;
+            t.alt_stack = .{ .sp = new.sp, .size = new.size, .disabled = false };
+        }
+    }
+    return 0;
+}
+
+fn sysSigpending(out: u64) i64 {
+    const t = sched.currentTask() orelse return EIO;
+    const p = t.process orelse return EIO;
+    const pending = (@atomicLoad(u64, &t.sig_pending, .acquire) | @atomicLoad(u64, &p.signals.pending, .acquire)) & t.sig_blocked;
+    validate.copyToUser(vmm.currentCr3(), out, std.mem.asBytes(&pending), 8) catch return EFAULT;
+    return 0;
 }
 
 /// getrandom: up to 4096 bytes from the kernel generator per call. Flags: 1
@@ -1453,7 +1581,7 @@ fn sysWait(pid: u64, flags: u64) i64 {
     defer io.cli();
 
     while (true) {
-        if (sched.killPending()) return EINTR;
+        if (sched.interruptPending()) return EINTR;
         // Join the child's exit channel before checking its state. If the
         // exit lands between the check and commitWait, its wake removes us
         // from the queue and commitWait returns without sleeping.
@@ -1491,6 +1619,8 @@ fn sysSleepMs(ms: u64) i64 {
     defer io.cli();
 
     sched.sleepMs(ms);
+    // Cut short by a caught signal (or the program exiting).
+    if (sched.interruptPending()) return EINTR;
     return 0;
 }
 

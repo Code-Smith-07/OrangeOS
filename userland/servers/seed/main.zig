@@ -222,6 +222,13 @@ export fn _start() callconv(.c) noreturn {
             pulp.exit(207);
         }
         pulp.puts("runtime: PASS randomness and device files\n");
+        const signal_program = pulp.spawn("/bin/signal-probe") catch pulp.exit(208);
+        const signal_code = pulp.wait(signal_program) catch pulp.exit(209);
+        if (signal_code != 0) {
+            pulp.print("runtime: FAIL signals exit {d}\n", .{signal_code});
+            pulp.exit(210);
+        }
+        pulp.puts("runtime: PASS POSIX signals\n");
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.
         for (0..2) |_| {

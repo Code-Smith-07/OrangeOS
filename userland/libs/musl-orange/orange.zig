@@ -20,6 +20,7 @@ const OR = struct {
     const exit = 0;
     const write = 1;
     const getpid = 4;
+    const getppid = 5;
     const yield = 7;
     const mmap = 10;
     const munmap = 11;
@@ -65,6 +66,12 @@ const OR = struct {
     const vm_remap = 146;
     const memfd = 147;
     const getrandom = 148;
+    const sigaction = 150;
+    const sigmask = 151;
+    const kill = 152;
+    const tkill = 153;
+    const sigaltstack = 155;
+    const sigpending = 156;
     const thread_create = 40;
     const thread_exit = 41;
     const gettid = 45;
@@ -144,6 +151,11 @@ const SYS = struct {
     const shutdown = 48;
     const socketpair = 53;
     const wait4 = 61;
+    const kill = 62;
+    const rt_sigpending = 127;
+    const sigaltstack = 131;
+    const tkill = 200;
+    const tgkill = 234;
     const chdir = 80;
     const fchdir = 81;
     const memfd_create = 319;
@@ -429,6 +441,24 @@ fn sleepNs(ns: u64) void {
         return;
     }
     _ = raw1(OR.sleep_ms, (ns + 999_999) / 1_000_000);
+}
+
+/// Sleep, or return -EINTR when a caught signal cuts it short, with the time
+/// left written to `remaining` (a timespec) when given.
+fn sleepInterruptible(ns: u64, remaining: u64) i64 {
+    if (ns == 0) {
+        _ = raw0(OR.yield);
+        return 0;
+    }
+    const start = clockNs(0) orelse 0;
+    const r = raw1(OR.sleep_ms, (ns + 999_999) / 1_000_000);
+    if (r != err(E.INTR)) return 0;
+    if (remaining != 0) {
+        const elapsed = (clockNs(0) orelse start) - start;
+        const left = ns -| elapsed;
+        @as(*Timespec, @ptrFromInt(remaining)).* = .{ .sec = @intCast(left / 1_000_000_000), .nsec = @intCast(left % 1_000_000_000) };
+    }
+    return r;
 }
 
 const Iovec = extern struct { base: u64, len: u64 };
@@ -1044,12 +1074,14 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
         // MADV_DONTNEED (4) and MADV_FREE (8) release pages, which read as
         // zeros afterwards; the rest is advice and changes nothing.
         SYS.madvise => if (c == 4 or c == 8) raw3(OR.vm_advise, a, b, 4) else 0,
-        SYS.rt_sigaction => err(E.NOSYS),
-        // No signal is ever delivered, so every mask is equivalent.
-        SYS.rt_sigprocmask => blk: {
-            if (c != 0) @as(*u64, @ptrFromInt(c)).* = 0;
-            break :blk 0;
-        },
+        // The kernel takes Linux's k_sigaction and 64-bit masks as they are.
+        SYS.rt_sigaction => if (d != 8) err(E.INVAL) else raw3(OR.sigaction, a, b, c),
+        SYS.rt_sigprocmask => if (d != 8) err(E.INVAL) else raw3(OR.sigmask, a, b, c),
+        SYS.rt_sigpending => if (b != 8) err(E.INVAL) else raw1(OR.sigpending, a),
+        SYS.sigaltstack => raw2(OR.sigaltstack, a, b),
+        SYS.kill => raw2(OR.kill, a, b),
+        SYS.tkill => raw2(OR.tkill, a, b),
+        SYS.tgkill => if (a != @as(u64, @bitCast(raw0(OR.getpid)))) err(3) else raw2(OR.tkill, b, c), // ESRCH
         SYS.ioctl => ioctl(a, b, c),
         SYS.fcntl => fcntl(a, b, c),
         SYS.pipe => raw2(OR.pipe, a, 0),
@@ -1099,19 +1131,18 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
         SYS.nanosleep => blk: {
             const ts: *const Timespec = @ptrFromInt(a);
             if (ts.sec < 0 or ts.nsec < 0 or ts.nsec >= 1_000_000_000) break :blk err(E.INVAL);
-            sleepNs(@as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec)));
-            break :blk 0;
+            break :blk sleepInterruptible(@as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec)), b);
         },
         SYS.clock_nanosleep => blk: {
             const ts: *const Timespec = @ptrFromInt(c);
             if (ts.sec < 0 or ts.nsec < 0 or ts.nsec >= 1_000_000_000) break :blk err(E.INVAL);
             var ns = @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
-            if (b & 1 != 0) { // TIMER_ABSTIME
+            const absolute = b & 1 != 0; // TIMER_ABSTIME
+            if (absolute) {
                 const now = readClock(a1) orelse break :blk err(E.INVAL);
                 ns = ns -| now;
             }
-            sleepNs(ns);
-            break :blk 0;
+            break :blk sleepInterruptible(ns, if (absolute) 0 else d);
         },
         SYS.clock_gettime => blk: {
             const ns = readClock(a1) orelse break :blk err(E.INVAL);
@@ -1137,7 +1168,7 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
         },
         SYS.getpid => raw0(OR.getpid),
         SYS.gettid => raw0(OR.gettid),
-        SYS.getppid => 1,
+        SYS.getppid => raw0(OR.getppid),
         SYS.getuid, SYS.getgid, SYS.geteuid, SYS.getegid => 0,
         SYS.set_tid_address => raw1(OR.set_exit_word, a),
         SYS.arch_prctl => switch (a) {
@@ -1484,9 +1515,14 @@ export fn __clone(
 }
 
 // Cancellable system calls: the labels let musl's cancellation code tell
-// whether a thread is inside the call. OrangeOS delivers no signals, so only
-// the check before the call applies. __unmapself removes the calling
-// thread's own stack and exits without touching it in between.
+// whether a thread is inside the call. The system call itself is made in
+// __orange_syscall, outside the labels, so a cancellation request acts at the
+// check before a call rather than interrupting one. __unmapself removes the
+// calling thread's own stack and exits without touching it in between.
+//
+// __restore_rt and __restore are the signal restorers: a handler returns into
+// one with the stack at the saved ucontext, which OrangeOS's sigreturn (154)
+// restores.
 comptime {
     asm (
         \\.text
@@ -1518,6 +1554,19 @@ comptime {
         \\    ret
         \\__cp_cancel:
         \\    jmp __cancel
+        \\
+        \\.global __restore_rt
+        \\.hidden __restore_rt
+        \\.type __restore_rt,@function
+        \\.global __restore
+        \\.hidden __restore
+        \\.type __restore,@function
+        \\__restore_rt:
+        \\__restore:
+        \\    movq %rsp,%rdi
+        \\    movl $154,%eax
+        \\    syscall
+        \\    ud2
         \\
         \\.global __unmapself
         \\.type __unmapself,@function

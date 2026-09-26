@@ -86,7 +86,7 @@ pub fn read(p: *Pipe, buf: []u8, nonblock: bool) Error!usize {
             sched.cancelWait();
             return Error.WouldBlock;
         }
-        if (sched.killPending()) {
+        if (sched.interruptPending()) {
             sched.cancelWait();
             return Error.Interrupted;
         }
@@ -128,7 +128,7 @@ pub fn write(p: *Pipe, data: []const u8, nonblock: bool) Error!usize {
             sched.cancelWait();
             return if (done > 0) done else Error.WouldBlock;
         }
-        if (sched.killPending()) {
+        if (sched.interruptPending()) {
             sched.cancelWait();
             return if (done > 0) done else Error.Interrupted;
         }

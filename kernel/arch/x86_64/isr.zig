@@ -207,6 +207,8 @@ export fn isrDispatch(frame: *TrapFrame) callconv(.c) void {
         // A thread of an exiting program never returns to user mode. This is
         // also how a thread spinning in ring 3 notices: its next timer tick.
         if (frame.cs & 3 == 3 and sched.killPending()) sched.exit(0);
+        // Likewise for signals: they are delivered on the way back.
+        if (frame.cs & 3 == 3) _ = @import("../../sched/signal.zig").deliver(frame);
         return;
     }
 
@@ -224,6 +226,11 @@ export fn isrDispatch(frame: *TrapFrame) callconv(.c) void {
             if (sched.killPending()) sched.exit(0);
             return;
         }
+        // A program with a handler for the fault's signal gets it.
+        if (frame.cs & 3 == 3 and app_fault and deliverFaultSignal(frame, vec)) {
+            if (sched.killPending()) sched.exit(0);
+            return;
+        }
         if (frame.cs & 3 == 3 and app_fault) {
             if (sched.currentTask()) |t| {
                 console.print("[app fault] pid {d} tid {d} {s}: {s} at 0x{x}\n", .{ t.ownerId(), t.tid, t.nameSlice(), exception_names[vec], frame.rip });
@@ -236,6 +243,42 @@ export fn isrDispatch(frame: *TrapFrame) callconv(.c) void {
 
     // Unhandled non-exception vector: report and continue.
     console.print("[warn] unhandled interrupt vector {d}\n", .{vec});
+}
+
+/// The signal for a user-mode exception, with Linux's siginfo codes.
+fn deliverFaultSignal(frame: *TrapFrame, vec: u8) bool {
+    const signal = @import("../../sched/signal.zig");
+    var info: signal.Info = .{ .trap = vec, .error_code = frame.error_code, .address = frame.rip };
+    const sig: u32 = switch (vec) {
+        14 => blk: {
+            info.address = readCr2();
+            info.code = if (frame.error_code & 1 != 0) 2 else 1; // SEGV_ACCERR / SEGV_MAPERR
+            break :blk signal.SIGSEGV;
+        },
+        13, 12, 11, 10 => blk: {
+            info.code = 0x80; // SI_KERNEL
+            info.address = 0;
+            break :blk signal.SIGSEGV;
+        },
+        6 => blk: {
+            info.code = 1; // ILL_ILLOPC
+            break :blk signal.SIGILL;
+        },
+        0 => blk: {
+            info.code = 1; // FPE_INTDIV
+            break :blk signal.SIGFPE;
+        },
+        4, 5, 16, 19 => blk: {
+            info.code = 0; // FPE: details not decoded
+            break :blk signal.SIGFPE;
+        },
+        17 => blk: {
+            info.code = 1; // BUS_ADRALN
+            break :blk signal.SIGBUS;
+        },
+        else => return false,
+    };
+    return signal.deliverFault(frame, sig, info);
 }
 
 fn resolveDemandFault(frame: *TrapFrame) bool {

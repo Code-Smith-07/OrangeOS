@@ -1360,6 +1360,14 @@ futex waits fault pages in the same way before their access begins. The
 older `mmap` (10) and `vm_reserve`/`vm_commit` calls keep their eager
 semantics.
 
+Signals (2026-09-26): delivered on every return to user mode (system call
+or interrupt) with Linux's x86-64 frame (restorer, `ucontext`, `siginfo`,
+FPU state), on the alternate stack when asked. A system call returns through
+IRETQ instead of SYSRET when a handler is entered or after `sigreturn`.
+Faults go to a `SIGSEGV`/`SIGILL`/`SIGFPE`/`SIGBUS` handler when installed and
+end the program otherwise; a default action that terminates exits with
+128 + the signal. A caught signal interrupts a blocking call with `-EINTR`.
+
 Devices (2026-09-26): `/dev` holds `null`, `zero`, `random` (waits for the
 generator's first seeding) and `urandom` (never waits); nothing can be
 created or removed there. The generator (`kernel/lib/random.zig`) is keyed
@@ -1388,8 +1396,8 @@ link musl 1.2.5, whose Linux-numbered calls are translated in userland by
 | 2 | `exec` | `(path, argv, envp) → !noreturn` | P4 |
 | 3 | `wait` | `(pid, *status, flags) → pid` | P4 |
 | 4 | `getpid` | `() → pid` | P4 |
-| 5 | `getppid` | `() → pid` | P4 |
-| 6 | `kill` | `(pid, sig) → !void` | P5 |
+| 5 | `getppid` | `() → pid` — the starting program, or 1 once it is gone (implemented) | P4 |
+| 6 | `kill` | superseded by call 152 | P5 |
 | 7 | `yield` | `() → void` | P4 |
 | | **── Memory ──** | | |
 | 10 | `mmap` | `(addr, len, prot, flags, fd, off) → ptr` | P4 |
@@ -1446,6 +1454,13 @@ link musl 1.2.5, whose Linux-numbered calls are translated in userland by
 | 145 | `vm_advise` | `(address, length, advice)` — 4 DONTNEED releases lazily backed pages, which read zero afterwards; other advice ignored (implemented) | P5 runtime |
 | 146 | `vm_remap` | `(address, old_length, new_length, flags) → address` — shrink, grow in place, or (flag 1) move a lazily backed range without copying (implemented) | P5 runtime |
 | 148 | `getrandom` | `(buf, len, flags) → count` — up to 4096 bytes of ChaCha20 output; flags 1 fail with `-EAGAIN` before the first seeding, 2 use the pool as it stands (implemented) | P5 runtime |
+| 150 | `sigaction` | `(sig, *new, *old)` — Linux's `{handler, flags, restorer, mask}` (implemented) | P5 runtime |
+| 151 | `sigmask` | `(how, *set, *old)` — 0 block, 1 unblock, 2 set; per thread (implemented) | P5 runtime |
+| 152 | `kill` | `(pid, sig)` — to itself or a program it started; `-EPERM`/`-ESRCH` otherwise (implemented) | P5 runtime |
+| 153 | `tkill` | `(tid, sig)` — a thread of its own program (implemented) | P5 runtime |
+| 154 | `sigreturn` | `(ucontext*)` — returns from a handler, restoring every register through IRETQ (implemented) | P5 runtime |
+| 155 | `sigaltstack` | `(*new, *old)` — Linux `stack_t` (implemented) | P5 runtime |
+| 156 | `sigpending` | `(*set)` (implemented) | P5 runtime |
 | 143 | `spawn_process` | `(*{path, args, env, fds, cwd})` → pid — NUL-separated argument and environment blocks (together ≤ 32 KiB, ≤ 1024 strings), `{child, parent}` descriptor pairs the program starts with exactly, and a working directory (implemented) | P5 runtime |
 | | **── Threads ──** | | |
 | 40 | `thread_create` | `(entry, stack, arg, tls_base, exit_word) → tid` (implemented; `entry(arg)` in ring 3, kernel stores 0 to `exit_word` and wakes it at thread exit) | P4 runtime |

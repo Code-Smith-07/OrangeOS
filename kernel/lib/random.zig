@@ -215,7 +215,7 @@ pub fn fill(out: []u8, wait: Wait) Error!void {
                     sched.cancelWait();
                     break;
                 }
-                if (sched.killPending()) {
+                if (sched.interruptPending()) {
                     sched.cancelWait();
                     return Error.Interrupted;
                 }

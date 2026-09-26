@@ -158,7 +158,7 @@ pub fn send(pair: *Pair, from: u1, data: []const u8, rights: []const *fd.Descrip
             sched.cancelWait();
             return Error.WouldBlock;
         }
-        if (sched.killPending()) {
+        if (sched.interruptPending()) {
             sched.cancelWait();
             return Error.Interrupted;
         }
@@ -238,7 +238,7 @@ pub fn receive(pair: *Pair, at: u1, buf: []u8, nonblock: bool) Error!Received {
             sched.cancelWait();
             return Error.WouldBlock;
         }
-        if (sched.killPending()) {
+        if (sched.interruptPending()) {
             sched.cancelWait();
             return Error.Interrupted;
         }
