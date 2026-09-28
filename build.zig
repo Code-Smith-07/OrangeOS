@@ -561,6 +561,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "WPEWebProcess", .sources = &.{ "userland/bin/wpe-render/tls-init.c", "userland/bin/wpe-render/unreachable.c" }, .cxx = true, .libs = &([_][]const u8{"wpe-web-process.o"} ++ wpe_libs) },
             .{ .name = "WPENetworkProcess", .sources = &.{ "userland/bin/wpe-render/tls-init.c", "userland/bin/wpe-render/unreachable.c" }, .cxx = true, .libs = &([_][]const u8{"wpe-network-process.o"} ++ wpe_libs) },
             .{ .name = "jsc-probe", .sources = &.{"userland/bin/jsc-probe/probe.c"}, .cxx = false, .libs = &.{} },
+            .{ .name = "input-probe", .sources = &.{"userland/bin/input-probe/probe.c"}, .cxx = false, .peel = true, .libs = &.{} },
             // JavaScriptCore's own shell from the WPE build (the same
             // JavaScriptCore and JIT the browser uses), linked here.
             .{ .name = "jsc", .sources = &.{"userland/bin/wpe-render/unreachable.c"}, .cxx = true, .libs = &([_][]const u8{"jsc-shell.o"} ++ wpe_libs) },
