@@ -152,28 +152,18 @@ may change with macOS updates. Interactive physical-slider acceptance is still
 manual. Radio changes and Bluetooth pairing remain unfinished.
 See the [native Control Center screenshot](docs/screenshots/control-center.png).
 
-**Engine trial (2026-09-28):** the Chromium port is paused, and WPE WebKit is
-being tried first because it should be much faster to bring up. See
-[012](docs/design/012-wpe-webkit-browser.md). If WPE passes its gate, the
-Chromium plan is retired; otherwise Chromium work resumes. The runtime below
-serves either engine. First results: the WPE sources are pinned (W0), and
-GLib/GObject/GIO cross-build with the Zig toolchain and pass their checks
-inside OrangeOS (W1). Since then:
-- WebKit's libraries work in the guest, and JavaScriptCore runs (on its
-  interpreter).
-- HTTPS works through libsoup and OpenSSL with Mozilla's roots.
-- **WPE WebKit renders a web page inside OrangeOS, on the CPU**
-  ([first render](docs/screenshots/wpe-first-render.png)).
+**Browser (updated 2026-09-28).** The browser engine is **WPE WebKit**, WebKit's
+embedded port, built from source as a Linux/musl target and linked statically
+for OrangeOS; the kernel ABI is its own, and a userland layer translates musl's
+Linux calls. **WPE WebKit already renders web pages inside OrangeOS on the CPU**
+([first render](docs/screenshots/wpe-first-render.png)): its UI, web and network
+processes run in the guest, pages load, JavaScript runs, and HTTPS works through
+libsoup and OpenSSL with Mozilla's roots. The plan, milestones and every
+recorded WebKit patch are in [012](docs/design/012-wpe-webkit-browser.md). The
+earlier Chromium plan was dropped on 2026-09-28 after WPE passed its gate; its
+document stays as the [runtime history](docs/design/011-native-chromium-browser.md).
 
-Next: a Peel window with input (W8), then the browser shell (W9).
-
-**Browser runtime progress** (updated 2026-09-25). The goal is Chromium running
-natively inside OrangeOS; no browser engine is installed yet. Chromium will be
-built from source as a Linux target against musl. OrangeOS provides a
-Linux-compatible userland layer for it; its own kernel ABI is unchanged and no
-Linux kernel code is involved
-([decision](docs/design/011-native-chromium-browser.md#21-platform-target-decision-2026-09-25)).
-Done so far, each tested in QEMU on two and four vCPUs:
+The runtime underneath, each part tested in QEMU on two and four vCPUs:
 
 - **Memory:** sparse reserve/commit across a 16 TiB arena, with up to 16,384
   mappings per program. W^X executable memory for a JIT. Changes are safe while
@@ -197,29 +187,11 @@ Done so far, each tested in QEMU on two and four vCPUs:
   receive and timers. Not yet: listening sockets, loopback, IPv6.
 - **Reliability:** the long-standing intermittent kernel panic was found and
   fixed. Scheduler, heap and spawn checks catch that class of bug early.
+- **Files, locks and TLS:** POSIX and open-file-description record locks
+  (SQLite), the Mozilla trust store at `/etc/ssl/cert.pem`.
 
-The ordered list of what remains (IPC plumbing, sockets, shared memory,
-signals, entropy, fonts, then the Chromium cross-build and Peel display
-backend) is kept current in
-[011 §11.0](docs/design/011-native-chromium-browser.md#110-current-status-and-remaining-work).
-Older runtime history is in the [browser runtime ledger](docs/design/008-browser.md).
-No browser engine or smooth video-playback capability is installed or
-certified yet.
-
-**Browser Phase 1 preparation.** `ORANGE_VM_PROFILE=browser` now selects
-4096 MiB / two vCPUs across the preview, test and run launchers. The default
-desktop remains 3072 MiB / two vCPUs. Headless tests query QEMU to verify the
-actual memory/CPU configuration. The read-only build preflight checks space,
-APFS, a whitespace-free build path, Xcode/SDK and build tools; it records GPU
-limitations without treating an advertised device as qualified acceleration.
-See the [Phase 1 implementation ledger](docs/design/011-native-chromium-browser.md#111-phase-1a-resource-profiles-and-preflight).
-
-**Pinned upstream workspace.** Chromium 154.0.8037.58 and depot_tools now have
-full-commit pins and a guarded external-drive setup runner. Source/dependency
-sync, setup hooks and GN generation have passed locally (34,239 targets).
-Compilation, launch and native guest integration have **not** passed yet.
-The [reference-build runbook](tools/browser/README.md)
-documents explicit steps, recovery, SDK differences and storage safeguards.
+`ORANGE_VM_PROFILE=browser` selects a 4096 MiB, two-vCPU guest across the
+preview, test and run launchers (the desktop default stays 3072 MiB).
 
 **Input responsiveness.** Relative pointer travel is independent of Retina
 scaling, sleeping input consumers wake promptly, and unchanged menu/dock glass
@@ -321,7 +293,6 @@ Then fetch the bootloader, create a disk, and build:
 | `ORANGE_DISK_PROFILE=browser ./scripts/mkdisk.sh` | Build a separate sparse 2 GiB guest filesystem for future browser installation; no browser executable yet |
 | `python3 tools/browser_disk_smoke.py` | Verify and boot the browser-capacity disk in QEMU |
 | `ORANGE_VM_PROFILE=browser zig build run` | Boot the 4 GiB profile through the normal build target |
-| `ORANGE_VM_PROFILE=browser python3 tools/browser_preflight.py` | Read-only Chromium reference-build and QEMU capability checks; exit 2 lists missing prerequisites |
 | `python3 tools/desktop_smoke.py` | Headless QEMU desktop interaction checks and screenshots |
 | `zig build run` | Boot in QEMU with serial on stdio |
 | `zig build debug` | Boot halted, GDB stub on `:1234` |
