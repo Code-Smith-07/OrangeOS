@@ -104,7 +104,7 @@ for prog in juice echo uname greetd greet peel clock squeeze grove about files t
     fi
 done
 if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
-    for prog in glib-probe wpe-libs-probe jsc jsc-probe https-probe gst-probe wpe-render orange-browser; do
+    for prog in glib-probe wpe-libs-probe jsc jsc-probe https-probe gst-probe input-probe wpe-render orange-browser; do
         if [ ! -f "zig-out/bin/$prog" ]; then
             echo "mkdisk: ERROR - zig-out/bin/$prog not found; run 'zig build -Dwpe-probes' first" >&2
             exit 1
@@ -160,6 +160,9 @@ fi
 echo "mkdisk: staged /sbin/init and $(ls "$ROOTFS/bin" | tr '\n' ' ')"
 
 # Data volume test images: the probe runs once at boot (data_volume_smoke.py).
+if [ "${ORANGE_INPUT_PROBE:-0}" = 1 ]; then
+    printf 'input-probe /bin/input-probe once\n' >> "$ROOTFS/etc/seed.conf"
+fi
 if [ "${ORANGE_MEDIA_PROBE:-0}" = 1 ]; then
     printf 'gst-probe /bin/gst-probe once\n' >> "$ROOTFS/etc/seed.conf"
 fi

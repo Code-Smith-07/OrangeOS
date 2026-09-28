@@ -61,6 +61,14 @@ const Window = struct {
     panel: bool = false,
     id: u32 = 0,
     revision: u64 = 0,
+    /// Input the client's port had no room for (its queue holds 16), sent
+    /// in order before anything newer: a lost key or button release would
+    /// leave it held in the client (a stuck Ctrl turns typing into
+    /// shortcuts). Only pure pointer motion may be dropped.
+    backlog: [32]proto.Input = undefined,
+    backlog_len: usize = 0,
+    /// The button mask last sent or queued, to tell motion from clicks.
+    sent_buttons: u8 = 0,
 
     fn title(self: *const Window) []const u8 {
         return self.title_buf[0..self.title_len];
@@ -893,8 +901,33 @@ fn sendInput(idx: usize, kind: u8, code: u8, value: u8, sx: i32, sy: i32) void {
         .x = @divFloor((sx - content.x) * w.client_w, @max(1, content.w)),
         .y = @divFloor((sy - content.y) * w.client_h, @max(1, content.h)),
     };
-    const bytes: [*]const u8 = @ptrCast(&msg);
-    _ = pulp.portSend(w.reply_port, proto.Op.input, bytes[0..@sizeOf(proto.Input)]) catch {};
+    flushInput(w);
+    const motion_only = kind == pulp.EV_MOUSE and code == w.sent_buttons;
+    if (kind == pulp.EV_MOUSE) w.sent_buttons = code;
+    if (w.backlog_len == 0) {
+        const bytes: [*]const u8 = @ptrCast(&msg);
+        if (pulp.portSend(w.reply_port, proto.Op.input, bytes[0..@sizeOf(proto.Input)])) |_| return else |_| {}
+    }
+    if (motion_only) return; // the next motion supersedes it
+    if (w.backlog_len == w.backlog.len) {
+        pulp.puts("peel: input backlog full; event dropped\n");
+        return;
+    }
+    w.backlog[w.backlog_len] = msg;
+    w.backlog_len += 1;
+}
+
+/// Send what the client's port had no room for, oldest first.
+fn flushInput(w: *Window) void {
+    if (w.reply_port < 0) return;
+    var done: usize = 0;
+    while (done < w.backlog_len) : (done += 1) {
+        const bytes: [*]const u8 = @ptrCast(&w.backlog[done]);
+        _ = pulp.portSend(w.reply_port, proto.Op.input, bytes[0..@sizeOf(proto.Input)]) catch break;
+    }
+    if (done == 0) return;
+    @import("std").mem.copyForwards(proto.Input, w.backlog[0 .. w.backlog_len - done], w.backlog[done..w.backlog_len]);
+    w.backlog_len -= done;
 }
 
 fn sendInputById(id: u32, kind: u8, code: u8, value: u8, sx: i32, sy: i32) void {
@@ -1382,6 +1415,12 @@ export fn _start() callconv(.c) noreturn {
         // checks both the input queue and this process's bound client port, so
         // an event landing between this loop and the syscall cannot be lost.
         // Civil time updates once per second; scheduling stays monotonic.
-        pulp.waitInput(1000 - pulp.uptimeMs() % 1000);
+        // Input still waiting for a client's port: retry soon.
+        var backlogged = false;
+        for (windows[0..window_count]) |*w| {
+            flushInput(w);
+            backlogged = backlogged or w.backlog_len > 0;
+        }
+        pulp.waitInput(if (backlogged) 5 else 1000 - pulp.uptimeMs() % 1000);
     }
 }
