@@ -11,6 +11,8 @@ const motion = @import("motion.zig");
 pub const Kind = enum(u8) {
     key = 1,
     mouse = 2,
+    /// The wheel turned: dy steps, positive towards the user (scroll down).
+    wheel = 3,
 };
 
 /// Wire format handed to userspace. Fixed layout so Pulp can read it directly.
@@ -96,6 +98,11 @@ pub fn pushMouse(m: MouseEvent) void {
         .dx = m.dx,
         .dy = m.dy,
     });
+    sched.wakeChannel(waitChannel());
+}
+
+pub fn pushWheel(steps: i32) void {
+    push(.{ .kind = @intFromEnum(Kind.wheel), .code = 0, .value = 0, .dx = 0, .dy = steps });
     sched.wakeChannel(waitChannel());
 }
 

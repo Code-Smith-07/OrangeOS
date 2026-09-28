@@ -409,6 +409,8 @@ pub const FbInfo = extern struct {
 
 pub const EV_KEY: u8 = 1;
 pub const EV_MOUSE: u8 = 2;
+/// The mouse wheel turned: `dy` steps, positive towards the user.
+pub const EV_WHEEL: u8 = 3;
 
 pub const InputEvent = extern struct {
     kind: u8,

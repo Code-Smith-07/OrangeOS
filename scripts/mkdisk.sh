@@ -104,7 +104,7 @@ for prog in juice echo uname greetd greet peel clock squeeze grove about files t
     fi
 done
 if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
-    for prog in glib-probe wpe-libs-probe jsc jsc-probe https-probe wpe-render; do
+    for prog in glib-probe wpe-libs-probe jsc jsc-probe https-probe wpe-render orange-browser; do
         if [ ! -f "zig-out/bin/$prog" ]; then
             echo "mkdisk: ERROR - zig-out/bin/$prog not found; run 'zig build -Dwpe-probes' first" >&2
             exit 1
@@ -117,6 +117,12 @@ if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
     mkdir -p "$ROOTFS/share/wpe-tests"
     cp userland/bin/jsc-probe/probe.js "$ROOTFS/share/wpe-tests/jsc-probe.js"
     cp userland/bin/wpe-render/hello.html "$ROOTFS/share/wpe-tests/hello.html"
+    # Orange Browser's own pages.
+    mkdir -p "$ROOTFS/share/browser"
+    cp userland/share/browser/*.html "$ROOTFS/share/browser/"
+    if [ "${ORANGE_BROWSER_AUTOSTART:-0}" = 1 ]; then
+        printf 'browser /bin/orange-browser once\n' >> "$ROOTFS/etc/seed.conf"
+    fi
     # Content types by file name, for file:// URLs (GIO's xdgmime).
     mkdir -p "$ROOTFS/usr/share/mime"
     cp userland/share/mime/globs2 "$ROOTFS/usr/share/mime/globs2"
@@ -128,6 +134,11 @@ if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
     done
     tools/wpe/test_certs.sh
     cp build/wpe/test-certs/ca.pem "$ROOTFS/share/wpe-tests/test-ca.pem"
+    # The HTTPS fixture's certificate, which the browser trusts for
+    # 10.0.2.2 only in these test images (tools/browser_smoke.py).
+    cp build/wpe/test-certs/server.pem "$ROOTFS/share/wpe-tests/allow-tls.pem"
+    # OrangeOS's default fonts for the generic families (B10).
+    cp userland/share/fontconfig/56-orangeos-defaults.conf "$ROOTFS/etc/fonts/conf.d/"
     mkdir -p "$ROOTFS/share/fonts"
     cp assets/fonts/Inter.ttf assets/fonts/JetBrainsMono.ttf "$ROOTFS/share/fonts/"
     # Each library's licence travels with the binaries linking it.
