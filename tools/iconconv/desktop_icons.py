@@ -21,7 +21,8 @@ NAMES = ("welcome", "terminal", "clock", "about", "windows", "appearance",
          "menu_wifi", "menu_bluetooth", "menu_speaker", "menu_controls",
          "menu_battery", "menu_battery_plain", "menu_brand",
          "dock_welcome", "dock_terminal", "dock_clock", "dock_about",
-         "dock_windows", "dock_appearance", "dock_files", "dock_trash")
+         "dock_windows", "dock_appearance", "dock_files", "dock_trash",
+         "dock_browser")
 
 def main():
     header = bytearray()

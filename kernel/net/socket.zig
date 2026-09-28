@@ -10,8 +10,10 @@
 //!
 //! Addresses are IPv4. What is not offered says so: IPv6 and named local
 //! sockets fail at socket() with EAFNOSUPPORT (syscall layer), listening
-//! with EOPNOTSUPP, and connections to 127.0.0.0/8 with ENETUNREACH, since
-//! there is no loopback interface yet.
+//! with EOPNOTSUPP, and stream connections to 127.0.0.0/8 with ENETUNREACH.
+//! Datagrams to 127.0.0.0/8 are delivered to this machine's own sockets,
+//! which is also how musl's getaddrinfo (AI_ADDRCONFIG) learns that IPv4 is
+//! configured: it connects a UDP socket to 127.0.0.1.
 
 const std = @import("std");
 const net = @import("net.zig");
@@ -187,7 +189,8 @@ fn ephemeralUdpPortLocked(s: *Socket) ?u16 {
 fn bindLocked(s: *Socket, at: Endpoint) Error!void {
     if (s.bound) return Error.InvalidArgument;
     const any = std.mem.eql(u8, &at.ip, &[4]u8{ 0, 0, 0, 0 });
-    if (!any and !std.mem.eql(u8, &at.ip, &net.local_ip)) return Error.AddressUnavailable;
+    const loopback = s.kind == .datagram and net.isLoopback(at.ip);
+    if (!any and !loopback and !std.mem.eql(u8, &at.ip, &net.local_ip)) return Error.AddressUnavailable;
     var port = at.port;
     switch (s.kind) {
         .datagram => {
@@ -218,7 +221,8 @@ pub fn localAddress(s: *Socket) Endpoint {
     defer net.release(irq);
     var at = s.local;
     if (s.tcb) |c| at.port = c.local_port;
-    if ((s.connected or s.tcb != null) and std.mem.eql(u8, &at.ip, &[4]u8{ 0, 0, 0, 0 })) at.ip = net.local_ip;
+    if ((s.connected or s.tcb != null) and std.mem.eql(u8, &at.ip, &[4]u8{ 0, 0, 0, 0 }))
+        at.ip = if (s.connected and net.isLoopback(s.remote.ip)) LOOPBACK_IP else net.local_ip;
     return at;
 }
 
@@ -237,9 +241,11 @@ pub fn peerAddress(s: *Socket) Error!Endpoint {
 
 // ── Connecting ──────────────────────────────────────────────────────────────
 
-fn checkDestination(to: Endpoint) Error!void {
+const LOOPBACK_IP: net.Ipv4Addr = .{ 127, 0, 0, 1 };
+
+fn checkDestination(to: Endpoint, kind: Kind) Error!void {
     if (to.port == 0) return Error.InvalidArgument;
-    if (net.isLoopback(to.ip)) return Error.Unreachable;
+    if (kind == .stream and net.isLoopback(to.ip)) return Error.Unreachable;
     if (std.mem.eql(u8, &to.ip, &[4]u8{ 0, 0, 0, 0 })) return Error.Unreachable;
 }
 
@@ -255,7 +261,7 @@ pub fn connect(s: *Socket, to: Endpoint, nonblock: bool) Error!void {
                 s.connected = false;
                 return;
             }
-            try checkDestination(to);
+            try checkDestination(to, .datagram);
             if (!s.bound) try bindLocked(s, .{});
             s.remote = to;
             s.connected = true;
@@ -263,7 +269,7 @@ pub fn connect(s: *Socket, to: Endpoint, nonblock: bool) Error!void {
         },
         .stream => {},
     }
-    try checkDestination(to);
+    try checkDestination(to, .stream);
     {
         const irq = net.acquire();
         defer net.release(irq);
@@ -349,6 +355,8 @@ pub fn deliverUdpLocked(port: u16, from_ip: net.Ipv4Addr, from_port: u16, data: 
     var cursor = udp_sockets;
     while (cursor) |s| : (cursor = s.next_udp) {
         if (s.local.port != port) continue;
+        // One bound to 127/8 hears only this machine.
+        if (net.isLoopback(s.local.ip) and !net.isLoopback(from_ip)) return;
         // A connected socket takes datagrams from its peer only.
         if (s.connected and (s.remote.port != from_port or !std.mem.eql(u8, &s.remote.ip, &from_ip))) return;
         if (s.read_shut or data.len > MAX_UDP_PAYLOAD or s.queued + data.len > UDP_QUEUE_LIMIT) return;
@@ -377,8 +385,13 @@ fn datagramSend(s: *Socket, data: []const u8, to: ?Endpoint) Error!usize {
     const destination = if (to) |t| t else if (s.connected) s.remote else return Error.DestinationRequired;
     if (std.mem.eql(u8, &destination.ip, &net.BROADCAST_IP)) {
         if (!s.broadcast) return Error.NotPermitted;
-    } else try checkDestination(destination);
+    } else try checkDestination(destination, .datagram);
     if (!s.bound) try bindLocked(s, .{});
+    if (net.isLoopback(s.local.ip) and !net.isLoopback(destination.ip)) return Error.Unreachable;
+    if (net.isLoopback(destination.ip)) {
+        deliverUdpLocked(destination.port, LOOPBACK_IP, s.local.port, data);
+        return data.len;
+    }
     net.sendUdpLocked(s.local.port, destination.ip, destination.port, data) catch |e| return switch (e) {
         error.TooLarge => Error.MessageTooLong,
         // The next hop is being resolved: the datagram is held and sent

@@ -49,7 +49,7 @@ def main():
     try:
         g.until(lambda: "grove: painted" in g.log() and "squeeze: window" in g.log(), "desktop", 45)
         g.scale = 2
-        g.click(360, 732)
+        g.click(322, 732)
         g.until(lambda: "files: listed /:" in g.log(), "real Files root")
         g.click(330, 300)
         g.until(lambda: "files: listed /etc:" in g.log(), "System folder")

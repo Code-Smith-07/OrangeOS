@@ -40,7 +40,7 @@ def main():
         g.move(700, 650)
         dark_edges()
         before = g.region(370, 729, 500, 1)
-        g.move(590, 748)
+        g.move(552, 748)
         g.move(700, 650)
         g.until(lambda: g.region(370, 729, 500, 1) == before, "dock edge stable after hover")
         g.click(1150, 10)

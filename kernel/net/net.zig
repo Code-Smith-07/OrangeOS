@@ -617,8 +617,8 @@ fn flushPending(ip: Ipv4Addr, mac: MacAddr) void {
     }
 }
 
-/// 127.0.0.0/8. OrangeOS has no loopback interface yet; connections there
-/// are refused as unreachable rather than sent to the gateway.
+/// 127.0.0.0/8, never sent to the gateway: datagram sockets deliver there
+/// locally (socket.zig); TCP refuses it as unreachable.
 pub fn isLoopback(ip: Ipv4Addr) bool {
     return ip[0] == 127;
 }
