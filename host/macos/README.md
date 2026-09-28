@@ -2,7 +2,14 @@
 
 `swift test --package-path host/macos` builds the CLI and runs protocol tests.
 The default CLI connection is read-only. An optional menu-bar app provides a
-revocable sound-control grant; Wi-Fi/Bluetooth control is still unfinished.
+revocable sound-control grant and the Bluetooth status permission; Wi-Fi and
+Bluetooth radio control is still unfinished.
+
+macOS attributes privacy prompts to the process responsible for a program,
+which for one started by a script is the terminal. The menu-bar companion
+therefore starts itself again with `responsibility_spawnattrs_setdisclaim`
+(a private spawn attribute Chromium and LLDB also use), so the prompt names
+OrangeOS Companion; the first process waits and forwards termination.
 
 The companion connects to a QEMU-owned Unix socket in a same-user 0700 directory.
 It reads a 64-character lowercase hex credential from an owned, non-symlink,
@@ -98,7 +105,7 @@ the image while this preview is running.
 | Provider | Actual Mac result | Important boundary |
 |---|---|---|
 | CoreWLAN `powerOn()` | Wi-Fi on | A false return also permits query failure, so it is reported as unknown, never fabricated as off. No SSID, scan or network credentials. |
-| CoreBluetooth authorization + IOBluetooth `powerState` | Permission already allowed; Bluetooth on | Permission is checked before querying the controller; no manager creation/prompt, discovery, pairing or device-name enumeration. |
+| CoreBluetooth authorization + IOBluetooth `powerState`, connected count | Bluetooth on, 2 connected | Permission is checked before querying the controller. The person grants it from the companion menu ("Show Mac Bluetooth status in OrangeOS…"), which creates a manager only then so macOS asks; the purpose string is in `Info.plist`. Only the number of connected paired devices leaves the Mac: no names, addresses, discovery or pairing. |
 | Public IOKit `IODisplayGetFloatParameter` | Unsupported on this Mac | Initial public-API probe returned no endpoint. Superseded for this MacBook by the separately qualified compatibility adapter below; remains a read-only fallback. |
 
 Queries run every two seconds on a dedicated serial worker. RPC reads a locked
