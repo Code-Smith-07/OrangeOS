@@ -9,7 +9,9 @@ if [ ! -f build/orange.iso ] || [ ! -f build/disk.img ] || [ ! -f build/data.img
     exit 1
 fi
 if [ "$(uname -s)" = Darwin ]; then
-    set -- -display cocoa,show-cursor=off,full-screen=on,zoom-to-fit=on "$@"
+    # Sound through the Mac's output (the guest's /dev/audio).
+    set -- -display cocoa,show-cursor=off,full-screen=on,zoom-to-fit=on \
+        -audiodev coreaudio,id=snd0 -device intel-hda -device hda-output,audiodev=snd0 "$@"
 fi
 exec qemu-system-x86_64 \
     -M q35 -m "${ORANGE_VM_RAM:-3G}" -smp "${ORANGE_VM_CPUS:-2}" \

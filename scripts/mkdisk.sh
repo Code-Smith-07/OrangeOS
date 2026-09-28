@@ -98,13 +98,13 @@ if [ ! -f zig-out/bin/init ]; then
 fi
 
 cp zig-out/bin/init "$ROOTFS/sbin/init"
-for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe cxx-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe tls-probe futex-probe futex-waiter thread-probe thread-exit-probe thread-fault-probe thread-last-probe net-thread-probe net-exit-probe tcp-probe jit-probe fault-wx musl-probe cxx-probe file-probe thread-capacity pipe-probe epoll-probe unix-probe spawn-probe spawn-child mmap-probe shm-probe random-probe signal-probe inet-probe fault-null fault-ro fault-nx fault-opcode jit-alias-probe data-probe; do
+for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe cxx-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe tls-probe futex-probe futex-waiter thread-probe thread-exit-probe thread-fault-probe thread-last-probe net-thread-probe net-exit-probe tcp-probe jit-probe fault-wx musl-probe cxx-probe file-probe thread-capacity pipe-probe epoll-probe unix-probe spawn-probe spawn-child mmap-probe shm-probe random-probe signal-probe inet-probe fault-null fault-ro fault-nx fault-opcode jit-alias-probe data-probe audio-probe; do
     if [ -f "zig-out/bin/$prog" ]; then
         cp "zig-out/bin/$prog" "$ROOTFS/bin/$prog"
     fi
 done
 if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
-    for prog in glib-probe wpe-libs-probe jsc jsc-probe https-probe wpe-render orange-browser; do
+    for prog in glib-probe wpe-libs-probe jsc jsc-probe https-probe gst-probe wpe-render orange-browser; do
         if [ ! -f "zig-out/bin/$prog" ]; then
             echo "mkdisk: ERROR - zig-out/bin/$prog not found; run 'zig build -Dwpe-probes' first" >&2
             exit 1
@@ -117,6 +117,7 @@ if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
     mkdir -p "$ROOTFS/share/wpe-tests"
     cp userland/bin/jsc-probe/probe.js "$ROOTFS/share/wpe-tests/jsc-probe.js"
     cp userland/bin/jsc-probe/jit.js "$ROOTFS/share/wpe-tests/jsc-jit.js"
+    cp -R userland/share/wpe-tests/media "$ROOTFS/share/wpe-tests/"
     cp userland/bin/wpe-render/hello.html "$ROOTFS/share/wpe-tests/hello.html"
     # Orange Browser's own pages.
     mkdir -p "$ROOTFS/share/browser"
@@ -159,6 +160,12 @@ fi
 echo "mkdisk: staged /sbin/init and $(ls "$ROOTFS/bin" | tr '\n' ' ')"
 
 # Data volume test images: the probe runs once at boot (data_volume_smoke.py).
+if [ "${ORANGE_MEDIA_PROBE:-0}" = 1 ]; then
+    printf 'gst-probe /bin/gst-probe once\n' >> "$ROOTFS/etc/seed.conf"
+fi
+if [ "${ORANGE_AUDIO_PROBE:-0}" = 1 ]; then
+    printf 'audio-probe /bin/audio-probe once\n' >> "$ROOTFS/etc/seed.conf"
+fi
 if [ "${ORANGE_DATA_PROBE:-0}" = 1 ]; then
     printf 'data-probe /bin/data-probe once\n' >> "$ROOTFS/etc/seed.conf"
 fi

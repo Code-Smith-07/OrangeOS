@@ -16,6 +16,8 @@ const vmm = @import("../../mm/vmm.zig");
 const pmm = @import("../../mm/pmm.zig");
 const console = @import("../../console.zig");
 const tsc = @import("../../time/tsc.zig");
+const spinlock = @import("../../sync/spinlock.zig");
+const sched = @import("../../sched/sched.zig");
 
 // Controller registers.
 const REG_GCAP: usize = 0x00;
@@ -354,7 +356,7 @@ const sine_table = blk: {
 
 /// Fill the buffer with a tone and start the stream.
 pub fn playTone(freq: u32, amplitude_shift: u4) void {
-    if (!present) return;
+    if (!present or stream_running) return;
 
     const samples: [*]volatile i16 = @ptrFromInt(buffer_virt);
     const frames = BUFFER_BYTES / (2 * CHANNELS);
@@ -399,4 +401,138 @@ pub fn report() void {
     console.print("[ ok ] hda: codec {d}, dac node {d}, pin node {d}\n", .{
         codec_addr, dac_node, pin_node,
     });
+}
+
+// ── Streaming: /dev/audio ───────────────────────────────────────────────────
+// Programs write 48 kHz, 16-bit, stereo PCM. The DMA engine loops over the
+// ring; writes go just ahead of the play position, up to MAX_QUEUED bytes
+// (a third of a second). A service thread follows the play position and
+// zeroes what has been played, so running out of data is silence rather than
+// the last second repeating. After a few idle seconds the stream stops.
+
+pub const FRAME_BYTES: usize = 2 * CHANNELS;
+const MAX_QUEUED: u64 = 64 * 1024;
+/// Distance kept from the play position when a write starts or catches up:
+/// the controller fetches ahead of LPIB.
+const LEAD: u64 = 4096;
+const IDLE_STOP_MS: u64 = 3000;
+
+var stream_lock: spinlock.SpinLock = .{};
+var stream_running: bool = false;
+var service_started: bool = false;
+/// Bytes the DMA engine has played, and the end of what has been written,
+/// both counted from the first write; the ring offset is the count modulo
+/// BUFFER_BYTES.
+var played_total: u64 = 0;
+var written_total: u64 = 0;
+var last_lpib: u32 = 0;
+var idle_since_ms: u64 = 0;
+
+fn nowMs() u64 {
+    return tsc.microsSinceBoot() / 1000;
+}
+
+fn zeroRing(from: u64, length: u64) void {
+    const ring: [*]volatile u8 = @ptrFromInt(buffer_virt);
+    var done: u64 = 0;
+    while (done < length) : (done += 1) ring[@intCast((from + done) % BUFFER_BYTES)] = 0;
+}
+
+/// Follow the play position and silence what was played.
+fn advanceLocked() void {
+    if (!stream_running) return;
+    const lpib: u32 = @intCast(position() % BUFFER_BYTES);
+    const delta: u64 = if (lpib >= last_lpib) lpib - last_lpib else BUFFER_BYTES - last_lpib + lpib;
+    zeroRing(played_total, delta);
+    played_total += delta;
+    last_lpib = lpib;
+}
+
+fn startLocked() void {
+    if (stream_running) return;
+    // The stream stopped with nothing queued, so the whole ring is silence;
+    // it resumes from where the position froze.
+    last_lpib = @intCast(position() % BUFFER_BYTES);
+    played_total = written_total;
+    stream_running = true;
+    const sd = output_stream_base;
+    w32(sd + SD_CTL, r32(sd + SD_CTL) | SDCTL_RUN);
+}
+
+fn stopLocked() void {
+    if (!stream_running) return;
+    const sd = output_stream_base;
+    w32(sd + SD_CTL, r32(sd + SD_CTL) & ~SDCTL_RUN);
+    stream_running = false;
+    written_total = played_total;
+}
+
+/// Bytes written but not yet played (the sink's latency).
+pub fn queuedBytes() u64 {
+    const state = spinlock.acquireIrqSave(&stream_lock);
+    defer spinlock.releaseIrqRestore(&stream_lock, state);
+    advanceLocked();
+    return written_total -| played_total;
+}
+
+pub const WriteError = error{ NoDevice, WouldBlock };
+
+/// Queue PCM (whole frames). Blocks while a third of a second is queued,
+/// unless `nonblock`. Call with interrupts enabled.
+pub fn writeStream(data: []const u8, nonblock: bool) WriteError!usize {
+    if (!present) return WriteError.NoDevice;
+    ensureService();
+    const usable = data.len - data.len % FRAME_BYTES;
+    if (usable == 0) return 0;
+    while (true) {
+        {
+            const state = spinlock.acquireIrqSave(&stream_lock);
+            defer spinlock.releaseIrqRestore(&stream_lock, state);
+            startLocked();
+            advanceLocked();
+            // Caught up with (or behind) the play position: restart ahead of it.
+            if (written_total < played_total + LEAD) {
+                zeroRing(written_total, (played_total + LEAD) -| written_total);
+                written_total = played_total + LEAD;
+            }
+            const queued = written_total - played_total;
+            if (queued + FRAME_BYTES <= MAX_QUEUED) {
+                var n: u64 = @min(usable, MAX_QUEUED - queued);
+                n -= n % FRAME_BYTES;
+                const ring: [*]u8 = @ptrFromInt(buffer_virt);
+                var done: u64 = 0;
+                while (done < n) {
+                    const at: usize = @intCast((written_total + done) % BUFFER_BYTES);
+                    const chunk: usize = @intCast(@min(n - done, BUFFER_BYTES - at));
+                    @memcpy(ring[at .. at + chunk], data[@intCast(done)..][0..chunk]);
+                    done += chunk;
+                }
+                written_total += n;
+                idle_since_ms = nowMs();
+                return @intCast(n);
+            }
+        }
+        if (nonblock) return WriteError.WouldBlock;
+        sched.sleepMs(2);
+    }
+}
+
+fn serviceThread(_: ?*anyopaque) void {
+    while (true) {
+        const running = blk: {
+            const state = spinlock.acquireIrqSave(&stream_lock);
+            defer spinlock.releaseIrqRestore(&stream_lock, state);
+            advanceLocked();
+            if (stream_running and written_total <= played_total and nowMs() - idle_since_ms > IDLE_STOP_MS) stopLocked();
+            break :blk stream_running;
+        };
+        sched.sleepMs(if (running) 5 else 50);
+    }
+}
+
+fn ensureService() void {
+    if (@atomicRmw(bool, &service_started, .Xchg, true, .acq_rel)) return;
+    _ = sched.spawn("audio", serviceThread, null, .normal) catch {
+        @atomicStore(bool, &service_started, false, .release);
+    };
 }

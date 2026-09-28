@@ -20,7 +20,8 @@ libsoup and OpenSSL, running in OrangeOS processes and drawn into a Peel window.
   <li>Network: HTTPS with Mozilla's trust store in <code>/etc/ssl/cert.pem</code>.</li>
   <li>Tabs: Ctrl+T opens one, Ctrl+W closes it, Ctrl+Tab moves between them.</li>
   <li>Cookies and site data are kept on the data disk (<code>/data</code>) and survive a restart.</li>
-  <li>Not yet: playing video and audio (pages with them load, but nothing plays), WebGL.</li>
+  <li>Video and sound: GStreamer with FFmpeg's decoders (H.264, VP9, AAC, Opus), including the streaming YouTube uses. Decoding runs in software, so high frame rates stutter under emulation.</li>
+  <li>Not yet: WebGL, protected (DRM) video, AV1.</li>
 </ul>
 <p><a id="home" href="start.html">Back to the start page</a></p>
 </body>

@@ -897,6 +897,7 @@ fn vfsErrno(e: vfs.Error) i64 {
         vfs.Error.OutOfMemory => ENOMEM,
         vfs.Error.MessageTooLong => EMSGSIZE,
         vfs.Error.NotPermitted => EPERM,
+        vfs.Error.NoDevice => -6, // ENXIO
         vfs.Error.NameTooLong => ENAMETOOLONG,
         vfs.Error.TooManyOpen => EMFILE,
         vfs.Error.BadFd => EBADF,

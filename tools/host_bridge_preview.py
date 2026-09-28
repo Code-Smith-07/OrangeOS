@@ -52,6 +52,8 @@ def main():
                 *(["-drive", f"id=data0,file={ROOT / 'build/data.img'},format=raw,if=none",
                    "-device", "ide-hd,drive=data0,bus=ahci.1"] if (ROOT / "build/data.img").exists() else []),
                 "-netdev", "user,id=n0", "-device", "e1000,netdev=n0",
+                # Sound through the Mac's output (the guest's /dev/audio).
+                "-audiodev", "coreaudio,id=snd0", "-device", "intel-hda", "-device", "hda-output,audiodev=snd0",
                 "-display", "cocoa,show-cursor=off,zoom-to-fit=on,zoom-interpolation=on,full-screen=on",
                 "-serial", f"file:{output / 'serial.log'}",
                 "-qmp", f"unix:{output / 'qmp.sock'},server=on,wait=off",

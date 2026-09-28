@@ -339,6 +339,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "inet-probe", .sources = &.{"userland/bin/inet-probe/probe.c"} },
         .{ .name = "jit-alias-probe", .sources = &.{"userland/bin/jit-alias-probe/probe.c"} },
         .{ .name = "data-probe", .sources = &.{"userland/bin/data-probe/probe.c"} },
+        .{ .name = "audio-probe", .sources = &.{"userland/bin/audio-probe/probe.c"} },
     };
     for (c_programs) |program| {
         const mod = b.createModule(.{
@@ -504,7 +505,10 @@ pub fn build(b: *std.Build) void {
         const sysroot = "build/wpe/sysroot";
         // What libWPEWebKit-2.0.so links, as static libraries.
         const wpe_libs = [_][]const u8{
-            "WPEWebKitStatic", "WPEPAL",       "WPESkia",      "WPExdgmime", "soup-3.0",   "gioopenssl", "ssl",
+            "WPEWebKitStatic", "WPEPAL",       "WPESkia",      "WPExdgmime",
+            // Media (W11): GStreamer and its plugins, then FFmpeg.
+            "gstreamer-full-1.0", "opus", "avfilter", "avformat", "avcodec", "swresample", "swscale", "avutil",
+            "soup-3.0",   "gioopenssl", "ssl",
             "crypto",          "psl",          "nghttp2",      "epoxy",      "xkbcommon",  "xslt",       "xml2",
             "sqlite3",         "gcrypt",       "gpg-error",    "tasn1",      "webpdemux",  "webpmux",    "webp",
             "sharpyuv",        "harfbuzz-icu", "harfbuzz",     "fontconfig", "expat",      "freetype",   "png16",
@@ -538,6 +542,11 @@ pub fn build(b: *std.Build) void {
                 "xml2",      "sqlite3",    "gcrypt",     "gpg-error",   "tasn1",        "xkbcommon",    "epoxy",
                 "woff2enc",  "woff2dec",   "woff2common", "brotlienc",  "brotlidec",    "brotlicommon", "glib-2.0",
                 "pcre2-8",   "z",
+            } },
+            // GStreamer with its plugins and FFmpeg (W11).
+            .{ .name = "gst-probe", .sources = &.{"userland/bin/gst-probe/probe.c"}, .cxx = false, .libs = &.{
+                "gstreamer-full-1.0", "opus", "avfilter", "avformat", "avcodec", "swresample", "swscale", "avutil",
+                "gio-2.0",            "gmodule-2.0", "gobject-2.0", "ffi",   "glib-2.0",  "pcre2-8",  "z",
             } },
             .{ .name = "https-probe", .sources = &.{"userland/bin/https-probe/probe.c"}, .cxx = false, .libs = &.{
                 "soup-3.0",   "gioopenssl", "ssl",          "crypto",      "psl",     "nghttp2", "brotlidec",
@@ -583,7 +592,7 @@ pub fn build(b: *std.Build) void {
                     mod.addCSourceFile(.{ .file = b.path(source), .flags = &(wpe_defines ++ [_][]const u8{ "-std=gnu11", "-nostdinc", "-fno-stack-protector", "-mno-red-zone", "-mno-avx", "-Wall", "-Wextra", "-Werror" }) });
                 }
             }
-            for ([_][]const u8{ "include", "include/glib-2.0", "lib/glib-2.0/include", "include/harfbuzz", "include/freetype2", "include/libxml2", "include/libsoup-3.0", "include/wpe-webkit-2.0", "include/wpe-webkit-2.0/wpe-platform" }) |dir| {
+            for ([_][]const u8{ "include", "include/glib-2.0", "lib/glib-2.0/include", "include/harfbuzz", "include/freetype2", "include/libxml2", "include/libsoup-3.0", "include/wpe-webkit-2.0", "include/wpe-webkit-2.0/wpe-platform", "include/gstreamer-1.0" }) |dir| {
                 mod.addSystemIncludePath(b.path(b.pathJoin(&.{ sysroot, dir })));
             }
             for (musl_headers) |dir| mod.addSystemIncludePath(.{ .cwd_relative = dir });

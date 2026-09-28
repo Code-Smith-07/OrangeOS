@@ -164,8 +164,11 @@ Reload, keyboard, mouse and wheel, and real sites over QEMU's network
 ([Wikipedia in Orange Browser](docs/screenshots/orange-browser-wikipedia.png)).
 Tabs, JavaScriptCore's JIT (with W^X kept: code is written through a second
 mapping) and a profile that survives a reboot (cookies and site data on the
-`/data` disk, [013](docs/design/013-data-volume.md)) work too. Not yet:
-playing video and audio (pages with them load), WebGL. The plan, milestones and every
+`/data` disk, [013](docs/design/013-data-volume.md)) work too. Video and
+sound play through GStreamer and FFmpeg (H.264, VP9, AAC, Opus; Media Source
+Extensions, so YouTube plays, if choppily under emulation), with sound
+through a new `/dev/audio` and, in the preview, the Mac's speakers. Not yet:
+WebGL, DRM video, AV1. The plan, milestones and every
 recorded WebKit patch are in [012](docs/design/012-wpe-webkit-browser.md). The
 earlier Chromium plan was dropped on 2026-09-28 after WPE passed its gate; its
 document stays as the [runtime history](docs/design/011-native-chromium-browser.md).

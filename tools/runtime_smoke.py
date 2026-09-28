@@ -26,6 +26,9 @@ HTTPS_FIXTURE_PORT = 38459
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent
 
 
+# Clips the media pages play (W11).
+MEDIA = pathlib.Path(__file__).resolve().parents[1] / "userland/share/wpe-tests/media"
+
 class TcpFixture(socketserver.StreamRequestHandler):
     """Answer "orange-tcp <token>" with a payload derived from the token,
     and "orange-bulk <bytes>" with that many patterned bytes."""
@@ -78,6 +81,39 @@ class HttpsFixture(http.server.BaseHTTPRequestHandler):
               b"+','+(localStorage.getItem('orange')||'none');"
               b"document.cookie='orange=kept; max-age=86400; secure';localStorage.setItem('orange','stored');"
               b"</script></body></html>")
+    # Media (W11). <video> with a plain source, sound on. When it ends the
+    # title reports the frame size, whether a frame drawn to a canvas had
+    # colour, and how long it took from the click in wall-clock time.
+    VIDEO = (b"<!DOCTYPE html><html><head><meta charset='utf-8'><title>Video</title></head>"
+             b"<body style='margin:0;background:#222;height:100vh'><video id='v' width='320' height='240'></video>"
+             b"<canvas id='c' width='32' height='24'></canvas><script>"
+             b"const v=document.getElementById('v');let drawn='',t0=0;"
+             b"v.onerror=()=>{document.title='video:error '+(v.error&&v.error.code)};"
+             b"v.ontimeupdate=()=>{if(drawn||v.currentTime<1)return;const x=document.getElementById('c').getContext('2d');"
+             b"x.drawImage(v,0,0,32,24);const d=x.getImageData(0,0,32,24).data;let lit=0;"
+             b"for(let i=0;i<d.length;i+=4)if(d[i]+d[i+1]+d[i+2]>90)lit++;"
+             b"drawn='lit='+lit};"
+             b"v.onended=()=>{document.title='video:ended '+v.videoWidth+'x'+v.videoHeight+' '+drawn"
+             b"+' wall='+Math.round(performance.now()-t0)};"
+             # Sound needs a user gesture (autoplay policy): a click starts it.
+             b"v.oncanplay=()=>{if(!v.played.length)document.title='video:ready'};"
+             b"document.body.onclick=()=>{t0=performance.now();v.play().catch(e=>{document.title='video:play '+e.name})};"
+             b"v.src='/media/clip-h264-aac.mp4'"
+             b"</script></body></html>")
+    # The same through Media Source Extensions, as YouTube streams: the
+    # WebM clip is appended to a SourceBuffer.
+    MSE = (b"<!DOCTYPE html><html><head><meta charset='utf-8'><title>MSE</title></head>"
+           b"<body style='margin:0;background:#222'><video id='v' width='320' height='240' muted></video><script>"
+           b"const t='video/webm; codecs=\"vp9,opus\"';const v=document.getElementById('v');let t0=0;"
+           b"v.onplaying=()=>{if(!t0)t0=performance.now()};"
+           b"(async()=>{if(!window.MediaSource||!MediaSource.isTypeSupported(t)){document.title='mse:unsupported';return}"
+           b"const m=new MediaSource();v.src=URL.createObjectURL(m);"
+           b"await new Promise(r=>m.addEventListener('sourceopen',r,{once:true}));const b=m.addSourceBuffer(t);"
+           b"b.appendBuffer(await (await fetch('/media/clip-vp9-opus.webm')).arrayBuffer());"
+           b"await new Promise(r=>b.addEventListener('updateend',r,{once:true}));m.endOfStream();"
+           b"v.onended=()=>{document.title='mse:ended '+v.videoWidth+'x'+v.videoHeight+' wall='+Math.round(performance.now()-t0)};"
+           b"await v.play();document.title='mse:playing'})().catch(e=>{document.title='mse:error '+e})"
+           b"</script></body></html>")
     # Taller than the window; its title follows the scroll position.
     LONG = (b"<!DOCTYPE html><html><head><meta charset='utf-8'><title>Long page</title></head>"
             b"<body style='margin:0;height:5000px;background:linear-gradient(#fff,#0047ab)'>"
@@ -89,6 +125,11 @@ class HttpsFixture(http.server.BaseHTTPRequestHandler):
             body, kind = self.PAGE, "text/html; charset=utf-8"
         elif self.path == "/cookie.html":
             body, kind = self.COOKIE, "text/html; charset=utf-8"
+        elif self.path in ("/video.html", "/mse.html"):
+            body, kind = (self.VIDEO if self.path == "/video.html" else self.MSE), "text/html; charset=utf-8"
+        elif self.path.startswith("/media/") and "/" not in self.path[7:] and (MEDIA / self.path[7:]).is_file():
+            body = (MEDIA / self.path[7:]).read_bytes()
+            kind = "video/webm" if self.path.endswith(".webm") else "video/mp4"
         elif self.path == "/long.html":
             body, kind = self.LONG, "text/html; charset=utf-8"
         elif self.path == "/orange":

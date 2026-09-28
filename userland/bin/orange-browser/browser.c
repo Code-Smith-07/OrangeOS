@@ -712,6 +712,10 @@ int main(int argc, char **argv)
 	g_setenv("XDG_DATA_HOME", data_dir, TRUE);
 	g_setenv("XDG_RUNTIME_DIR", PROFILE "/run", TRUE);
 	g_mkdir_with_parents(PROFILE "/run", 0700);
+	/* Where video downloads are buffered (WebKit's default, /var/tmp, is on
+	 * the read-only root). */
+	g_setenv("WPE_SHELL_MEDIA_DISK_CACHE_PATH", PROFILE "/media", TRUE);
+	g_mkdir_with_parents(PROFILE "/media", 0700);
 	printf("orange-browser: website data in %s\n", data_dir);
 
 	if (orange_peel_open("Orange Browser", WINDOW_WIDTH, WINDOW_HEIGHT, &browser.window) != 0) {
@@ -742,8 +746,11 @@ int main(int argc, char **argv)
 	webkit_settings_set_enable_webgl(browser.settings, FALSE);
 	/* Debug images (ORANGE_BROWSER_CONSOLE=1 scripts/mkdisk.sh): page
 	 * console messages go to standard output, which is the serial log. */
-	if (access(CONSOLE_FLAG, F_OK) == 0)
+	if (access(CONSOLE_FLAG, F_OK) == 0) {
 		webkit_settings_set_enable_write_console_messages_to_stdout(browser.settings, TRUE);
+		/* GStreamer's warnings and errors, in the web process too. */
+		g_setenv("GST_DEBUG", "3", FALSE);
+	}
 	printf("orange-browser: user agent \"%s\"\n", webkit_settings_get_user_agent(browser.settings));
 	browser.session = webkit_network_session_new(data_dir, PROFILE "/cache");
 	/* Cookies in SQLite beside the rest of the website data. */
