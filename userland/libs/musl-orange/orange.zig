@@ -224,6 +224,7 @@ const SYS = struct {
     const faccessat = 269;
     const prlimit64 = 302;
     const statx = 332;
+    const faccessat2 = 439;
 };
 
 const E = struct {
@@ -1061,6 +1062,11 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
         SYS.statfs => statfs(a, b),
         SYS.access => accessPath(AT_FDCWD, a, b),
         SYS.faccessat => accessPath(a1, b, c),
+        // musl uses faccessat2 whenever flags are given. OrangeOS has no
+        // symbolic links and every program's real and effective ids are
+        // the same, so AT_SYMLINK_NOFOLLOW (0x100) and AT_EACCESS (0x200)
+        // cannot change the answer; other flags are refused.
+        SYS.faccessat2 => if (d & ~@as(u64, 0x100 | 0x200) != 0) err(E.INVAL) else accessPath(a1, b, c),
         SYS.mmap => mmap(a, b, c, d, a5, f),
         SYS.mprotect => blk: {
             const prot = translateProt(c) orelse break :blk err(E.ACCES);

@@ -1,0 +1,4 @@
+#!/bin/sh
+# C++ compiler for OrangeOS userland libraries; see orange-cc.
+exec zig c++ -target x86_64-linux-musl -mcpu=baseline -fno-sanitize=all \
+    -fno-stack-protector -mno-red-zone -fno-pic "$@"
