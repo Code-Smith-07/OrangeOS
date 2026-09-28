@@ -65,10 +65,28 @@ class HttpsFixture(http.server.BaseHTTPRequestHandler):
     """GET /orange over TLS with the test CA's certificate (https-probe)."""
     protocol_version = "HTTP/1.1"
 
+    PAGE = (b"<!DOCTYPE html><html><head><meta charset='utf-8'><title>Fixture over HTTPS</title></head>"
+            b"<body style='font:20px Inter,sans-serif;margin:40px;background:#e8f4ff'>"
+            b"<h1 style='color:#0047ab'>Served over HTTPS</h1>"
+            b"<p>Type here: <input id='q' autofocus style='font-size:20px' "
+            b"oninput=\"document.title='typed:'+this.value\"></p></body></html>")
+    # Taller than the window; its title follows the scroll position.
+    LONG = (b"<!DOCTYPE html><html><head><meta charset='utf-8'><title>Long page</title></head>"
+            b"<body style='margin:0;height:5000px;background:linear-gradient(#fff,#0047ab)'>"
+            b"<script>addEventListener('scroll',()=>{document.title='scrolled:'+(scrollY>0?'down':'top')})</script>"
+            b"</body></html>")
+
     def do_GET(self):
-        body = b"orange over https\n" if self.path == "/orange" else b"not found\n"
-        self.send_response(200 if self.path == "/orange" else 404)
-        self.send_header("Content-Type", "text/plain")
+        if self.path == "/page.html":
+            body, kind = self.PAGE, "text/html; charset=utf-8"
+        elif self.path == "/long.html":
+            body, kind = self.LONG, "text/html; charset=utf-8"
+        elif self.path == "/orange":
+            body, kind = b"orange over https\n", "text/plain"
+        else:
+            body, kind = b"not found\n", "text/plain"
+        self.send_response(404 if body == b"not found\n" else 200)
+        self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

@@ -510,7 +510,22 @@ pub fn build(b: *std.Build) void {
             "icuuc",           "icudata",      "gio-2.0",      "gmodule-2.0", "gobject-2.0", "ffi",      "glib-2.0",
             "pcre2-8",         "z",
         };
-        const WpeProbe = struct { name: []const u8, sources: []const []const u8, libs: []const []const u8, cxx: bool };
+        const WpeProbe = struct { name: []const u8, sources: []const []const u8, libs: []const []const u8, cxx: bool, peel: bool = false };
+        // libpeel for C (userland/libs/libpeel/c_api.zig), for the browser.
+        const peel_c_mod = b.createModule(.{
+            .root_source_file = b.path("userland/libs/libpeel/c_api.zig"),
+            .target = user_target,
+            .optimize = user_optimize,
+            .red_zone = false,
+            .pic = false,
+            .stack_protector = false,
+            .stack_check = false,
+            .sanitize_c = false,
+            .single_threaded = false,
+        });
+        peel_c_mod.addImport("pulp", pulp_mod);
+        peel_c_mod.addImport("libpeel", libpeel_mod);
+        const peel_c = b.addLibrary(.{ .linkage = .static, .name = "peel-c", .root_module = peel_c_mod });
         const wpe_programs = [_]WpeProbe{
             .{ .name = "glib-probe", .sources = &.{"userland/bin/glib-probe/probe.c"}, .cxx = false, .libs = &.{
                 "gio-2.0", "gmodule-2.0", "gobject-2.0", "ffi", "glib-2.0", "pcre2-8", "z",
@@ -531,6 +546,7 @@ pub fn build(b: *std.Build) void {
             // processes WebKit starts from /libexec/wpe-webkit-2.0, linked
             // statically from what tools/wpe/build_deps.py wpe collects.
             .{ .name = "wpe-render", .sources = &.{ "userland/bin/wpe-render/render.c", "userland/bin/wpe-render/tls-init.c", "userland/bin/wpe-render/unreachable.c" }, .cxx = true, .libs = &wpe_libs },
+            .{ .name = "orange-browser", .sources = &.{ "userland/bin/orange-browser/browser.c", "userland/bin/orange-browser/peel-platform.c", "userland/bin/wpe-render/tls-init.c", "userland/bin/wpe-render/unreachable.c" }, .cxx = true, .peel = true, .libs = &wpe_libs },
             .{ .name = "WPEWebProcess", .sources = &.{ "userland/bin/wpe-render/tls-init.c", "userland/bin/wpe-render/unreachable.c" }, .cxx = true, .libs = &([_][]const u8{"wpe-web-process.o"} ++ wpe_libs) },
             .{ .name = "WPENetworkProcess", .sources = &.{ "userland/bin/wpe-render/tls-init.c", "userland/bin/wpe-render/unreachable.c" }, .cxx = true, .libs = &([_][]const u8{"wpe-network-process.o"} ++ wpe_libs) },
             .{ .name = "jsc-probe", .sources = &.{"userland/bin/jsc-probe/probe.c"}, .cxx = false, .libs = &.{} },
@@ -575,6 +591,7 @@ pub fn build(b: *std.Build) void {
                 const file = if (std.mem.endsWith(u8, lib, ".o")) b.fmt("{s}/lib/{s}", .{ sysroot, lib }) else b.fmt("{s}/lib/lib{s}.a", .{ sysroot, lib });
                 mod.addObjectFile(b.path(file));
             }
+            if (program.peel) mod.linkLibrary(peel_c);
             if (program.cxx) {
                 mod.linkLibrary(cxx_lib);
                 mod.linkLibrary(unwind_lib);

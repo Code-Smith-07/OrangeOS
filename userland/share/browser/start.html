@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<!-- Orange Browser's start page (docs/design/012, W9). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Orange Browser</title>
+<style>
+  body { margin: 0; font: 16px "Inter", sans-serif; color: #26313e; background: #fff8f1; }
+  header { padding: 40px 48px 24px; background: linear-gradient(135deg, #ff8c00, #ffb347); color: #fff; }
+  h1 { margin: 0; font-size: 34px; }
+  header p { margin: 8px 0 0; font-size: 16px; opacity: .92; }
+  main { padding: 24px 48px; }
+  .card { display: block; margin: 0 0 14px; padding: 16px 20px; background: #fff; border-radius: 10px;
+          box-shadow: 0 1px 3px rgba(0,0,0,.12); text-decoration: none; color: inherit; }
+  .card b { color: #1689db; font-size: 17px; }
+  .card span { display: block; color: #6b7684; margin-top: 4px; }
+  footer { padding: 0 48px 32px; color: #8a93a0; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Orange Browser</h1>
+  <p>WPE WebKit, running natively on OrangeOS.</p>
+</header>
+<main>
+  <a class="card" id="about" href="about.html"><b>About this browser</b><span>What is inside, and what is not yet.</span></a>
+  <a class="card" href="https://en.wikipedia.org/"><b>Wikipedia</b><span>Needs the internet through QEMU's network.</span></a>
+  <a class="card" href="https://example.com/"><b>example.com</b><span>A small page over HTTPS.</span></a>
+</main>
+<footer>Type an address above and press Return. Ctrl+L focuses the address field.</footer>
+</body>
+</html>

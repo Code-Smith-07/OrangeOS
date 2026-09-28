@@ -1119,6 +1119,14 @@ fn handleKey(e: *const pulp.InputEvent) void {
     if (activeWindow()) |idx| sendInput(idx, e.kind, e.code, e.value, 0, 0);
 }
 
+/// The wheel scrolls the client window under the pointer, as on other
+/// desktops: the steps travel in the event's code as a signed byte.
+fn handleWheel(e: *const pulp.InputEvent) void {
+    const idx = clientWindowAt(cursor_x, cursor_y) orelse return;
+    const steps: i8 = @intCast(@max(-127, @min(127, e.dy)));
+    sendInput(idx, pulp.EV_WHEEL, @bitCast(steps), 0, cursor_x, cursor_y);
+}
+
 // ── Entry ───────────────────────────────────────────────────────────────────
 
 export fn _start() callconv(.c) noreturn {
@@ -1241,6 +1249,7 @@ export fn _start() callconv(.c) noreturn {
             switch (e.kind) {
                 pulp.EV_MOUSE => handleMouse(e),
                 pulp.EV_KEY => handleKey(e),
+                pulp.EV_WHEEL => handleWheel(e),
                 else => {},
             }
         }

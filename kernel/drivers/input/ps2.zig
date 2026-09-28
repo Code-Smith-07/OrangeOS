@@ -37,6 +37,8 @@ const CONFIG_PORT2_CLOCK_OFF: u8 = 1 << 5;
 
 const MOUSE_SET_DEFAULTS: u8 = 0xF6;
 const MOUSE_ENABLE_REPORTING: u8 = 0xF4;
+const MOUSE_SET_SAMPLE_RATE: u8 = 0xF3;
+const MOUSE_GET_ID: u8 = 0xF2;
 
 const IRQ_KEYBOARD: u8 = 1;
 const IRQ_MOUSE: u8 = 12;
@@ -116,10 +118,13 @@ fn scancode(code: u8) void {
 //
 // The standard 3-byte packet: flags, then signed X and Y deltas. Y is positive
 // upward on the wire and positive downward on screen, so it is negated here
-// rather than in every consumer.
+// rather than in every consumer. An IntelliMouse (a wheel mouse, which
+// answers the sample-rate sequence 200, 100, 80 with id 3) adds a fourth
+// byte: the wheel's movement, positive towards the user (scroll down).
 
-var packet: [3]u8 = undefined;
+var packet: [4]u8 = undefined;
 var packet_index: usize = 0;
+var packet_size: usize = 3;
 
 fn mouseByte(b: u8) void {
     // Bit 3 of the first byte is always set. If it is not, we are out of sync
@@ -128,7 +133,7 @@ fn mouseByte(b: u8) void {
 
     packet[packet_index] = b;
     packet_index += 1;
-    if (packet_index < 3) return;
+    if (packet_index < packet_size) return;
     packet_index = 0;
 
     const flags = packet[0];
@@ -147,6 +152,25 @@ fn mouseByte(b: u8) void {
         .right = flags & 0x02 != 0,
         .middle = flags & 0x04 != 0,
     });
+    if (packet_size == 4) {
+        // Low four bits, signed.
+        const wheel: i4 = @bitCast(@as(u4, @truncate(packet[3])));
+        if (wheel != 0) event.pushWheel(wheel);
+    }
+}
+
+/// Ask for the wheel protocol; the mouse's id says whether it took.
+fn enableWheel() void {
+    for ([_]u8{ 200, 100, 80 }) |rate| {
+        writeMouse(MOUSE_SET_SAMPLE_RATE);
+        writeMouse(rate);
+    }
+    writeMouse(MOUSE_GET_ID);
+    const id: u8 = if (waitReadable()) io.inb(DATA) else 0;
+    if (id == 3) {
+        packet_size = 4;
+        console.info("ps2: wheel mouse", .{});
+    }
 }
 
 // ── Bring-up ────────────────────────────────────────────────────────────────
@@ -165,6 +189,7 @@ pub fn init() void {
 
     // Put the mouse in a known state and tell it to start reporting.
     writeMouse(MOUSE_SET_DEFAULTS);
+    enableWheel();
     writeMouse(MOUSE_ENABLE_REPORTING);
 
     isr.register(VECTOR_KEYBOARD, keyboardHandler);
