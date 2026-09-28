@@ -1,0 +1,39 @@
+OrangeOS: create the EGL platform display only for hardware rendering.
+
+On WPE, WebProcess::platformInitializeWebProcess() created the platform
+display unconditionally and aborted without EGL, although software
+rendering (hardware acceleration policy NEVER, shared-memory buffers,
+Skia on the CPU) never uses it. Do what GTK does: create it when the
+renderer transport includes Hardware, or from DrawingArea when hardware
+acceleration is enabled. docs/design/012 section 4.1.
+
+diff -ru a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp	2026-09-28 11:16:54
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp	2026-09-28 11:16:54
+@@ -114,7 +114,7 @@
+ {
+     Ref page = *m_webPage->corePage();
+     Settings& settings = page->settings();
+-#if PLATFORM(GTK)
++#if PLATFORM(GTK) || PLATFORM(WPE)
+     if (settings.hardwareAccelerationEnabled()) {
+         WebProcess::singleton().initializePlatformDisplayIfNeeded();
+         WebProcess::singleton().initializeVulkanIfNeeded();
+diff -ru a/Source/WebKit/WebProcess/glib/WebProcessGLib.cpp b/Source/WebKit/WebProcess/glib/WebProcessGLib.cpp
+--- a/Source/WebKit/WebProcess/glib/WebProcessGLib.cpp	2026-09-28 11:16:54
++++ b/Source/WebKit/WebProcess/glib/WebProcessGLib.cpp	2026-09-28 11:16:54
+@@ -234,7 +234,13 @@
+             initializePlatformDisplayIfNeeded();
+     }
+ #else
+-    initializePlatformDisplayIfNeeded();
++    // OrangeOS: as on GTK, a platform display (EGL) is only needed for
++    // hardware-accelerated rendering. With shared-memory buffers alone and
++    // hardware acceleration off, rendering is Skia on the CPU, and creating
++    // a display would abort where there is no EGL. DrawingArea creates it on
++    // demand if hardware acceleration is turned on.
++    if (m_rendererBufferTransportMode.contains(RendererBufferTransportMode::Hardware))
++        initializePlatformDisplayIfNeeded();
+ #endif
+     initializeVulkanIfNeeded();
+ #endif // PLATFORM(WPE)

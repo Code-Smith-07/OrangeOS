@@ -357,11 +357,15 @@ def main():
         g.until(lambda: 'files: view grid' in g.log(), "Files switches back to grid view")
         g.click(330,300)
         g.until(lambda: 'files: listed /etc:' in g.log(),"Files browses System")
+        # Folders come first: /etc/ssl, then the TLS trust store in it.
         g.click(520,298)
-        g.until(lambda: 'files: preview /etc/hosts' in g.log(),"Files previews real text")
+        g.until(lambda: 'files: listed /etc/ssl:' in g.log(),"Files opens a folder")
+        g.click(520,298)
+        g.until(lambda: 'files: preview /etc/ssl/cert.pem' in g.log(),"Files previews real text")
         time.sleep(1)
         g.screenshot("09-files-preview")
-        # Back closes preview first; another Back returns to the prior folder.
+        # Back closes preview first; each further Back returns one folder.
+        g.click(460,238)
         g.click(460,238)
         g.click(460,238)
         g.until(lambda: g.log().count('files: listed /:')==2,"Files Back returns to root")

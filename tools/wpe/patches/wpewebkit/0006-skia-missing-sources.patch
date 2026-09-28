@@ -1,0 +1,26 @@
+OrangeOS: build the two Skia sources the bundled list leaves out.
+
+SkFont::makeStrikeRef() uses SkStrikeRef(sk_sp<SkStrike>, float) from
+src/core/SkStrikeRef.cpp, and the path-ops debug helpers use SkPath::dump()
+from src/core/SkPathDump.cpp; neither file was compiled, which a shared
+library hides and a static program cannot.
+
+diff -ru a/Source/ThirdParty/skia/CMakeLists.txt b/Source/ThirdParty/skia/CMakeLists.txt
+--- a/Source/ThirdParty/skia/CMakeLists.txt	2026-09-15 00:50:57
++++ b/Source/ThirdParty/skia/CMakeLists.txt	2026-09-28 15:21:29
+@@ -175,6 +175,7 @@
+     src/core/SkPaint.cpp
+     src/core/SkPaintPriv.cpp
+     src/core/SkPath.cpp
++    src/core/SkPathDump.cpp
+     src/core/SkPathBuilder.cpp
+     src/core/SkPathData.cpp
+     src/core/SkPathEffect.cpp
+@@ -237,6 +238,7 @@
+     src/core/SkSpriteBlitter_ARGB32.cpp
+     src/core/SkStream.cpp
+     src/core/SkStrike.cpp
++    src/core/SkStrikeRef.cpp
+     src/core/SkStrikeCache.cpp
+     src/core/SkStrikeSpec.cpp
+     src/core/SkString.cpp

@@ -131,6 +131,20 @@ fn wpeProbes() void {
             pulp.exit(219);
         }
         pulp.puts("runtime: PASS JavaScriptCore\n");
+    const https_program = pulp.spawn("/bin/https-probe") catch pulp.exit(223);
+    const https_code = pulp.wait(https_program) catch pulp.exit(224);
+    if (https_code != 0) {
+        pulp.print("runtime: FAIL HTTPS exit {d}\n", .{https_code});
+        pulp.exit(225);
+    }
+    pulp.puts("runtime: PASS HTTPS\n");
+    const render_program = pulp.spawn("/bin/wpe-render") catch pulp.exit(226);
+    const render_code = pulp.wait(render_program) catch pulp.exit(227);
+    if (render_code != 0) {
+        pulp.print("runtime: FAIL WPE WebKit render exit {d}\n", .{render_code});
+        pulp.exit(228);
+    }
+    pulp.puts("runtime: PASS WPE WebKit render\n");
 }
 
 export fn _start() callconv(.c) noreturn {

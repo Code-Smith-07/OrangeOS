@@ -220,6 +220,15 @@
       "url": "https://github.com/KhronosGroup/EGL-Registry/archive/db3425b8246136faccb5e2782b5694960bd6edf1.tar.gz",
       "note": "Khronos EGL/KHR headers only (no EGL implementation), commit of 2026-09-21",
       "sha256": "3d6b42b23da8030f5b29ade07d7384c5f885e713f17f04650f6cd4b8329b88e8"
+    },
+    {
+      "name": "ca-certificates",
+      "version": "2026-09-25",
+      "stage": "W5",
+      "url": "https://curl.se/ca/cacert-2026-09-25.pem",
+      "published": "https://curl.se/ca/cacert-2026-09-25.pem.sha256",
+      "note": "Mozilla's CA trust store as extracted by the curl project; installed as /etc/ssl/cert.pem (B9)",
+      "sha256": "a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505"
     }
   ],
   "deferred": [

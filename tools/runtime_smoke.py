@@ -3,8 +3,11 @@
 
 Build: zig build -Dmm-test -Druntime-test -Ddesktop-profile; scripts/mkdisk.sh
 """
+import http.server
 import os
+import pathlib
 import re
+import ssl
 import argparse
 import socketserver
 import threading
@@ -19,6 +22,8 @@ TCP_PAYLOAD = 6000
 # inet-probe's patterned bulk replies: byte i is (131 i + 7) mod 256.
 BULK_BLOCK = bytes((i * 131 + 7) & 0xFF for i in range(256))
 UDP_FIXTURE_PORT = 38458
+HTTPS_FIXTURE_PORT = 38459
+ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent
 
 
 class TcpFixture(socketserver.StreamRequestHandler):
@@ -56,6 +61,43 @@ class FixtureServer(socketserver.ThreadingTCPServer):
             raise SystemExit(f"TCP fixture port 127.0.0.1:{TCP_FIXTURE_PORT} unavailable: {error}")
 
 
+class HttpsFixture(http.server.BaseHTTPRequestHandler):
+    """GET /orange over TLS with the test CA's certificate (https-probe)."""
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self):
+        body = b"orange over https\n" if self.path == "/orange" else b"not found\n"
+        self.send_response(200 if self.path == "/orange" else 404)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def save_rendered_png(log):
+    """Keep the page wpe-render drew: base64 between its PNG markers."""
+    import base64
+    lines = [line.split("wpe-render: PNG ", 1)[1].strip() for line in log.splitlines() if "wpe-render: PNG " in line]
+    if lines:
+        out = ROOT_DIR / "build/tmp/wpe-render.png"
+        out.write_bytes(base64.b64decode("".join(lines)))
+        print(f"rendered page saved to {out}", flush=True)
+
+
+def https_server():
+    """The HTTPS fixture on 127.0.0.1:38459 (10.0.2.2 in the guest)."""
+    certs = ROOT_DIR / "build/wpe/test-certs"
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certs / "server.pem", certs / "server.key")
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", HTTPS_FIXTURE_PORT), HttpsFixture)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
 class UdpEcho(socketserver.BaseRequestHandler):
     """Send each datagram back reversed."""
 
@@ -78,6 +120,7 @@ def main():
     except OSError as error:
         raise SystemExit(f"UDP fixture port 127.0.0.1:{UDP_FIXTURE_PORT} unavailable: {error}")
     threading.Thread(target=udp_fixture.serve_forever, daemon=True).start()
+    https_fixture = https_server() if os.environ.get("ORANGE_WPE_PROBES") == "1" else None
     guest = Guest()
     print(f"Evidence: {guest.output}", flush=True)
     try:
@@ -220,6 +263,18 @@ def main():
             jsc = re.search(r"jsc-probe: PASS (\d+) checks \(.*\) in (\d+) ms", guest.log())
             assert jsc and int(jsc.group(1)) == 17, guest.log()[-3000:]
             print(f"PASS JavaScriptCore (LLInt): {jsc.group(1)} checks, workload {jsc.group(2)} ms", flush=True)
+            guest.until(lambda: "runtime: PASS HTTPS" in guest.log()
+                        or "https-probe: FAIL" in guest.log() or "runtime: FAIL HTTPS" in guest.log(),
+                        "HTTPS", 180)
+            assert ("https-probe: PASS OpenSSL TLS backend, libsoup GET over TLS with keep-alive, "
+                    "certificate verification (unknown CA refused), Mozilla trust store") in guest.log(), guest.log()[-2000:]
+            guest.until(lambda: "runtime: PASS WPE WebKit render" in guest.log()
+                        or "wpe-render: FAIL" in guest.log() or "runtime: FAIL WPE WebKit render" in guest.log(),
+                        "WPE WebKit headless render", 900)
+            render = re.search(r"wpe-render: PASS rendered (\S+) at (\d+)x(\d+) on the CPU .*", guest.log())
+            assert render, guest.log()[-3000:]
+            save_rendered_png(guest.log())
+            print(f"PASS WPE WebKit render: {render.group(0)[len('wpe-render: PASS '):]}", flush=True)
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]
@@ -309,6 +364,8 @@ def main():
         guest.close()
         fixture.shutdown()
         udp_fixture.shutdown()
+        if https_fixture:
+            https_fixture.shutdown()
         fixture.server_close()
 
 

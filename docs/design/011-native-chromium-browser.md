@@ -1,6 +1,8 @@
 # OrangeOS native Chromium browser architecture
 
-> **Paused (2026-09-28).** The owner chose to try WPE WebKit first:
+> **Paused (2026-09-28).** WPE WebKit passed its W7 gate the same day: it
+> renders pages inside OrangeOS (012 §6). Retiring this plan awaits the
+> owner's confirmation. The owner chose to try WPE WebKit first:
 > [012-wpe-webkit-browser.md](012-wpe-webkit-browser.md). Everything below is
 > kept unchanged. The runtime work A1–A7 is engine-neutral and carries over,
 > and so do B8–B11. If the WPE trial passes its gate (012 §6), this plan is

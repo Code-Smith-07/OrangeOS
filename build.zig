@@ -500,6 +500,16 @@ pub fn build(b: *std.Build) void {
     // libraries (ICU, HarfBuzz, woff2), against the libc++ built above.
     if (wpe_probes) {
         const sysroot = "build/wpe/sysroot";
+        // What libWPEWebKit-2.0.so links, as static libraries.
+        const wpe_libs = [_][]const u8{
+            "WPEWebKitStatic", "WPEPAL",       "WPESkia",      "WPExdgmime", "soup-3.0",   "gioopenssl", "ssl",
+            "crypto",          "psl",          "nghttp2",      "epoxy",      "xkbcommon",  "xslt",       "xml2",
+            "sqlite3",         "gcrypt",       "gpg-error",    "tasn1",      "webpdemux",  "webpmux",    "webp",
+            "sharpyuv",        "harfbuzz-icu", "harfbuzz",     "fontconfig", "expat",      "freetype",   "png16",
+            "jpeg",            "woff2dec",     "woff2common",  "brotlidec",  "brotlienc",  "brotlicommon", "icui18n",
+            "icuuc",           "icudata",      "gio-2.0",      "gmodule-2.0", "gobject-2.0", "ffi",      "glib-2.0",
+            "pcre2-8",         "z",
+        };
         const WpeProbe = struct { name: []const u8, sources: []const []const u8, libs: []const []const u8, cxx: bool };
         const wpe_programs = [_]WpeProbe{
             .{ .name = "glib-probe", .sources = &.{"userland/bin/glib-probe/probe.c"}, .cxx = false, .libs = &.{
@@ -512,6 +522,17 @@ pub fn build(b: *std.Build) void {
                 "woff2enc",  "woff2dec",   "woff2common", "brotlienc",  "brotlidec",    "brotlicommon", "glib-2.0",
                 "pcre2-8",   "z",
             } },
+            .{ .name = "https-probe", .sources = &.{"userland/bin/https-probe/probe.c"}, .cxx = false, .libs = &.{
+                "soup-3.0",   "gioopenssl", "ssl",          "crypto",      "psl",     "nghttp2", "brotlidec",
+                "brotlicommon", "sqlite3",  "gio-2.0",      "gmodule-2.0", "gobject-2.0", "ffi", "glib-2.0",
+                "pcre2-8",    "z",
+            } },
+            // WPE WebKit (W6/W7): the UI program and the two helper
+            // processes WebKit starts from /libexec/wpe-webkit-2.0, linked
+            // statically from what tools/wpe/build_deps.py wpe collects.
+            .{ .name = "wpe-render", .sources = &.{ "userland/bin/wpe-render/render.c", "userland/bin/wpe-render/tls-init.c", "userland/bin/wpe-render/unreachable.c" }, .cxx = true, .libs = &wpe_libs },
+            .{ .name = "WPEWebProcess", .sources = &.{ "userland/bin/wpe-render/tls-init.c", "userland/bin/wpe-render/unreachable.c" }, .cxx = true, .libs = &([_][]const u8{"wpe-web-process.o"} ++ wpe_libs) },
+            .{ .name = "WPENetworkProcess", .sources = &.{ "userland/bin/wpe-render/tls-init.c", "userland/bin/wpe-render/unreachable.c" }, .cxx = true, .libs = &([_][]const u8{"wpe-network-process.o"} ++ wpe_libs) },
             .{ .name = "jsc-probe", .sources = &.{"userland/bin/jsc-probe/probe.c"}, .cxx = false, .libs = &.{} },
             // JavaScriptCore's own shell, compiled by the JSCOnly build
             // (tools/wpe/build_deps.py wpewebkit) and linked here.
@@ -546,7 +567,7 @@ pub fn build(b: *std.Build) void {
                     mod.addCSourceFile(.{ .file = b.path(source), .flags = &(wpe_defines ++ [_][]const u8{ "-std=gnu11", "-nostdinc", "-fno-stack-protector", "-mno-red-zone", "-mno-avx", "-Wall", "-Wextra", "-Werror" }) });
                 }
             }
-            for ([_][]const u8{ "include", "include/glib-2.0", "lib/glib-2.0/include", "include/harfbuzz", "include/freetype2", "include/libxml2" }) |dir| {
+            for ([_][]const u8{ "include", "include/glib-2.0", "lib/glib-2.0/include", "include/harfbuzz", "include/freetype2", "include/libxml2", "include/libsoup-3.0", "include/wpe-webkit-2.0", "include/wpe-webkit-2.0/wpe-platform" }) |dir| {
                 mod.addSystemIncludePath(b.path(b.pathJoin(&.{ sysroot, dir })));
             }
             for (musl_headers) |dir| mod.addSystemIncludePath(.{ .cwd_relative = dir });
