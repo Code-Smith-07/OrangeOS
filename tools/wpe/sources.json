@@ -1,0 +1,245 @@
+{
+  "comment": "WPE WebKit trial pins (docs/design/012-wpe-webkit-browser.md, W0). Pinned 2026-09-28. 'sha256' is what fetch.py verifies; 'published' is where upstream lists a checksum to cross-check against. 'stage' is the milestone that first needs the source.",
+  "sources": [
+    {
+      "name": "wpewebkit",
+      "version": "2.54.0",
+      "stage": "W4",
+      "url": "https://wpewebkit.org/releases/wpewebkit-2.54.0.tar.xz",
+      "published_sha256": "efa9bcc3cb891c2d88f50eec710d9ccee71cbdf1040420361eb98c17355eb452",
+      "sha256": "efa9bcc3cb891c2d88f50eec710d9ccee71cbdf1040420361eb98c17355eb452"
+    },
+    {
+      "name": "zlib",
+      "version": "1.3.2",
+      "stage": "W1",
+      "url": "https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.xz",
+      "sha256": "d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3"
+    },
+    {
+      "name": "libffi",
+      "version": "3.8.0",
+      "stage": "W1",
+      "url": "https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz",
+      "sha256": "7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4"
+    },
+    {
+      "name": "pcre2",
+      "version": "10.48",
+      "stage": "W1",
+      "url": "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.48/pcre2-10.48.tar.bz2",
+      "sha256": "b6c68fdf6f3ac31388b50aa89ff0fc49c00c987c16e7b5146491d12003f2c8ed"
+    },
+    {
+      "name": "glib",
+      "version": "2.88.3",
+      "stage": "W1",
+      "url": "https://download.gnome.org/sources/glib/2.88/glib-2.88.3.tar.xz",
+      "published": "https://download.gnome.org/sources/glib/2.88/glib-2.88.3.sha256sum",
+      "sha256": "ab24d24e698dfa1e408b7bcdb508f4aafc906185a8b8ce72fdf79bbbdc9b383b"
+    },
+    {
+      "name": "libpng",
+      "version": "1.6.58",
+      "stage": "W3",
+      "url": "https://downloads.sourceforge.net/project/libpng/libpng16/1.6.58/libpng-1.6.58.tar.xz",
+      "sha256": "28eb403f51f0f7405249132cecfe82ea5c0ef97f1b32c5a65828814ae0d34775"
+    },
+    {
+      "name": "libjpeg-turbo",
+      "version": "3.2.0",
+      "stage": "W3",
+      "url": "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.2.0/libjpeg-turbo-3.2.0.tar.gz",
+      "sha256": "6f30092cef9fb839779646608f4ee14ae3cbac989c47fa05e841b0841f09878e"
+    },
+    {
+      "name": "libwebp",
+      "version": "1.6.0",
+      "stage": "W3",
+      "url": "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz",
+      "sha256": "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564"
+    },
+    {
+      "name": "freetype",
+      "version": "2.14.3",
+      "stage": "W3",
+      "url": "https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz",
+      "sha256": "36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f"
+    },
+    {
+      "name": "harfbuzz",
+      "version": "14.5.0",
+      "stage": "W3",
+      "url": "https://github.com/harfbuzz/harfbuzz/releases/download/14.5.0/harfbuzz-14.5.0.tar.xz",
+      "sha256": "b7132e148358a45185c9feafd049dbaf243649d3c44414b3534d9c95d18592b9"
+    },
+    {
+      "name": "expat",
+      "version": "2.8.5",
+      "stage": "W3",
+      "url": "https://github.com/libexpat/libexpat/releases/download/R_2_8_5/expat-2.8.5.tar.gz",
+      "sha256": "920dde485e15eda0cce8d2310b41d492c534e5e3d89ad407a0b4176dd2ff88fe"
+    },
+    {
+      "name": "fontconfig",
+      "version": "2.18.3",
+      "stage": "W3",
+      "url": "https://gitlab.freedesktop.org/api/v4/projects/890/packages/generic/fontconfig/2.18.3/fontconfig-2.18.3.tar.xz",
+      "published": "https://gitlab.freedesktop.org/api/v4/projects/890/packages/generic/fontconfig/2.18.3/fontconfig-2.18.3.tar.xz.sha256sum",
+      "sha256": "4f7b554a38cdf78c033f666c8871f3749e14a094f65a07f630c91ed0b43d35e3"
+    },
+    {
+      "name": "icu",
+      "version": "78.3",
+      "stage": "W3",
+      "url": "https://github.com/unicode-org/icu/releases/download/release-78.3/icu4c-78.3-sources.tgz",
+      "sha256": "3a2e7a47604ba702f345878308e6fefeca612ee895cf4a5f222e7955fabfe0c0"
+    },
+    {
+      "name": "libxml2",
+      "version": "2.15.4",
+      "stage": "W3",
+      "url": "https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.4.tar.xz",
+      "published": "https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.4.sha256sum",
+      "sha256": "98087fd181d9070724f3fbc65c7377db03038eb92bd882374daff44940138821"
+    },
+    {
+      "name": "libxslt",
+      "version": "1.1.45",
+      "stage": "W3",
+      "url": "https://download.gnome.org/sources/libxslt/1.1/libxslt-1.1.45.tar.xz",
+      "published": "https://download.gnome.org/sources/libxslt/1.1/libxslt-1.1.45.sha256sum",
+      "sha256": "9acfe68419c4d06a45c550321b3212762d92f41465062ca4ea19e632ee5d216e"
+    },
+    {
+      "name": "sqlite",
+      "version": "3.53.4",
+      "stage": "W3",
+      "url": "https://www.sqlite.org/2026/sqlite-autoconf-3530400.tar.gz",
+      "sha256": "0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c"
+    },
+    {
+      "name": "libgpg-error",
+      "version": "1.61",
+      "stage": "W3",
+      "url": "https://gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.61.tar.bz2",
+      "sha256": "7a85413f2bc354f4f8aa832b718af122e48965e9e0eb9012ee659c13c6385c93"
+    },
+    {
+      "name": "libgcrypt",
+      "version": "1.12.4",
+      "stage": "W3",
+      "url": "https://gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.12.4.tar.bz2",
+      "sha256": "d77f68f48879510e79a2f65977ccc68981781ea0923e5bdffac2a193ea3d660e"
+    },
+    {
+      "name": "libtasn1",
+      "version": "4.21.0",
+      "stage": "W3",
+      "url": "https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.21.0.tar.gz",
+      "sha256": "1d8a444a223cc5464240777346e125de51d8e6abf0b8bac742ac84609167dc87"
+    },
+    {
+      "name": "libxkbcommon",
+      "version": "1.13.2",
+      "stage": "W3",
+      "url": "https://github.com/xkbcommon/libxkbcommon/archive/refs/tags/xkbcommon-1.13.2.tar.gz",
+      "sha256": "acc4d5f7c3cbba5f9f8d08d8bdbeede84ecede46792f47929aa9321873385528"
+    },
+    {
+      "name": "libepoxy",
+      "version": "1.5.10",
+      "stage": "W3",
+      "url": "https://download.gnome.org/sources/libepoxy/1.5/libepoxy-1.5.10.tar.xz",
+      "published": "https://download.gnome.org/sources/libepoxy/1.5/libepoxy-1.5.10.sha256sum",
+      "sha256": "072cda4b59dd098bba8c2363a6247299db1fa89411dc221c8b81b8ee8192e623"
+    },
+    {
+      "name": "brotli",
+      "version": "1.2.0",
+      "stage": "W3",
+      "url": "https://github.com/google/brotli/archive/refs/tags/v1.2.0.tar.gz",
+      "sha256": "816c96e8e8f193b40151dad7e8ff37b1221d019dbcb9c35cd3fadbfe6477dfec"
+    },
+    {
+      "name": "woff2",
+      "version": "1.0.2",
+      "stage": "W3",
+      "url": "https://github.com/google/woff2/archive/refs/tags/v1.0.2.tar.gz",
+      "sha256": "add272bb09e6384a4833ffca4896350fdb16e0ca22df68c0384773c67a175594"
+    },
+    {
+      "name": "openssl",
+      "version": "3.5.8",
+      "stage": "W5",
+      "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz",
+      "published": "https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz.sha256",
+      "sha256": "a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2"
+    },
+    {
+      "name": "libpsl",
+      "version": "0.23.3",
+      "stage": "W5",
+      "url": "https://github.com/rockdaboot/libpsl/releases/download/0.23.3/libpsl-0.23.3.tar.gz",
+      "sha256": "93941f85a1e7bd593fa94f299233cb5dfc91cd144fd9a78a6ceb75001c5b03be"
+    },
+    {
+      "name": "nghttp2",
+      "version": "1.70.0",
+      "stage": "W5",
+      "url": "https://github.com/nghttp2/nghttp2/releases/download/v1.70.0/nghttp2-1.70.0.tar.xz",
+      "sha256": "e05cb1388eaca3830aded4ccf20044b6e1ac1a61411dcca11b0437c4285c8bc2"
+    },
+    {
+      "name": "libsoup",
+      "version": "3.6.6",
+      "stage": "W5",
+      "url": "https://download.gnome.org/sources/libsoup/3.6/libsoup-3.6.6.tar.xz",
+      "published": "https://download.gnome.org/sources/libsoup/3.6/libsoup-3.6.6.sha256sum",
+      "sha256": "51ed0ae06f9d5a40f401ff459e2e5f652f9a510b7730e1359ee66d14d4872740"
+    },
+    {
+      "name": "glib-networking",
+      "version": "2.80.1",
+      "stage": "W5",
+      "url": "https://download.gnome.org/sources/glib-networking/2.80/glib-networking-2.80.1.tar.xz",
+      "published": "https://download.gnome.org/sources/glib-networking/2.80/glib-networking-2.80.1.sha256sum",
+      "sha256": "b80e2874157cd55071f1b6710fa0b911d5ac5de106a9ee2a4c9c7bee61782f8e"
+    }
+  ],
+  "deferred": [
+    {
+      "name": "lcms2",
+      "version": "2.19.1",
+      "why": "USE_LCMS off for the first build (colour management)"
+    },
+    {
+      "name": "libavif",
+      "version": "1.4.2",
+      "why": "USE_AVIF off for the first build"
+    },
+    {
+      "name": "libjxl",
+      "version": "0.12.0",
+      "why": "USE_JPEGXL off for the first build"
+    },
+    {
+      "name": "gstreamer",
+      "version": "-",
+      "why": "ENABLE_VIDEO / ENABLE_WEB_AUDIO off until media work"
+    },
+    {
+      "name": "libwpe",
+      "version": "1.16.3",
+      "why": "ENABLE_WPE_LEGACY_API off; the new WPE Platform API is used"
+    }
+  ],
+  "host_tools": {
+    "comment": "Installed into build/wpe/venv by tools/wpe/setup_host.sh; macOS provides perl, ruby, gperf, make and curl.",
+    "meson": "1.12.1",
+    "ninja": "1.13.2",
+    "cmake": "4.4.3",
+    "pkgconf": "3.0.7.post0",
+    "packaging": "26.3"
+  }
+}
