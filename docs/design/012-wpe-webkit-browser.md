@@ -70,12 +70,36 @@ run. Each option switched off is recorded in the ledger (§6) with the reason.
 
 ## 4. Known risks (not yet verified)
 
-1. **EGL through libepoxy.** Epoxy is a required dependency. We do not yet
-   know whether a CPU-only (Skia CPU) WPE build runs with no EGL at all.
-   - Options if it does not: find the code path that tolerates a missing EGL
-     display, carry a small recorded patch, or port a software EGL (Mesa).
-     Mesa is a large job.
-   - W3 answers this before anything else is invested.
+1. **EGL through libepoxy — answered at W3 (2026-09-28), from the 2.54.0
+   source.** Mesa is not needed for first light; one small recorded patch
+   is. Details:
+   - **A supported CPU path exists.** With the GLib API's
+     `WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER`, hardware acceleration and
+     accelerated compositing are off. `AcceleratedSurface::usesGL()` is then
+     false for non-composited rendering, and pages are painted by Skia into
+     a raster surface over a shared-memory `ShareableBitmap`
+     (`RenderTargetSHMImage`).
+   - **Transport.** Without GBM (`USE_GBM` off), the UI process offers
+     `RendererBufferTransportMode::SharedMemory` only
+     (`WebProcessPoolGLib.cpp`).
+   - **CPU painting.** `WEBKIT_SKIA_ENABLE_CPU_RENDERING=1` makes image
+     buffers and tiles raster-only (`ProcessCapabilities`).
+   - **The one blocker.** On WPE, `WebProcess::platformInitializeWebProcess`
+     calls `initializePlatformDisplayIfNeeded()` unconditionally. With no EGL
+     that ends in "Could not create EGL display … Aborting" and `CRASH()`.
+     GTK only initializes the display when hardware acceleration is enabled
+     (`DrawingAreaCoordinatedGraphicsGLib.cpp`).
+   - **Plan.** A patch of about 10 lines making WPE do the same: skip the
+     display when the transport mode has no `Hardware`. WebGL is switched
+     off, since it needs `PlatformDisplay::sharedDisplay()`, which
+     `RELEASE_ASSERT`s.
+   - **libepoxy behaves.** It is linked, but only looks for EGL through
+     `dlopen`, which static musl refuses. `epoxy_has_egl()` then reports
+     false without aborting; this is checked in the guest (§7).
+   - **Still open.** About 40 WebCore/WebKit files call `sharedDisplay()`;
+     any that run in this mode will show up at W7 and be patched or
+     switched off there. If they cannot be avoided, a software EGL (Mesa)
+     returns as the fallback.
 2. **Shared libraries and `dlopen`.** OrangeOS programs are statically linked
    today. WebKit normally builds `libWPEWebKit.so`, and GIO loads TLS
    (glib-networking) as a module.
@@ -112,7 +136,7 @@ as-is: **B8** sockets through musl, **B9** TLS roots, **B10** fonts and
 | W0 | Pin a WPE WebKit stable release and every dependency version; measure source size | Pins recorded in §7 — **done 2026-09-28** |
 | W1 | Toolchain: cross files for `zig cc` → OrangeOS musl sysroot; decide static vs dynamic (§4.2) | A small GLib test program runs in OrangeOS — **done 2026-09-28** (§7) |
 | W2 | B8: BSD sockets, non-blocking I/O, readiness, DNS through musl (shared with 011) | Socket probe passes in QEMU on 2 and 4 vCPUs |
-| W3 | Base libraries: zlib, libpng, libjpeg, libwebp, FreeType, HarfBuzz, ICU, libxml2, SQLite, GLib, libepoxy, libgcrypt, libtasn1, libxkbcommon; answer the EGL question (§4.1) | Each has a small test that runs in OrangeOS |
+| W3 | Base libraries: zlib, libpng, libjpeg, libwebp, FreeType, HarfBuzz, ICU, libxml2, SQLite, GLib, libepoxy, libgcrypt, libtasn1, libxkbcommon; answer the EGL question (§4.1) | Each has a small test that runs in OrangeOS — **done 2026-09-28** (§7) |
 | W4 | JavaScriptCore alone (the `jsc` shell) | JavaScript runs in OrangeOS, JIT on or recorded off |
 | W5 | Network stack: libsoup 3, libpsl, nghttp2, OpenSSL/GnuTLS + glib-networking; B9 TLS roots | An HTTPS GET works from inside OrangeOS |
 | W6 | WPE WebKit build (options in §3); B10 fonts | The engine links for OrangeOS |
@@ -150,6 +174,7 @@ are shared, so that work carries over.
 | 2026-09-28 | Trial opened. Chromium paused after A1–A7 (last commit `513c374`). No WPE code, pins or builds yet. |
 | 2026-09-28 | **W0 done.** WPE WebKit **2.54.0** (released 2026-09-16) and 27 libraries pinned in `tools/wpe/sources.json` with SHA-256. `tools/wpe/fetch.py` downloads with the system curl and verifies each file. For WebKit, GLib, fontconfig, libxml2, libxslt, libepoxy, OpenSSL, libsoup and glib-networking it also cross-checks upstream's published checksum; all matched. Choices: GLib 2.88.3 (latest fix release of the mature series, not the fresh 2.90.0); libsoup 3.6.6 (3.7 is the development series); OpenSSL 3.5.8 LTS (not 4.0) for glib-networking; ICU 78.3. Deferred with their first-build switches: lcms2, libavif, libjxl, GStreamer, libwpe. All sources come to 200 MB. |
 | 2026-09-28 | **W1 done: GLib runs inside OrangeOS.** How it works:<br>- **Toolchain.** `tools/wpe/bin/orange-cc`/`orange-c++` wrap Zig's clang for `x86_64-linux-musl` with build.zig's code-generation flags (baseline x86-64, no stack protector, no red zone, no sanitizers, non-PIC). `tools/wpe/orangeos-x86_64.ini.in` is the meson cross file. `tools/wpe/build_deps.py` builds pinned sources out of tree into `build/wpe/sysroot` as static libraries (zlib's configure needed `CHOST` so it stops choosing Apple's libtool).<br>- **Linking.** zlib 1.3.2, libffi 3.8.0, PCRE2 10.48 and GLib 2.88.3 (GLib, GObject, GIO, GModule) built without source changes. build.zig links programs against them and OrangeOS's own musl, opt-in with `-Dwpe-probes`, so normal builds are unchanged. §4.2 is settled as static for now; dynamic linking waits until something needs it.<br>- **glib-probe covers:** strings, Unicode case mapping, PCRE2 regex, GVariant, SHA-256, base64 and the real-time clock; 4 threads × 20,000 mutex increments, an async queue and a thread pool; a main loop with a repeating timeout, an idle source, a pipe fd source and a cross-thread `g_main_context_invoke` wakeup; a GObject type with a property, notify and a 2-argument signal marshalled through libffi; GIO `g_file_set_contents`, load, `query_info` (statx), `/tmp` listing, a line reader, delete, and a gzip round trip through GIO converters; `g_spawn_sync` capturing a child's stdout (GLib's posix_spawn path).<br>- **One layer fix:** musl turns `faccessat` with flags into `faccessat2`, which is now translated. OrangeOS has no symbolic links and real ids equal effective ids, so `AT_SYMLINK_NOFOLLOW`/`AT_EACCESS` cannot change the answer; other flags get EINVAL.<br>- **Limit:** GLib's fork path does not exist, so `g_spawn` needs `G_SPAWN_LEAVE_DESCRIPTORS_OPEN` (and no working directory or child setup) to use posix_spawn. `GSubprocess` defaults are not usable yet.<br>- **Verified:** runtime suite with the probe on 2 and 4 vCPUs, the plain runtime suite (probe absent), and the desktop and Files suites.<br>- **Sizes:** sysroot 85 MB; glib-probe 3.8 MB. |
+| 2026-09-28 | **W3 done: WebKit's base libraries run inside OrangeOS, and the EGL question is answered (§4.1).**<br>- **Libraries.** Cross-built with the W1 toolchain, all as static libraries and without source changes: libpng 1.6.58, libjpeg-turbo 3.2.0, libwebp 1.6.0, brotli 1.2.0, FreeType 2.14.3, expat 2.8.5, fontconfig 2.18.3, ICU 78.3, HarfBuzz 14.5.0, libxml2 2.15.4, libxslt 1.1.45, SQLite 3.53.4, libgpg-error 1.61, libgcrypt 1.12.4, libtasn1 4.21.0, libxkbcommon 1.13.2, libepoxy 1.5.10 (with Khronos EGL/KHR headers pinned at EGL-Registry `db3425b8`, headers only) and woff2 1.0.2.<br>- **Build notes.**<br>  - ICU builds twice: a Mac build supplies the data tools for the OrangeOS build. Static ICU's pkg-config files now name the C++ runtime (`-lc++`).<br>  - GNU bison 3.8.2 is built as a project-local host tool, because libxkbcommon needs ≥ 3.6 and macOS has 2.3.<br>  - The compiler wrappers drop `-c` when `-E` is given, because meson preprocesses that way and zig would otherwise compile.<br>  - Packages that install configuration (fontconfig) install through a staging directory: libraries go into the sysroot and run-time files into `build/wpe/rootfs`. Symlinks become copies, since CitrusFS has none.<br>  - woff2's old CMake gets static brotli's `brotlicommon` explicitly.<br>- **Recorded shortcut.** libjpeg-turbo is built without its SIMD code because NASM is not on the host; it is correct but slower. Revisit for performance.<br>- **Probe.** wpe-libs-probe (45 MB, mostly ICU data) checks, in the guest: PNG, JPEG and WebP (with demux) round trips; FreeType rendering of Inter; HarfBuzz shaping with ICU script detection (Latin left-to-right, Arabic right-to-left); fontconfig matching fonts in `/share/fonts` through the staged `/etc/fonts`; a WOFF2 round trip of JetBrains Mono; ICU Turkish casing, word breaks, German collation and number format; libxml2 XPath and libxslt; SQLite writing 1,000 rows to a `/tmp` file and reading them back after reopening; libgcrypt SHA-256 and AES-256-GCM (a bad tag rejected); libtasn1 DER; a brotli round trip; an xkbcommon keymap with Shift; and `epoxy_has_egl()` reporting no EGL.<br>- **OS work found by the probe.**<br>  - **Record locks.** SQLite needs POSIX record locks. The kernel now has advisory locks (`kernel/fs/lock.zig`, `fd_control` 8–13): POSIX locks owned by the process (released by any close of the file or on exit) and OFD locks owned by the description; range splitting; `F_GETLK` reporting the holder; `F_SETLKW` waits that are interruptible; EDEADLK for cycles between processes. file-probe now checks all of this against a second process.<br>  - **chmod.** fontconfig creates its cache with `mkdir` then `chmod`. OrangeOS keeps no permission bits (one user, modes fixed per kind), so chmod to the mode a file already reports succeeds, any other mode gets EPERM, and read-only filesystems get EROFS.<br>- **Disk image.** `ORANGE_WPE_PROBES=1 scripts/mkdisk.sh` adds 160 MiB and stages the probes, `/etc/fonts`, the two OFL fonts in `/share/fonts` and every library's licence; ordinary images are unchanged.<br>- **Verified:** WPE runtime suite on 2 and 4 vCPUs; plain runtime suite on 2 and 4; desktop; Files; 23 kernel filesystem tests.<br>- **Sizes:** sysroot 215 MB; the whole trial `build/wpe` tree is about 2.3 GB with sources and build objects (the Mac-side ICU build and object trees can be deleted after a build). |
 
 ## References
 

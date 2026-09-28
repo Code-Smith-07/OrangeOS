@@ -1,0 +1,21 @@
+# CMake toolchain for OrangeOS userland libraries (WPE WebKit trial).
+# tools/wpe/build_deps.py fills in the absolute paths. As in the meson cross
+# file, the target is described as Linux/musl: the ABI the libraries are
+# compiled for, which OrangeOS runs through its musl translation layer.
+
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSTEM_PROCESSOR x86_64)
+set(CMAKE_C_COMPILER "@BIN@/orange-cc")
+set(CMAKE_CXX_COMPILER "@BIN@/orange-c++")
+set(CMAKE_AR "@BIN@/orange-ar" CACHE FILEPATH "")
+set(CMAKE_RANLIB "@BIN@/orange-ranlib" CACHE FILEPATH "")
+set(PKG_CONFIG_EXECUTABLE "@VENV_BIN@/pkg-config" CACHE FILEPATH "")
+
+# Find libraries and headers only in the OrangeOS sysroot; programs (build
+# tools) only on the host.
+set(CMAKE_FIND_ROOT_PATH "@SYSROOT@")
+set(CMAKE_PREFIX_PATH "@SYSROOT@")
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)

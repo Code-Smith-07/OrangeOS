@@ -11,6 +11,7 @@ const vmm = @import("../mm/vmm.zig");
 const vfs = @import("../fs/vfs/vfs.zig");
 const fd_mod = @import("../fs/fd.zig");
 const tmpfs = @import("../fs/tmpfs/tmpfs.zig");
+const record_lock = @import("../fs/lock.zig");
 const epoll = @import("../ipc/epoll.zig");
 const signal = @import("../sched/signal.zig");
 const unix_socket = @import("../ipc/unix_socket.zig");
@@ -1022,8 +1023,103 @@ fn sysFdControl(fd: u64, command: u64, arg: u64) i64 {
             },
             else => EINVAL,
         },
+        // Record locks: 8-10 POSIX GETLK/SETLK/SETLKW, 11-13 the same for
+        // open-file-description locks.
+        8...13 => recordLockControl(proc, installed, command, arg),
         else => EINVAL,
     };
+}
+
+/// The record fcntl commands take (the same layout as Linux's struct
+/// flock). kind: 0 shared, 1 exclusive, 2 unlock; whence: 0 start of file,
+/// 1 current offset, 2 end; length 0 runs to the end of the file, however
+/// it grows, and a negative length covers the bytes before `start`.
+const RecordLock = extern struct {
+    kind: u16,
+    whence: u16,
+    reserved: u32 = 0,
+    start: i64,
+    length: i64,
+    pid: i32,
+    reserved2: u32 = 0,
+};
+const EDEADLK: i64 = -35;
+const ENOLCK: i64 = -37;
+const EOVERFLOW: i64 = -75;
+
+fn recordLockControl(proc: *task_mod.Process, desc: *fd_mod.Description, command: u64, address: u64) i64 {
+    const file = switch (desc.object) {
+        .node => |*file| file,
+        else => return EINVAL,
+    };
+    const pml4 = vmm.currentCr3();
+    var request: RecordLock = undefined;
+    validate.copyFromUser(pml4, std.mem.asBytes(&request), address, @sizeOf(RecordLock)) catch return EFAULT;
+    const description_owned = command >= 11;
+    if (description_owned and request.pid != 0) return EINVAL;
+    const kind: ?record_lock.Kind = switch (request.kind) {
+        0 => .read,
+        1 => .write,
+        2 => null,
+        else => return EINVAL,
+    };
+    const base: i128 = switch (request.whence) {
+        0 => 0,
+        1 => fd_mod.position(desc),
+        2 => file.node.size(),
+        else => return EINVAL,
+    };
+    const start = base + request.start;
+    var first: i128 = start;
+    var last: i128 = undefined;
+    if (request.length > 0) {
+        last = start + request.length - 1;
+    } else if (request.length == 0) {
+        last = record_lock.TO_END;
+    } else {
+        first = start + request.length;
+        last = start - 1;
+    }
+    if (first < 0) return EINVAL;
+    if (last > std.math.maxInt(i64) and request.length != 0) return EOVERFLOW;
+    const key = record_lock.keyOf(&file.node);
+    const owner = if (description_owned) record_lock.Owner.description(@intFromPtr(desc)) else record_lock.Owner.process(proc.pid);
+
+    if (command == 8 or command == 11) {
+        // F_GETLK: describe a lock that would block this one, or report
+        // that none would by setting kind to unlock.
+        const wanted = kind orelse return EINVAL;
+        if (record_lock.find(key, owner, @intCast(first), @intCast(last), wanted)) |found| {
+            request = .{
+                .kind = @intFromEnum(found.kind),
+                .whence = 0,
+                .start = @intCast(found.first),
+                .length = if (found.last == record_lock.TO_END) 0 else @intCast(found.last - found.first + 1),
+                .pid = found.pid,
+            };
+        } else request.kind = 2;
+        validate.copyToUser(pml4, address, std.mem.asBytes(&request), @sizeOf(RecordLock)) catch return EFAULT;
+        return 0;
+    }
+
+    // A shared lock needs a readable descriptor, an exclusive one a writable.
+    const status = desc.statusFlags();
+    if (kind) |k| switch (k) {
+        .read => if (status & vfs.OPEN_READ == 0) return EBADF,
+        .write => if (status & vfs.OPEN_WRITE == 0) return EBADF,
+    };
+    const wait = command == 10 or command == 13;
+    const pid: i32 = if (description_owned) -1 else @intCast(proc.pid);
+    io.sti();
+    defer io.cli();
+    record_lock.set(key, owner, pid, @intCast(first), @intCast(last), kind, wait) catch |e| return switch (e) {
+        error.WouldBlock => EAGAIN,
+        error.Deadlock => EDEADLK,
+        error.Interrupted => EINTR,
+        error.OutOfMemory => ENOLCK,
+        error.InvalidArgument => EINVAL,
+    };
+    return 0;
 }
 
 // ── Readiness: epoll and poll ───────────────────────────────────────────────

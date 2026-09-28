@@ -107,6 +107,44 @@ static int socket_child(void)
 	return write(fd, text, sizeof text - 1) == (ssize_t)(sizeof text - 1) ? 0 : 6;
 }
 
+/* Record locks against the holder in file-probe. "probe": report the
+ * conflicting lock, take a free range, then wait for the held one.
+ * "deadlock": hold 200, then wait for 300, which the parent holds. */
+static int lock_child(const char *path, const char *step)
+{
+	int fd = open(path, O_RDWR);
+	if (fd < 0)
+		return 20;
+	struct flock lock = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 10 };
+	if (strcmp(step, "probe") == 0) {
+		if (fcntl(fd, F_SETLK, &lock) != -1 || errno != EAGAIN)
+			return 21;
+		struct flock query = lock;
+		if (fcntl(fd, F_GETLK, &query) != 0)
+			return 22;
+		printf("held by %d %s %ld %ld\n", (int)query.l_pid, query.l_type == F_WRLCK ? "write" : "other",
+		       (long)query.l_start, (long)query.l_len);
+		fflush(stdout);
+		struct flock free_range = { .l_type = F_RDLCK, .l_whence = SEEK_SET, .l_start = 100, .l_len = 10 };
+		if (fcntl(fd, F_SETLK, &free_range) != 0)
+			return 23;
+		if (fcntl(fd, F_SETLKW, &lock) != 0)
+			return 24;
+	} else if (strcmp(step, "deadlock") == 0) {
+		struct flock mine = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 200, .l_len = 1 };
+		if (fcntl(fd, F_SETLK, &mine) != 0)
+			return 25;
+		printf("waiting\n");
+		fflush(stdout);
+		struct flock theirs = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 300, .l_len = 1 };
+		if (fcntl(fd, F_SETLKW, &theirs) != 0)
+			return 26;
+	} else
+		return 27;
+	printf("acquired\n");
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	if (argc < 2)
@@ -127,6 +165,8 @@ int main(int argc, char **argv)
 		ssize_t n = read(20, line, sizeof line);
 		return n > 0 && write(1, line, n) == n ? 0 : 8;
 	}
+	if (strcmp(mode, "lock") == 0 && argc > 3)
+		return lock_child(argv[2], argv[3]);
 	if (strcmp(mode, "socket") == 0)
 		return socket_child();
 	if (strcmp(mode, "shm") == 0)

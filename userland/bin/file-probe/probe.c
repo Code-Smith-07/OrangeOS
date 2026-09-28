@@ -1,7 +1,8 @@
 /* Writable files through musl on OrangeOS's in-memory /tmp: stdio writes and
  * appends, positioned I/O, truncation, rename, unlink while open, directory
  * listing, capacity reporting, the errors POSIX requires, concurrent writers
- * and appenders, and every page returned once the files are gone.
+ * and appenders, record locks between processes, and every page returned
+ * once the files are gone.
  *
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
@@ -11,12 +12,20 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+#ifndef F_OFD_GETLK
+#define F_OFD_GETLK 36
+#define F_OFD_SETLK 37
+#define F_OFD_SETLKW 38
+#endif
 
 #define CHECK(condition, what)                                                   \
 	do {                                                                         \
@@ -64,6 +73,162 @@ static void *appender(void *argument)
 			return (void *)2;
 	}
 	return close(fd) == 0 ? NULL : (void *)3;
+}
+
+/* ── Record locks ─────────────────────────────────────────────────────────── */
+
+extern char **environ;
+#define LOCK_PATH "/tmp/lock-probe"
+
+static int set_lock(int fd, int command, short type, off_t start, off_t length)
+{
+	struct flock lock = { .l_type = type, .l_whence = SEEK_SET, .l_start = start, .l_len = length };
+	return fcntl(fd, command, &lock);
+}
+
+/* What F_OFD_GETLK through `fd` reports for an exclusive lock over the range. */
+static struct flock probe_lock(int fd, off_t start, off_t length)
+{
+	struct flock lock = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = start, .l_len = length };
+	if (fcntl(fd, F_OFD_GETLK, &lock) != 0)
+		lock.l_type = -1;
+	return lock;
+}
+
+/* Start spawn-child in lock mode `step`, with its standard output on a pipe. */
+static pid_t lock_child(const char *step, int *output)
+{
+	int pipe_fds[2];
+	if (pipe(pipe_fds) != 0)
+		return -1;
+	posix_spawn_file_actions_t actions;
+	posix_spawn_file_actions_init(&actions);
+	posix_spawn_file_actions_adddup2(&actions, pipe_fds[1], 1);
+	posix_spawn_file_actions_addclose(&actions, pipe_fds[0]);
+	char *argv[] = { "spawn-child", "lock", LOCK_PATH, (char *)step, NULL };
+	pid_t pid;
+	int r = posix_spawn(&pid, "/bin/spawn-child", &actions, NULL, argv, environ);
+	posix_spawn_file_actions_destroy(&actions);
+	close(pipe_fds[1]);
+	if (r != 0) {
+		close(pipe_fds[0]);
+		return -1;
+	}
+	*output = pipe_fds[0];
+	return pid;
+}
+
+static int read_line(int fd, char *line, size_t size)
+{
+	size_t n = 0;
+	while (n + 1 < size) {
+		char c;
+		if (read(fd, &c, 1) != 1)
+			break;
+		line[n++] = c;
+		if (c == '\n')
+			break;
+	}
+	line[n] = '\0';
+	return (int)n;
+}
+
+static int child_status(pid_t pid)
+{
+	int status = -1;
+	if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status))
+		return -1;
+	return WEXITSTATUS(status);
+}
+
+static int record_locks(void)
+{
+	int fd = open(LOCK_PATH, O_RDWR | O_CREAT | O_TRUNC, 0644);
+	CHECK(fd >= 0, "open lock file");
+	char block[512];
+	memset(block, 'l', sizeof block);
+	CHECK(write(fd, block, sizeof block) == (ssize_t)sizeof block, "fill lock file");
+
+	/* A process's own locks never block it. */
+	CHECK(set_lock(fd, F_SETLK, F_WRLCK, 0, 50) == 0, "exclusive lock");
+	struct flock own = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 10 };
+	CHECK(fcntl(fd, F_GETLK, &own) == 0 && own.l_type == F_UNLCK, "own lock is not a conflict");
+
+	/* Another process: refused, told who holds it, a disjoint range is
+	 * free, and a waiting lock is granted once the holder lets go. */
+	int output;
+	pid_t child = lock_child("probe", &output);
+	CHECK(child > 0, "spawn lock child");
+	char line[96], expected[96];
+	read_line(output, line, sizeof line);
+	snprintf(expected, sizeof expected, "held by %d write 0 50\n", (int)getpid());
+	if (strcmp(line, expected) != 0) {
+		printf("file-probe: FAIL lock child saw \"%s\"\n", line);
+		return 1;
+	}
+	struct timespec pause = { 0, 50 * 1000 * 1000 };
+	nanosleep(&pause, NULL);
+	CHECK(set_lock(fd, F_SETLK, F_UNLCK, 0, 0) == 0, "unlock");
+	read_line(output, line, sizeof line);
+	CHECK(strcmp(line, "acquired\n") == 0, "waiting lock granted after unlock");
+	CHECK(child_status(child) == 0, "lock child exit");
+	close(output);
+
+	/* Splitting: unlocking the middle of a lock leaves two. Observed through
+	 * another open file description, whose OFD locks conflict with ours. */
+	int other = open(LOCK_PATH, O_RDWR);
+	CHECK(other >= 0, "second description");
+	CHECK(set_lock(fd, F_SETLK, F_WRLCK, 0, 100) == 0 && set_lock(fd, F_SETLK, F_UNLCK, 40, 20) == 0, "split lock");
+	struct flock seen = probe_lock(other, 45, 1);
+	CHECK(seen.l_type == F_UNLCK, "unlocked middle");
+	seen = probe_lock(other, 10, 1);
+	CHECK(seen.l_type == F_WRLCK && seen.l_start == 0 && seen.l_len == 40 && seen.l_pid == getpid(), "head of split lock");
+	seen = probe_lock(other, 70, 1);
+	CHECK(seen.l_type == F_WRLCK && seen.l_start == 60 && seen.l_len == 40, "tail of split lock");
+
+	/* POSIX: closing any descriptor for the file drops the process's locks. */
+	int third = open(LOCK_PATH, O_RDONLY);
+	CHECK(third >= 0 && close(third) == 0, "open and close a third descriptor");
+	CHECK(probe_lock(other, 10, 1).l_type == F_UNLCK, "close releases POSIX locks");
+
+	/* OFD locks belong to the description: shared by dup, released with it. */
+	CHECK(set_lock(fd, F_OFD_SETLK, F_WRLCK, 0, 10) == 0, "OFD lock");
+	errno = 0;
+	CHECK(set_lock(other, F_OFD_SETLK, F_WRLCK, 5, 1) == -1 && errno == EAGAIN, "OFD conflict between descriptions");
+	int copy = dup(fd);
+	CHECK(set_lock(copy, F_OFD_SETLK, F_WRLCK, 5, 1) == 0, "OFD lock shared by dup");
+	close(fd);
+	CHECK(set_lock(other, F_OFD_SETLK, F_WRLCK, 5, 1) == -1, "OFD lock outlives one of its descriptors");
+	close(copy);
+	CHECK(set_lock(other, F_OFD_SETLK, F_WRLCK, 5, 1) == 0 && set_lock(other, F_OFD_SETLK, F_UNLCK, 0, 0) == 0, "OFD lock released with its description");
+
+	/* Deadlock: the child holds 200 and waits for 300, which we hold; our
+	 * wait for 200 would close the cycle and must fail instead. */
+	CHECK(set_lock(other, F_SETLK, F_WRLCK, 300, 1) == 0, "lock for deadlock test");
+	child = lock_child("deadlock", &output);
+	CHECK(child > 0, "spawn deadlock child");
+	read_line(output, line, sizeof line);
+	CHECK(strcmp(line, "waiting\n") == 0, "deadlock child waiting");
+	nanosleep(&pause, NULL);
+	errno = 0;
+	CHECK(set_lock(other, F_SETLKW, F_WRLCK, 200, 1) == -1 && errno == EDEADLK, "deadlock detected");
+	CHECK(set_lock(other, F_SETLK, F_UNLCK, 300, 1) == 0, "release for deadlock child");
+	read_line(output, line, sizeof line);
+	CHECK(strcmp(line, "acquired\n") == 0 && child_status(child) == 0, "deadlock child finishes");
+	close(output);
+	/* The child's locks went with it. */
+	CHECK(set_lock(other, F_SETLK, F_WRLCK, 0, 0) == 0, "exited child's locks released");
+
+	/* Access and argument errors. */
+	int reader = open(LOCK_PATH, O_RDONLY);
+	errno = 0;
+	CHECK(set_lock(reader, F_SETLK, F_WRLCK, 0, 1) == -1 && errno == EBADF, "exclusive lock needs write access");
+	errno = 0;
+	CHECK(set_lock(reader, F_SETLK, F_RDLCK, -5, 1) == -1 && errno == EINVAL, "negative start");
+	close(reader);
+	close(other);
+	CHECK(unlink(LOCK_PATH) == 0, "remove lock file");
+	return 0;
 }
 
 int main(void)
@@ -204,6 +369,9 @@ int main(void)
 	errno = 0;
 	CHECK(rmdir("/tmp") == -1 && errno == EBUSY, "rmdir mount point");
 
+	if (record_locks() != 0)
+		return 1;
+
 	/* Remove everything; the space comes back. */
 	for (long i = 0; i < WRITERS; i++) {
 		char path[64];
@@ -215,7 +383,7 @@ int main(void)
 	CHECK(statvfs("/tmp", &tmp_after) == 0 && tmp_after.f_bfree == tmp_before.f_bfree, "space returned");
 
 	printf("file-probe: PASS stdio, pread/pwrite, truncate, rename, unlink-while-open, readdir, errors, "
-	       "%d writers and %d appenders, space returned\n",
+	       "%d writers and %d appenders, record locks, space returned\n",
 	       WRITERS, APPENDERS);
 	return 0;
 }

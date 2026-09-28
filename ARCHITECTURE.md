@@ -1438,7 +1438,7 @@ link musl 1.2.5, whose Linux-numbered calls are translated in userland by
 | 124 | `pwrite` | `(fd, buf, len, offset) → count` (implemented) | P5 runtime |
 | 130 | `pipe` | `(*[2]i32, flags) → !void` — 64 KiB, writes ≤ 4096 bytes atomic; flags 1 nonblocking, 2 close-on-exec (implemented) | P5 runtime |
 | 131 | `dup` | `(old, new, flags) → fd` — `new` = -1 takes the lowest free descriptor ≥ 3, otherwise exactly `new` (dup2); flag 2 close-on-exec (implemented) | P5 runtime |
-| 132 | `fd_control` | `(fd, cmd, arg) → value` — 0 DUPFD, 1 DUPFD_CLOEXEC, 2 GETFD, 3 SETFD, 4 GETFL, 5 SETFL (append, nonblocking) (implemented) | P5 runtime |
+| 132 | `fd_control` | `(fd, cmd, arg) → value` — 0 DUPFD, 1 DUPFD_CLOEXEC, 2 GETFD, 3 SETFD, 4 GETFL, 5 SETFL (append, nonblocking), 6/7 seals, 8–10 POSIX record locks GETLK/SETLK/SETLKW and 11–13 the open-file-description forms (`arg` points to a request laid out like Linux's `struct flock`; advisory, released on any close by the process, on exit, or with the description; EDEADLK for cycles between processes) (implemented) | P5 runtime |
 | 133 | `eventfd` | `(initial, flags) → fd` — flags 1 nonblocking, 2 close-on-exec, 4 semaphore (implemented) | P5 runtime |
 | 134 | `epoll_create` | `(flags) → fd` — flag 2 close-on-exec (implemented) | P5 runtime |
 | 135 | `epoll_ctl` | `(epfd, op, fd, *event) → !void` — op 1 add, 2 delete, 3 modify; event is Linux's packed `{u32 events, u64 data}`; EPOLLET and EPOLLONESHOT supported; regular files refused (implemented) | P5 runtime |
