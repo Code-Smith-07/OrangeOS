@@ -185,6 +185,13 @@ export fn _start() callconv(.c) noreturn {
             }
         }
         pulp.puts("runtime: PASS W^X code generation across threads\n");
+        const alias_program = pulp.spawn("/bin/jit-alias-probe") catch pulp.exit(240);
+        const alias_code = pulp.wait(alias_program) catch pulp.exit(241);
+        if (alias_code != 0) {
+            pulp.print("runtime: FAIL dual-mapped JIT memory exit {d}\n", .{alias_code});
+            pulp.exit(242);
+        }
+        pulp.puts("runtime: PASS dual-mapped JIT memory (W^X)\n");
         const c_program = pulp.spawn("/bin/musl-probe") catch pulp.exit(175);
         const c_code = pulp.wait(c_program) catch pulp.exit(176);
         if (c_code != 0) {

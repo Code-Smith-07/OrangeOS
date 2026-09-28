@@ -178,5 +178,6 @@ pub fn init() !void {
         if (parts == 0) console.info("no GPT partitions found", .{});
 
         mountRoot();
+        @import("../../fs/tmpfs/persist.zig").mount();
     }
 }

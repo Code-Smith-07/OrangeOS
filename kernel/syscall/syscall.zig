@@ -132,6 +132,9 @@ pub const Nr = enum(u64) {
     sockname = 161,
     getsockopt = 162,
     setsockopt = 163,
+    /// Save a persistent volume: the one holding descriptor `fd`, or all of
+    /// them for fd -1 (fsync, fdatasync, syncfs and sync).
+    fs_sync = 164,
     readdir = 34,
     readdir_page = 38,
     port_create = 50,
@@ -249,6 +252,7 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) u64 {
         .sockname => sysSockname(frame.rdi, frame.rsi, frame.rdx, frame.r10),
         .getsockopt => sysGetsockopt(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
         .setsockopt => sysSetsockopt(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
+        .fs_sync => sysFsSync(frame.rdi),
         .chdir => sysChdir(frame.rdi, frame.rsi),
         .getcwd => sysGetcwd(frame.rdi, frame.rsi),
         .resolve_path => sysResolvePath(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
@@ -817,6 +821,27 @@ fn sysStat(path_ptr: u64, path_len: u64, out: u64) i64 {
         .kind = if (node.isDir()) 2 else if (node == .device) 7 else 1,
         .mode = if (node.writable()) vfs.OPEN_READ | vfs.OPEN_WRITE else vfs.OPEN_READ,
     });
+}
+
+fn sysFsSync(fd: u64) i64 {
+    const persist = @import("../fs/tmpfs/persist.zig");
+    if (fd != std.math.maxInt(u64)) {
+        const desc = descriptionOf(fd) orelse return EBADF;
+        defer desc.release();
+        const on_data = switch (desc.object) {
+            .node => |*f| f.node == .tmp and f.node.tmp.volume == &tmpfs.data,
+            else => false,
+        };
+        if (!on_data) return 0; // memory (/tmp) or read-only: nothing to save
+    }
+    io.sti();
+    defer io.cli();
+    persist.save() catch |e| return switch (e) {
+        error.NoSpace => -28,
+        error.OutOfMemory => -12,
+        error.IoError => -5,
+    };
+    return 0;
 }
 
 fn sysFstat(fd: u64, out: u64) i64 {

@@ -414,7 +414,12 @@ WPE_OPTIONS = [
     # kernels at run time, so the SSE ones remain.
     "-DUSE_HEADER_MAPS=OFF",
     # -g0: zig's clang emits debug information unless told not to.
-    "-DCMAKE_CXX_FLAGS=-g0 -DSIMDUTF_IMPLEMENTATION_ICELAKE=0 -DSKCMS_DISABLE_SKX",
+    # JIT: OrangeOS keeps W^X, so code pages are read/execute and written
+    # through a second, read/write mapping of the same memfd (patch 0008,
+    # docs/design/012 §4.5). A 256 MiB pool (JSC's x86-64 default is 1 GiB)
+    # keeps libpas's segregated JIT heap; the memfd is sparse.
+    "-DCMAKE_CXX_FLAGS=-g0 -DSIMDUTF_IMPLEMENTATION_ICELAKE=0 -DSKCMS_DISABLE_SKX"
+    " -DENABLE_SEPARATED_WX_HEAP=1 -DFIXED_EXECUTABLE_MEMORY_POOL_SIZE_IN_MB=256",
     "-DCMAKE_C_FLAGS=-g0 -DSKCMS_DISABLE_SKX",
     "-DENABLE_DOCUMENTATION=OFF", "-DENABLE_INTROSPECTION=OFF", "-DENABLE_JOURNALD_LOG=OFF",
     "-DENABLE_WPE_PLATFORM=ON", "-DENABLE_WPE_PLATFORM_HEADLESS=ON",
@@ -423,7 +428,10 @@ WPE_OPTIONS = [
     "-DUSE_ATK=OFF", "-DUSE_FLITE=OFF", "-DUSE_GBM=OFF", "-DUSE_LIBDRM=OFF",
     "-DUSE_LIBBACKTRACE=OFF", "-DUSE_LIBHYPHEN=OFF", "-DUSE_VULKAN=OFF",
     "-DUSE_AVIF=OFF", "-DUSE_JPEGXL=OFF", "-DUSE_LCMS=OFF", "-DUSE_WOFF2=ON",
-    "-DENABLE_BUBBLEWRAP_SANDBOX=OFF", "-DENABLE_VIDEO=OFF", "-DENABLE_WEB_AUDIO=OFF",
+        # Video on without a media engine (no GStreamer yet): <video> and
+    # <audio> exist, so pages that use them run, but report that they cannot
+    # play anything. Without it YouTube's scripts stop at HTMLVideoElement.
+    "-DENABLE_BUBBLEWRAP_SANDBOX=OFF", "-DENABLE_VIDEO=ON", "-DENABLE_WEB_AUDIO=OFF",
     "-DENABLE_ENCRYPTED_MEDIA=OFF", "-DENABLE_SPELLCHECK=OFF", "-DENABLE_WEBDRIVER=OFF",
     "-DENABLE_SPEECH_SYNTHESIS=OFF", "-DENABLE_MINIBROWSER=OFF", "-DENABLE_API_TESTS=OFF",
     "-DENABLE_LAYOUT_TESTS=OFF", "-DENABLE_REMOTE_INSPECTOR=OFF",
@@ -463,7 +471,17 @@ def build_wpe(src, env):
     # Only what OrangeOS links: WebKit's objects and the two entry points
     # (collect_wpe). The Linux-ABI jsc and helper executables CMake would
     # also link are not needed.
-    run(["cmake", "--build", build, "--", "-k", "0", *WPE_TARGETS], ROOT, env)
+    # CMake's final link of libWPEWebKit-2.0.so is expected to fail: it
+    # omits the static libraries' own dependencies (nghttp2, psl, ffi...)
+    # and the gesture handlers unreachable.c supplies, which the OrangeOS
+    # program links resolve. Everything else must build.
+    try:
+        run(["cmake", "--build", build, "--", "-k", "0", *WPE_TARGETS], ROOT, env)
+    except subprocess.CalledProcessError:
+        missing = [t for t in WPE_TARGETS[1:] if not os.path.exists(os.path.join(build, t))]
+        if missing:
+            raise SystemExit(f"wpe: not built: {missing}")
+        print("wpe: the shared library link failed as expected; collecting its objects", flush=True)
     collect_wpe(build, env)
 
 
@@ -471,6 +489,8 @@ WPE_TARGETS = [
     "lib/libWPEWebKit-2.0.so.1.11.3",
     "Source/WebKit/CMakeFiles/WebProcess.dir/WebProcess/EntryPoint/unix/WebProcessMain.cpp.o",
     "Source/WebKit/CMakeFiles/NetworkProcess.dir/NetworkProcess/EntryPoint/unix/NetworkProcessMain.cpp.o",
+    # JavaScriptCore's shell, linked by build.zig as /bin/jsc (jsc-probe).
+    "Source/JavaScriptCore/shell/CMakeFiles/jsc.dir/__/jsc.cpp.o",
 ]
 
 
@@ -521,6 +541,7 @@ def collect_wpe(build, env):
     for entry, target in (("WebProcess.dir/WebProcess/EntryPoint/unix/WebProcessMain.cpp.o", "wpe-web-process.o"),
                           ("NetworkProcess.dir/NetworkProcess/EntryPoint/unix/NetworkProcessMain.cpp.o", "wpe-network-process.o")):
         shutil.copy2(os.path.join(build, "Source/WebKit/CMakeFiles", entry), os.path.join(lib, target))
+    shutil.copy2(os.path.join(build, "Source/JavaScriptCore/shell/CMakeFiles/jsc.dir/__/jsc.cpp.o"), os.path.join(lib, "jsc-shell.o"))
     # The API headers, as CMake's install rules list them (its install
     # would also want the shared library, which is not built).
     install_headers(build)

@@ -166,6 +166,7 @@ export fn kmain() callconv(.c) noreturn {
     }
 
     net.startService();
+    @import("fs/tmpfs/persist.zig").startService();
     _ = sched.spawn("orphan-reaper", sched.orphanReaper, null, .batch) catch |e| {
         fbcon.reclaim();
         console.err("could not spawn orphan reaper: {s}", .{@errorName(e)});

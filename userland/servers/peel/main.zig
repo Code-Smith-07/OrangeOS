@@ -1103,9 +1103,12 @@ fn handleKey(e: *const pulp.InputEvent) void {
         },
         else => {},
     };
+    // Alt (either one) is tracked for Alt+Tab; it still reaches the window.
+    if (e.code == 0x38) alt_held = e.isPress();
     if (shell.popup != .none) return;
-    // Tab cycles focus, so the compositor is demonstrable without a mouse.
-    if (e.isPress() and e.code == 0x0F and window_count > 1 and openPanel() == null) {
+    // Alt+Tab cycles focus, as on other desktops; plain Tab belongs to the
+    // window (form fields, completion, Ctrl+Tab between browser tabs).
+    if (alt_held and e.isPress() and e.code == 0x0F and window_count > 1 and openPanel() == null) {
         for (0..window_count) |i| {
             const idx = z_order[i];
             if (windows[idx].visible and !windows[idx].panel) {
@@ -1120,6 +1123,8 @@ fn handleKey(e: *const pulp.InputEvent) void {
     // Peel does not interpret keys; it routes them.
     if (activeWindow()) |idx| sendInput(idx, e.kind, e.code, e.value, 0, 0);
 }
+
+var alt_held: bool = false;
 
 /// The wheel scrolls the client window under the pointer, as on other
 /// desktops: the steps travel in the event's code as a signed byte.

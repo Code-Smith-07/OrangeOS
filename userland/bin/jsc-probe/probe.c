@@ -1,9 +1,10 @@
 /* Runs JavaScriptCore's shell on a test script (probe.js) and relays its
  * verdict (docs/design/012-wpe-webkit-browser.md, W4).
  *
- * JSC's JIT on Linux maps code writable and executable at once, which
- * OrangeOS's W^X refuses, so the shell runs its interpreter (LLInt) with
- * the JIT tiers off until that policy is decided.
+ * The script runs twice: on the interpreter (LLInt) alone, then with the
+ * JIT, whose code pages are read/execute and written through a second
+ * mapping (patch 0008, §4.5). jit.js then checks that hot code reaches the
+ * baseline, DFG and FTL tiers and computes the same results there.
  *
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
@@ -85,6 +86,24 @@ int main(void)
 	fputs(text, stdout);
 	if (status != 0 || !strstr(text, "jsc-probe: PASS")) {
 		printf("jsc-probe: FAIL jsc status %d\n", status);
+		return 1;
+	}
+
+	/* The same checks with the JIT; its verdict line is relabelled. */
+	char *jit_argv[] = { "jsc", "/share/wpe-tests/jsc-probe.js", NULL };
+	status = run_jsc(jit_argv, NULL, text, sizeof text);
+	const char *verdict = strstr(text, "jsc-probe: PASS");
+	if (status != 0 || !verdict) {
+		printf("%s\njsc-probe: FAIL with the JIT, status %d\n", text, status);
+		return 1;
+	}
+	printf("jsc-probe: with JIT %s", verdict + strlen("jsc-probe: "));
+
+	char *tiers_argv[] = { "jsc", "--useDollarVM=true", "/share/wpe-tests/jsc-jit.js", NULL };
+	status = run_jsc(tiers_argv, NULL, text, sizeof text);
+	fputs(text, stdout);
+	if (status != 0 || !strstr(text, "jsc-jit: PASS")) {
+		printf("jsc-probe: FAIL JIT tiers, status %d\n", status);
 		return 1;
 	}
 	return 0;

@@ -337,6 +337,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "random-probe", .sources = &.{"userland/bin/random-probe/probe.c"} },
         .{ .name = "signal-probe", .sources = &.{"userland/bin/signal-probe/probe.c"} },
         .{ .name = "inet-probe", .sources = &.{"userland/bin/inet-probe/probe.c"} },
+        .{ .name = "jit-alias-probe", .sources = &.{"userland/bin/jit-alias-probe/probe.c"} },
+        .{ .name = "data-probe", .sources = &.{"userland/bin/data-probe/probe.c"} },
     };
     for (c_programs) |program| {
         const mod = b.createModule(.{
@@ -550,11 +552,9 @@ pub fn build(b: *std.Build) void {
             .{ .name = "WPEWebProcess", .sources = &.{ "userland/bin/wpe-render/tls-init.c", "userland/bin/wpe-render/unreachable.c" }, .cxx = true, .libs = &([_][]const u8{"wpe-web-process.o"} ++ wpe_libs) },
             .{ .name = "WPENetworkProcess", .sources = &.{ "userland/bin/wpe-render/tls-init.c", "userland/bin/wpe-render/unreachable.c" }, .cxx = true, .libs = &([_][]const u8{"wpe-network-process.o"} ++ wpe_libs) },
             .{ .name = "jsc-probe", .sources = &.{"userland/bin/jsc-probe/probe.c"}, .cxx = false, .libs = &.{} },
-            // JavaScriptCore's own shell, compiled by the JSCOnly build
-            // (tools/wpe/build_deps.py wpewebkit) and linked here.
-            .{ .name = "jsc", .sources = &.{}, .cxx = true, .libs = &.{
-                "jsc-shell.o", "JavaScriptCore", "JavaScriptCoreJIT", "WTF", "bmalloc", "icui18n", "icuuc", "icudata",
-            } },
+            // JavaScriptCore's own shell from the WPE build (the same
+            // JavaScriptCore and JIT the browser uses), linked here.
+            .{ .name = "jsc", .sources = &.{"userland/bin/wpe-render/unreachable.c"}, .cxx = true, .libs = &([_][]const u8{"jsc-shell.o"} ++ wpe_libs) },
         };
         for (wpe_programs) |program| {
             const mod = b.createModule(.{

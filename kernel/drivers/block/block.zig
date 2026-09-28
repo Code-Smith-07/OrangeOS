@@ -25,6 +25,9 @@ pub const Error = error{
 pub const Ops = struct {
     read: *const fn (ctx: *anyopaque, lba: u64, count: u32, buf: [*]u8) Error!void,
     write: *const fn (ctx: *anyopaque, lba: u64, count: u32, buf: [*]const u8) Error!void,
+    /// Make completed writes durable (the device's write cache); null when
+    /// the device has none to flush or cannot say.
+    flush: ?*const fn (ctx: *anyopaque) Error!void = null,
 };
 
 pub const Device = struct {
@@ -54,6 +57,15 @@ pub const Device = struct {
         const state = spinlock.acquireIrqSave(&io_lock);
         defer spinlock.releaseIrqRestore(&io_lock, state);
         return self.ops.write(self.ctx, self.lba_offset + lba, count, buf);
+    }
+
+    /// Writes before this are on stable storage when it returns. Devices
+    /// without a flush operation report NotSupported.
+    pub fn flush(self: *const Device) Error!void {
+        const op = self.ops.flush orelse return Error.NotSupported;
+        const state = spinlock.acquireIrqSave(&io_lock);
+        defer spinlock.releaseIrqRestore(&io_lock, state);
+        return op(self.ctx);
     }
 
     pub fn byteCapacity(self: *const Device) u64 {

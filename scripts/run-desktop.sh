@@ -4,7 +4,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 . ./scripts/vm-profile.sh
-if [ ! -f build/orange.iso ] || [ ! -f build/disk.img ]; then
+if [ ! -f build/orange.iso ] || [ ! -f build/disk.img ] || [ ! -f build/data.img ]; then
     echo "Build first: zig build && ./scripts/mkdisk.sh" >&2
     exit 1
 fi
@@ -16,5 +16,7 @@ exec qemu-system-x86_64 \
     -rtc base=utc,clock=host -cdrom build/orange.iso -boot d \
     -drive id=disk0,file=build/disk.img,format=raw,if=none \
     -device ahci,id=ahci -device ide-hd,drive=disk0,bus=ahci.0 \
+    -drive id=data0,file=build/data.img,format=raw,if=none \
+    -device ide-hd,drive=data0,bus=ahci.1 \
     -netdev user,id=n0 -device e1000,netdev=n0 \
     -serial stdio -no-reboot -no-shutdown "$@"
