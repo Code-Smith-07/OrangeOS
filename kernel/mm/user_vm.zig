@@ -354,8 +354,10 @@ pub fn protect(space: *AddressSpace, address: u64, length: u64, prot: u64) Error
     if (findIndex(&space.anonymous_vm, address)) |i| {
         if (space.anonymous_vm.items[i].lazy) return protectLazyLocked(space, address, length, @intCast(if (prot == 4) 5 else prot));
     }
-    _ = try findContaining(&space.anonymous_vm, address, length, MAX_MAPPING);
     const size = try sizeOf(length, MAX_MAPPING);
+    const in_image = address % vmm.PAGE_SIZE == 0 and address >= space.image_start and
+        address + size <= space.image_end and space.image_end > space.image_start;
+    if (!in_image) _ = try findContaining(&space.anonymous_vm, address, length, MAX_MAPPING);
     // Sparse reservations can contain holes; fail before changing any page.
     var off: usize = 0;
     while (off < size) : (off += vmm.PAGE_SIZE) {

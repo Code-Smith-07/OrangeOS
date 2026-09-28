@@ -65,6 +65,8 @@ pub const ProgramHeader = extern struct {
 
 pub const Loaded = struct {
     entry: u64,
+    /// Lowest mapped address: the image is [start, brk).
+    start: u64,
     /// Highest mapped address, so the heap can start above it.
     brk: u64,
     /// The program-header table, for the auxiliary vector (AT_PHDR etc.).
@@ -114,6 +116,7 @@ pub fn loadFromNode(pml4_phys: u64, node: *const vfs.Node) Error!Loaded {
     if (table_end > node.size()) return Error.BadProgramHeader;
 
     var brk: u64 = 0;
+    var lowest: u64 = USER_MAX;
 
     var i: usize = 0;
     while (i < hdr.phnum) : (i += 1) {
@@ -161,7 +164,8 @@ pub fn loadFromNode(pml4_phys: u64, node: *const vfs.Node) Error!Loaded {
         }
 
         if (end > brk) brk = end;
+        if (start < lowest) lowest = start;
     }
 
-    return .{ .entry = hdr.entry, .brk = brk, .phoff = hdr.phoff, .phnum = hdr.phnum, .phentsize = hdr.phentsize };
+    return .{ .entry = hdr.entry, .start = if (lowest == USER_MAX) 0 else lowest, .brk = brk, .phoff = hdr.phoff, .phnum = hdr.phnum, .phentsize = hdr.phentsize };
 }

@@ -34,8 +34,8 @@ esac
 # files and a larger filesystem; only when asked, so ordinary images are
 # unchanged. Build them first with `zig build -Dwpe-probes`.
 if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
-    FS_MIB=$((FS_MIB + 160))
-    DISK_MIB=$((DISK_MIB + 160))
+    FS_MIB=$((FS_MIB + 320))
+    DISK_MIB=$((DISK_MIB + 320))
 fi
 
 mkdir -p build
@@ -67,6 +67,11 @@ cp userland/servers/peel/assets/midnight-aurora-1280.bmp "$ROOTFS/share/wallpape
 
 echo "Welcome to Orange OS." > "$ROOTFS/etc/motd"
 printf 'NAME="Orange OS"\nVERSION="0.1.0"\nKERNEL="Zest"\n' > "$ROOTFS/etc/os-release"
+# Name lookup for musl programs. The resolver is QEMU user networking's,
+# which its DHCP server also announces; the disk is read-only, so a network
+# service that writes this from the DHCP lease is future work.
+printf '127.0.0.1\tlocalhost\n' > "$ROOTFS/etc/hosts"
+printf 'nameserver 10.0.2.3\n' > "$ROOTFS/etc/resolv.conf"
 
 cat > "$ROOTFS/etc/seed.conf" <<'CONF'
 # Orange OS service configuration
@@ -86,13 +91,13 @@ if [ ! -f zig-out/bin/init ]; then
 fi
 
 cp zig-out/bin/init "$ROOTFS/sbin/init"
-for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe cxx-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe tls-probe futex-probe futex-waiter thread-probe thread-exit-probe thread-fault-probe thread-last-probe net-thread-probe net-exit-probe tcp-probe jit-probe fault-wx musl-probe cxx-probe file-probe thread-capacity pipe-probe epoll-probe unix-probe spawn-probe spawn-child mmap-probe shm-probe random-probe signal-probe fault-null fault-ro fault-nx fault-opcode; do
+for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe cxx-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe tls-probe futex-probe futex-waiter thread-probe thread-exit-probe thread-fault-probe thread-last-probe net-thread-probe net-exit-probe tcp-probe jit-probe fault-wx musl-probe cxx-probe file-probe thread-capacity pipe-probe epoll-probe unix-probe spawn-probe spawn-child mmap-probe shm-probe random-probe signal-probe inet-probe fault-null fault-ro fault-nx fault-opcode; do
     if [ -f "zig-out/bin/$prog" ]; then
         cp "zig-out/bin/$prog" "$ROOTFS/bin/$prog"
     fi
 done
 if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
-    for prog in glib-probe wpe-libs-probe; do
+    for prog in glib-probe wpe-libs-probe jsc jsc-probe; do
         if [ ! -f "zig-out/bin/$prog" ]; then
             echo "mkdisk: ERROR - zig-out/bin/$prog not found; run 'zig build -Dwpe-probes' first" >&2
             exit 1
@@ -102,6 +107,8 @@ if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
     # fontconfig's configuration and other data installed by the trial
     # libraries (tools/wpe/build_deps.py), and the fonts it should find.
     cp -R build/wpe/rootfs/. "$ROOTFS/"
+    mkdir -p "$ROOTFS/share/wpe-tests"
+    cp userland/bin/jsc-probe/probe.js "$ROOTFS/share/wpe-tests/jsc-probe.js"
     mkdir -p "$ROOTFS/share/fonts"
     cp assets/fonts/Inter.ttf assets/fonts/JetBrainsMono.ttf "$ROOTFS/share/fonts/"
     # Each library's licence travels with the binaries linking it.

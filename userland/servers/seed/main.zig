@@ -108,8 +108,34 @@ fn startService(s: *Service) void {
     pulp.print("  [ ok ] {s} started (pid {d})\n", .{ s.nameSlice(), s.pid });
 }
 
+/// The WPE WebKit trial's probes (docs/design/012).
+fn wpeProbes() void {
+        const glib_program = pulp.spawn("/bin/glib-probe") catch pulp.exit(211);
+        const glib_code = pulp.wait(glib_program) catch pulp.exit(212);
+        if (glib_code != 0) {
+            pulp.print("runtime: FAIL GLib exit {d}\n", .{glib_code});
+            pulp.exit(213);
+        }
+        pulp.puts("runtime: PASS GLib, GObject and GIO\n");
+        const libs_program = pulp.spawn("/bin/wpe-libs-probe") catch pulp.exit(214);
+        const libs_code = pulp.wait(libs_program) catch pulp.exit(215);
+        if (libs_code != 0) {
+            pulp.print("runtime: FAIL WPE libraries exit {d}\n", .{libs_code});
+            pulp.exit(216);
+        }
+        pulp.puts("runtime: PASS WPE base libraries\n");
+        const jsc_program = pulp.spawn("/bin/jsc-probe") catch pulp.exit(217);
+        const jsc_code = pulp.wait(jsc_program) catch pulp.exit(218);
+        if (jsc_code != 0) {
+            pulp.print("runtime: FAIL JavaScriptCore exit {d}\n", .{jsc_code});
+            pulp.exit(219);
+        }
+        pulp.puts("runtime: PASS JavaScriptCore\n");
+}
+
 export fn _start() callconv(.c) noreturn {
     banner();
+    if (pulp.runtime_test and pulp.wpe_probes and pulp.wpe_first) wpeProbes();
     if (pulp.runtime_test) {
         for (0..3) |_| {
             const probe = pulp.spawn("/bin/vm-probe") catch pulp.exit(90);
@@ -229,23 +255,15 @@ export fn _start() callconv(.c) noreturn {
             pulp.exit(210);
         }
         pulp.puts("runtime: PASS POSIX signals\n");
-        // WPE WebKit trial (docs/design/012): only in -Dwpe-probes builds.
-        if (pulp.wpe_probes) {
-            const glib_program = pulp.spawn("/bin/glib-probe") catch pulp.exit(211);
-            const glib_code = pulp.wait(glib_program) catch pulp.exit(212);
-            if (glib_code != 0) {
-                pulp.print("runtime: FAIL GLib exit {d}\n", .{glib_code});
-                pulp.exit(213);
-            }
-            pulp.puts("runtime: PASS GLib, GObject and GIO\n");
-            const libs_program = pulp.spawn("/bin/wpe-libs-probe") catch pulp.exit(214);
-            const libs_code = pulp.wait(libs_program) catch pulp.exit(215);
-            if (libs_code != 0) {
-                pulp.print("runtime: FAIL WPE libraries exit {d}\n", .{libs_code});
-                pulp.exit(216);
-            }
-            pulp.puts("runtime: PASS WPE base libraries\n");
+        const inet_program = pulp.spawn("/bin/inet-probe") catch pulp.exit(220);
+        const inet_code = pulp.wait(inet_program) catch pulp.exit(221);
+        if (inet_code != 0) {
+            pulp.print("runtime: FAIL internet sockets exit {d}\n", .{inet_code});
+            pulp.exit(222);
         }
+        pulp.puts("runtime: PASS internet sockets\n");
+        // WPE WebKit trial (docs/design/012): only in -Dwpe-probes builds.
+        if (pulp.wpe_probes and !pulp.wpe_first) wpeProbes();
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.
         for (0..2) |_| {

@@ -23,6 +23,7 @@ const eventfd = @import("../ipc/eventfd.zig");
 const readiness = @import("../ipc/readiness.zig");
 const epoll = @import("../ipc/epoll.zig");
 const unix_socket = @import("../ipc/unix_socket.zig");
+const inet = @import("../net/socket.zig");
 const console_file = @import("console_file.zig");
 const record_lock = @import("lock.zig");
 
@@ -41,6 +42,8 @@ pub const Object = union(enum) {
     eventfd: *eventfd.EventFd,
     epoll: *epoll.Epoll,
     socket: SocketEnd,
+    /// A TCP or UDP socket.
+    inet: *inet.Socket,
     /// The console or the program's terminal (what 0, 1 and 2 start as).
     console,
 };
@@ -100,6 +103,7 @@ pub const Description = struct {
             .eventfd => |e| eventfd.destroy(e),
             .epoll => |ep| epoll.destroy(ep),
             .socket => |sock| unix_socket.closeEnd(sock.pair, sock.end),
+            .inet => |sock| inet.close(sock),
         }
         heap.destroy(self);
     }
@@ -122,6 +126,7 @@ pub const Description = struct {
             .pipe_write => |p| pipe.source(p, true),
             .eventfd => |e| &e.source,
             .socket => |sock| unix_socket.source(sock.pair, sock.end),
+            .inet => |sock| inet.source(sock),
         };
     }
 };
@@ -408,6 +413,10 @@ pub fn read(desc: *Description, buf: []u8) Error!usize {
             for (got.rights[0..got.right_count]) |carried| carried.release();
             return got.bytes;
         },
+        .inet => |sock| {
+            const got = inet.receive(sock, buf, desc.nonblocking(), false) catch |e| return inetError(e);
+            return got.bytes;
+        },
         .console => return console_file.read(buf) catch Error.Interrupted,
         .pipe_write, .epoll => return Error.BadFd,
     }
@@ -428,9 +437,24 @@ pub fn write(desc: *Description, data: []const u8) Error!usize {
         .pipe_write => |p| return pipe.write(p, data, desc.nonblocking()) catch |e| pipeError(e),
         .eventfd => |e| return eventfd.write(e, data, desc.nonblocking()) catch |err| eventError(err),
         .socket => |sock| return unix_socket.send(sock.pair, sock.end, data, &.{}, desc.nonblocking()) catch |e| socketError(e),
+        .inet => |sock| return inet.send(sock, data, null, desc.nonblocking()) catch |e| inetError(e),
         .console => return console_file.write(data),
         .pipe_read, .epoll => return Error.BadFd,
     }
+}
+
+/// What read() and write() report for socket failures. The syscall layer
+/// maps the socket calls' own errors in full (inetErrno).
+pub fn inetError(e: inet.Error) Error {
+    return switch (e) {
+        inet.Error.WouldBlock, inet.Error.InProgress => Error.WouldBlock,
+        inet.Error.Interrupted => Error.Interrupted,
+        inet.Error.OutOfMemory => Error.OutOfMemory,
+        inet.Error.BrokenPipe, inet.Error.Reset => Error.BrokenPipe,
+        inet.Error.MessageTooLong => Error.MessageTooLong,
+        inet.Error.NotPermitted => Error.NotPermitted,
+        else => Error.IoError,
+    };
 }
 
 pub fn socketError(e: unix_socket.Error) Error {
@@ -510,6 +534,7 @@ pub fn stat(desc: *Description) Status {
         .pipe_write => .{ .size = 0, .kind = .pipe, .mode = mode },
         .eventfd, .epoll => .{ .size = 0, .kind = .anonymous, .mode = mode },
         .socket => |sock| .{ .size = unix_socket.pending(sock.pair, sock.end), .kind = .socket, .mode = mode },
+        .inet => |sock| .{ .size = inet.pending(sock), .kind = .socket, .mode = mode },
         .console => .{ .size = 0, .kind = .console, .mode = mode },
     };
 }
@@ -552,6 +577,30 @@ pub fn readinessOf(desc: *Description) u32 {
             if (r.hangup) bits |= epoll.HUP;
             break :blk bits;
         },
+        .inet => |sock| blk: {
+            const r = inet.poll(sock);
+            var bits: u32 = 0;
+            if (r.readable) bits |= epoll.IN | epoll.RDNORM;
+            if (r.writable) bits |= epoll.OUT | epoll.WRNORM;
+            if (r.failed) bits |= epoll.ERR;
+            if (r.read_hangup) bits |= epoll.RDHUP;
+            if (r.hangup) bits |= epoll.HUP;
+            break :blk bits;
+        },
+    };
+}
+
+/// socket(AF_INET, ...): a new unconnected TCP or UDP socket.
+pub fn createInetSocket(table: *FileTable, kind: inet.Kind, nonblock: bool, cloexec: bool) Error!i32 {
+    const sock = inet.create(kind) catch return Error.OutOfMemory;
+    const status = vfs.OPEN_READ | vfs.OPEN_WRITE | (if (nonblock) vfs.OPEN_NONBLOCK else 0);
+    const desc = Description.create(.{ .inet = sock }, status) catch {
+        inet.close(sock);
+        return Error.OutOfMemory;
+    };
+    return install(table, desc, FD_BASE, cloexec) catch |e| {
+        desc.release();
+        return e;
     };
 }
 

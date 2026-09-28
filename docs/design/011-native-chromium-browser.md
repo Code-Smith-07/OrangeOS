@@ -443,7 +443,7 @@ mock backend tests and from a successful compilation.
 
 ### 11.0 Current status and remaining work
 
-A living checklist, updated with each milestone (last: 2026-09-25). "Done"
+A living checklist, updated with each milestone (last: 2026-09-28). "Done"
 means built and tested in the guest on two and four vCPUs; the sections
 named hold the evidence.
 
@@ -463,7 +463,7 @@ named hold the evidence.
 
 | # | Item | Status |
 |---|---|---|
-| B8 | BSD sockets through musl (`socket`/`connect`/`send`/`recv`, nonblocking, readiness); interrupt-driven receive; musl DNS resolver | To do |
+| B8 | BSD sockets through musl (`socket`/`connect`/`send`/`recv`, nonblocking, readiness); interrupt-driven receive; musl DNS resolver | Done during the WPE trial (012 §7): sockets, readiness, DNS; receive by a network thread, not interrupts; no listen, loopback or IPv6 yet |
 | B9 | TLS root store for BoringSSL | To do |
 | B10 | Font files and a font manager | To do |
 | B11 | Persistent writable profile volume (`/tmp` suffices for bring-up) | `/tmp` done (§11.37); persistence to do |

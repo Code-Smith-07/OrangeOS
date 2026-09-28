@@ -1,31 +1,40 @@
-//! TCP — client side.
+//! TCP.
 //!
 //! A connection is a state machine over an unreliable channel, and almost all
 //! of the difficulty is in the arithmetic rather than the states. Sequence
-//! numbers are 32-bit and wrap, so every comparison must be done modulo 2^32:
-//! `a < b` is wrong and `(a - b)` interpreted as signed is right. Getting that
-//! wrong produces a connection that works until it has transferred four
-//! gigabytes, which is to say one that appears to work.
+//! numbers are 32-bit and wrap, so every comparison is done modulo 2^32:
+//! `a < b` is wrong and `(a - b)` read as signed is right.
 //!
-//! What this implements: active open, in-order data transfer with
-//! acknowledgement, retransmission on timeout, and orderly close.
+//! What this implements: active open with the MSS option; a 64 KiB receive
+//! ring whose free space is the advertised window; a 64 KiB send ring with
+//! as many segments in flight as the peer's window allows; retransmission
+//! with exponential back-off (go-back-N from the oldest unacknowledged
+//! byte); zero-window probes; orderly close in both directions (FIN_WAIT,
+//! CLOSING, TIME_WAIT, CLOSE_WAIT, LAST_ACK); resets in both directions,
+//! including a reset for segments that match no connection; keepalive.
 //!
-//! What it deliberately does not: out-of-order reassembly (segments arriving
-//! ahead of the window are dropped and the peer retransmits), congestion
-//! control (the window is fixed), and passive open. Each of those is a real
-//! omission rather than a hidden one, and each is honest about costing
-//! throughput rather than correctness.
+//! What it does not: passive open (listen/accept), out-of-order reassembly
+//! (a segment ahead of rcv_nxt is dropped and acknowledged, and the peer
+//! resends it), congestion control, window scaling, SACK and timestamps.
+//! Each costs throughput on lossy or long paths, not correctness.
 //!
-//! Connection state is network state: it is only touched under the network
-//! lock (net.zig), and waits poll, drop the lock and sleep. A slot's
-//! generation changes whenever it is reallocated, so a wait whose connection
-//! another thread closed (or whose program exited) notices instead of
-//! reading someone else's connection.
+//! Every field is network state: touched only under the network lock
+//! (net.zig). The network thread runs `timersLocked` every millisecond and
+//! delivers segments as they arrive; callers of the functions here wait on
+//! `waitChannel` for a change. Changes wake that channel and notify the
+//! readiness source of the socket using the connection, if any.
+//!
+//! A connection outlives its user: closing a socket queues a FIN and leaves
+//! the connection "detached" to finish the handshake; the timers free it
+//! once it is closed.
 
 const std = @import("std");
 const net = @import("net.zig");
-const console = @import("../console.zig");
+const heap = @import("../mm/heap.zig");
 const tsc = @import("../time/tsc.zig");
+const sched = @import("../sched/sched.zig");
+const readiness = @import("../ipc/readiness.zig");
+const random = @import("../lib/random.zig");
 
 pub const Error = error{
     NoSockets,
@@ -34,6 +43,12 @@ pub const Error = error{
     Timeout,
     TooLarge,
     Reset,
+    OutOfMemory,
+    WouldBlock,
+    Interrupted,
+    Unreachable,
+    BrokenPipe,
+    AddressInUse,
 };
 
 const FLAG_FIN: u8 = 1 << 0;
@@ -44,13 +59,27 @@ const FLAG_ACK: u8 = 1 << 4;
 
 const PROTO_TCP: u8 = 6;
 
-const MSS: usize = 1400;
-const RX_BUFFER: usize = 8192;
-const TX_BUFFER: usize = 2048;
-const MAX_CONNECTIONS = 4;
+/// The largest payload one Ethernet frame carries (1500 - 20 - 20).
+pub const MSS: u16 = 1460;
+/// What a peer that sends no MSS option accepts (RFC 9293).
+const DEFAULT_PEER_MSS: u16 = 536;
+pub const RX_CAPACITY: usize = 64 * 1024;
+pub const TX_CAPACITY: usize = 64 * 1024;
+/// No window scaling: the advertised window field is 16 bits.
+const MAX_WINDOW: usize = 65535;
 
-const RETRANSMIT_US: u64 = 500_000;
-const MAX_RETRIES: u32 = 6;
+const SYN_RTO_US: u64 = 1_000_000;
+const INITIAL_RTO_US: u64 = 400_000;
+const MAX_RTO_US: u64 = 16_000_000;
+const MAX_SYN_RETRIES: u32 = 6;
+const MAX_RETRIES: u32 = 10;
+const TIME_WAIT_US: u64 = 10_000_000;
+/// A detached connection stuck waiting for the peer's FIN gives up, as
+/// Linux's tcp_fin_timeout does.
+const ORPHAN_FIN_WAIT_US: u64 = 60_000_000;
+const KEEPALIVE_IDLE_US: u64 = 7200 * 1_000_000;
+const KEEPALIVE_INTERVAL_US: u64 = 75 * 1_000_000;
+const KEEPALIVE_PROBES: u32 = 9;
 
 pub const State = enum(u8) {
     closed,
@@ -58,57 +87,88 @@ pub const State = enum(u8) {
     established,
     fin_wait_1,
     fin_wait_2,
+    closing,
+    time_wait,
     close_wait,
     last_ack,
-    time_wait,
 };
 
-const Tcb = struct {
-    used: bool = false,
-    generation: u32 = 0,
-    owner_tid: u32 = 0,
+pub const Tcb = struct {
+    next: ?*Tcb = null,
     state: State = .closed,
 
     local_port: u16 = 0,
     remote_ip: net.Ipv4Addr = .{ 0, 0, 0, 0 },
     remote_port: u16 = 0,
 
-    /// Send sequence space.
-    snd_una: u32 = 0, // oldest unacknowledged
-    snd_nxt: u32 = 0, // next to send
+    /// Send sequence space: snd_una is the oldest unacknowledged sequence
+    /// number, snd_nxt the next to send, snd_wnd the peer's window.
+    snd_una: u32 = 0,
+    snd_nxt: u32 = 0,
+    snd_wnd: u32 = 0,
+    peer_mss: u16 = DEFAULT_PEER_MSS,
     /// Receive sequence space.
-    rcv_nxt: u32 = 0, // next expected
+    rcv_nxt: u32 = 0,
+    /// The window last advertised, to send an update when reading opens it.
+    advertised: usize = 0,
 
-    /// Data received in order and not yet read by the application.
-    rx: [RX_BUFFER]u8 = undefined,
+    /// Received in order and not yet read.
+    rx: []u8,
+    rx_head: usize = 0,
     rx_len: usize = 0,
-
-    /// The last segment sent, kept for retransmission.
-    tx: [TX_BUFFER]u8 = undefined,
+    /// Written by the user from snd_una on: sent but unacknowledged, then
+    /// not yet sent.
+    tx: []u8,
+    tx_head: usize = 0,
     tx_len: usize = 0,
-    tx_seq: u32 = 0,
-    tx_flags: u8 = 0,
-    tx_time: u64 = 0,
-    retries: u32 = 0,
 
-    peer_closed: bool = false,
-    reset: bool = false,
+    /// No more data will be written; a FIN follows the queued bytes.
+    fin_queued: bool = false,
+    /// The FIN occupies the sequence number before snd_nxt.
+    fin_sent: bool = false,
+    peer_fin: bool = false,
+    /// Why the connection failed, for the user to collect once.
+    failure: ?Error = null,
+
+    rto_us: u64 = INITIAL_RTO_US,
+    /// When to retransmit (or probe a zero window); 0 when idle.
+    retransmit_at: u64 = 0,
+    retries: u32 = 0,
+    /// TIME_WAIT's end, and a detached FIN_WAIT_2's deadline.
+    deadline: u64 = 0,
+    last_heard: u64 = 0,
+    keepalive: bool = false,
+    keepalive_sent: u32 = 0,
+    keepalive_at: u64 = 0,
+
+    /// In use by a socket or a legacy slot; the timers free it otherwise
+    /// once it is closed.
+    attached: bool = true,
+    /// Woken on every change: the waiting socket's channel, and its
+    /// readiness source.
+    wake_channel: usize = 0,
+    source: ?*readiness.Source = null,
+
+    pub fn failureError(self: *const Tcb) ?Error {
+        return self.failure;
+    }
 };
 
-var conns: [MAX_CONNECTIONS]Tcb = [_]Tcb{.{}} ** MAX_CONNECTIONS;
+var connections: ?*Tcb = null;
 var next_port: u16 = 32768;
-var isn_counter: u32 = 0x1234_5678;
 
 // ── Sequence arithmetic ─────────────────────────────────────────────────────
 
-/// True if `a` is at or after `b` in sequence space. Subtracting and reading
-/// the result as signed is what makes this correct across the wrap point.
 inline fn seqGE(a: u32, b: u32) bool {
     return @as(i32, @bitCast(a -% b)) >= 0;
 }
 
 inline fn seqGT(a: u32, b: u32) bool {
     return @as(i32, @bitCast(a -% b)) > 0;
+}
+
+inline fn seqLE(a: u32, b: u32) bool {
+    return seqGE(b, a);
 }
 
 // ── Header helpers ──────────────────────────────────────────────────────────
@@ -134,8 +194,8 @@ inline fn be32(buf: []const u8, off: usize) u32 {
         (@as(u32, buf[off + 2]) << 8) | buf[off + 3];
 }
 
-/// Same pseudo-header as UDP: addresses and protocol are covered so a segment
-/// delivered to the wrong host fails rather than being accepted.
+/// The one's-complement sum over the pseudo-header and segment. Sending,
+/// it is the checksum to store; receiving, a valid segment sums to zero.
 fn tcpChecksum(src: net.Ipv4Addr, dst: net.Ipv4Addr, seg: []const u8) u16 {
     var sum: u32 = 0;
     sum += (@as(u32, src[0]) << 8) | src[1];
@@ -155,67 +215,151 @@ fn tcpChecksum(src: net.Ipv4Addr, dst: net.Ipv4Addr, seg: []const u8) u16 {
     return @truncate(~sum);
 }
 
-fn transmit(c: *Tcb, flags: u8, seq: u32, payload: []const u8) void {
-    var seg: [20 + MSS]u8 = undefined;
+// ── Notification ────────────────────────────────────────────────────────────
 
+fn changed(c: *Tcb) void {
+    if (c.wake_channel != 0) sched.wakeChannel(c.wake_channel);
+    if (c.source) |source| readiness.notify(source);
+}
+
+// ── Output ──────────────────────────────────────────────────────────────────
+
+fn windowToAdvertise(c: *const Tcb) usize {
+    return @min(c.rx.len - c.rx_len, MAX_WINDOW);
+}
+
+/// Send one segment: `flags`, sequence number `seq`, and `length` bytes of
+/// the send ring starting `offset` bytes after snd_una. A SYN carries the
+/// MSS option.
+fn transmit(c: *Tcb, flags: u8, seq: u32, offset: usize, length: usize) void {
+    var seg: [24 + MSS]u8 = undefined;
+    const header: usize = if (flags & FLAG_SYN != 0) 24 else 20;
     putBe16(&seg, 0, c.local_port);
     putBe16(&seg, 2, c.remote_port);
     putBe32(&seg, 4, seq);
     putBe32(&seg, 8, if (flags & FLAG_ACK != 0) c.rcv_nxt else 0);
-    seg[12] = 5 << 4; // data offset: 5 words, no options
+    seg[12] = @intCast((header / 4) << 4);
     seg[13] = flags;
-    putBe16(&seg, 14, @intCast(RX_BUFFER - c.rx_len)); // advertised window
-    putBe16(&seg, 16, 0); // checksum
-    putBe16(&seg, 18, 0); // urgent pointer
-
-    const n = @min(payload.len, MSS);
-    @memcpy(seg[20 .. 20 + n], payload[0..n]);
-    const total = 20 + n;
-
-    const sum = tcpChecksum(net.local_ip, c.remote_ip, seg[0..total]);
-    putBe16(&seg, 16, sum);
-
-    // An unresolved next hop is re-requested; retransmission covers the loss.
+    const window = windowToAdvertise(c);
+    c.advertised = window;
+    putBe16(&seg, 14, @intCast(window));
+    putBe16(&seg, 16, 0);
+    putBe16(&seg, 18, 0);
+    if (header == 24) {
+        seg[20] = 2; // MSS
+        seg[21] = 4;
+        putBe16(&seg, 22, MSS);
+    }
+    var copied: usize = 0;
+    while (copied < length) {
+        const at = (c.tx_head + offset + copied) % c.tx.len;
+        const run = @min(length - copied, c.tx.len - at);
+        @memcpy(seg[header + copied .. header + copied + run], c.tx[at .. at + run]);
+        copied += run;
+    }
+    const total = header + length;
+    putBe16(&seg, 16, tcpChecksum(net.local_ip, c.remote_ip, seg[0..total]));
+    // An unresolved next hop is queued behind its ARP request (net.zig).
     net.sendRawLocked(c.remote_ip, PROTO_TCP, seg[0..total]) catch {};
 }
 
-/// Send and remember, so a lost segment can be sent again.
-fn transmitTracked(c: *Tcb, flags: u8, payload: []const u8) void {
-    const n = @min(payload.len, @min(MSS, TX_BUFFER));
-    @memcpy(c.tx[0..n], payload[0..n]);
-    c.tx_len = n;
-    c.tx_seq = c.snd_nxt;
-    c.tx_flags = flags;
-    c.tx_time = tsc.microsSinceBoot();
-    c.retries = 0;
-
-    transmit(c, flags, c.snd_nxt, payload[0..n]);
-
-    // SYN and FIN each consume one sequence number even with no data.
-    var consumed: u32 = @intCast(n);
-    if (flags & FLAG_SYN != 0) consumed += 1;
-    if (flags & FLAG_FIN != 0) consumed += 1;
-    c.snd_nxt +%= consumed;
+fn sendAck(c: *Tcb) void {
+    transmit(c, FLAG_ACK, c.snd_nxt, 0, 0);
 }
 
-fn maybeRetransmit(c: *Tcb) void {
-    if (c.tx_len == 0 and c.tx_flags & (FLAG_SYN | FLAG_FIN) == 0) return;
-    if (seqGE(c.snd_una, c.snd_nxt)) return; // everything acknowledged
+/// A reset for a segment that matched no connection (RFC 9293 3.10.7.1).
+fn sendResetFor(src_ip: net.Ipv4Addr, src_port: u16, dst_port: u16, seq: u32, ack: u32, flags: u8, length: u32) void {
+    var seg: [20]u8 = undefined;
+    putBe16(&seg, 0, dst_port);
+    putBe16(&seg, 2, src_port);
+    if (flags & FLAG_ACK != 0) {
+        putBe32(&seg, 4, ack);
+        putBe32(&seg, 8, 0);
+        seg[13] = FLAG_RST;
+    } else {
+        var consumed = length;
+        if (flags & FLAG_SYN != 0) consumed += 1;
+        if (flags & FLAG_FIN != 0) consumed += 1;
+        putBe32(&seg, 4, 0);
+        putBe32(&seg, 8, seq +% consumed);
+        seg[13] = FLAG_RST | FLAG_ACK;
+    }
+    seg[12] = 5 << 4;
+    putBe16(&seg, 14, 0);
+    putBe16(&seg, 16, 0);
+    putBe16(&seg, 18, 0);
+    putBe16(&seg, 16, tcpChecksum(net.local_ip, src_ip, &seg));
+    net.sendRawLocked(src_ip, PROTO_TCP, &seg) catch {};
+}
 
+fn armRetransmit(c: *Tcb, now: u64) void {
+    if (c.retransmit_at == 0) c.retransmit_at = now + c.rto_us;
+}
+
+/// Bytes sent and unacknowledged, not counting the FIN.
+fn sentData(c: *const Tcb) usize {
+    const in_flight: usize = c.snd_nxt -% c.snd_una;
+    return in_flight - @intFromBool(c.fin_sent);
+}
+
+/// Send what the peer's window allows, then the FIN once the data is out.
+/// `probe` lets one byte through a zero window.
+fn output(c: *Tcb, probe: bool) void {
+    switch (c.state) {
+        .established, .close_wait, .fin_wait_1, .last_ack, .closing => {},
+        else => return,
+    }
     const now = tsc.microsSinceBoot();
-    if (now - c.tx_time < RETRANSMIT_US) return;
-    if (c.retries >= MAX_RETRIES) return;
-
-    c.retries += 1;
-    c.tx_time = now;
-    transmit(c, c.tx_flags, c.tx_seq, c.tx[0..c.tx_len]);
+    const mss: usize = @min(c.peer_mss, MSS);
+    var allow_probe = probe;
+    while (!c.fin_sent) {
+        const sent = sentData(c);
+        const unsent = c.tx_len - sent;
+        if (unsent == 0) break;
+        const in_flight: usize = c.snd_nxt -% c.snd_una;
+        var usable: usize = if (c.snd_wnd > in_flight) c.snd_wnd - in_flight else 0;
+        if (usable == 0 and allow_probe and in_flight == 0) {
+            usable = 1;
+            allow_probe = false;
+        }
+        if (usable == 0) {
+            // Nothing in flight to be acknowledged: the persist timer asks
+            // again when the window may have opened.
+            armRetransmit(c, now);
+            return;
+        }
+        const n = @min(unsent, usable, mss);
+        transmit(c, FLAG_ACK | FLAG_PSH, c.snd_nxt, sent, n);
+        c.snd_nxt +%= @intCast(n);
+        armRetransmit(c, now);
+    }
+    if (c.fin_queued and !c.fin_sent and sentData(c) == c.tx_len) {
+        transmit(c, FLAG_ACK | FLAG_FIN, c.snd_nxt, 0, 0);
+        c.snd_nxt +%= 1;
+        c.fin_sent = true;
+        c.state = switch (c.state) {
+            .established => .fin_wait_1,
+            .close_wait => .last_ack,
+            else => c.state,
+        };
+        armRetransmit(c, now);
+    }
 }
 
-// ── Receive ─────────────────────────────────────────────────────────────────
+/// The connection is over: tell whoever uses it why.
+fn fail(c: *Tcb, why: Error) void {
+    if (c.failure == null) c.failure = why;
+    c.state = .closed;
+    c.retransmit_at = 0;
+    changed(c);
+}
+
+// ── Input ───────────────────────────────────────────────────────────────────
 
 fn findConn(local_port: u16, remote_ip: net.Ipv4Addr, remote_port: u16) ?*Tcb {
-    for (&conns) |*c| {
-        if (!c.used) continue;
+    var cursor = connections;
+    while (cursor) |c| : (cursor = c.next) {
+        if (c.state == .closed) continue;
         if (c.local_port != local_port or c.remote_port != remote_port) continue;
         if (!std.mem.eql(u8, &c.remote_ip, &remote_ip)) continue;
         return c;
@@ -223,8 +367,48 @@ fn findConn(local_port: u16, remote_ip: net.Ipv4Addr, remote_port: u16) ?*Tcb {
     return null;
 }
 
+fn parseMss(options: []const u8) ?u16 {
+    var i: usize = 0;
+    while (i < options.len) {
+        const kind = options[i];
+        if (kind == 0) break;
+        if (kind == 1) {
+            i += 1;
+            continue;
+        }
+        if (i + 1 >= options.len) break;
+        const len = options[i + 1];
+        if (len < 2 or i + len > options.len) break;
+        if (kind == 2 and len == 4) return be16(options, i + 2);
+        i += len;
+    }
+    return null;
+}
+
+/// Drop `count` acknowledged bytes from the front of the send ring.
+fn consumeSent(c: *Tcb, count: usize) void {
+    c.tx_head = (c.tx_head + count) % c.tx.len;
+    c.tx_len -= count;
+}
+
+fn appendReceived(c: *Tcb, data: []const u8) usize {
+    const space = c.rx.len - c.rx_len;
+    const n = @min(data.len, space);
+    var copied: usize = 0;
+    while (copied < n) {
+        const at = (c.rx_head + c.rx_len + copied) % c.rx.len;
+        const run = @min(n - copied, c.rx.len - at);
+        @memcpy(c.rx[at .. at + run], data[copied .. copied + run]);
+        copied += run;
+    }
+    c.rx_len += n;
+    return n;
+}
+
+/// A segment for this host. Caller holds the network lock.
 pub fn input(segment: []const u8, src_ip: net.Ipv4Addr) void {
     if (segment.len < 20) return;
+    if (tcpChecksum(src_ip, net.local_ip, segment) != 0) return;
 
     const src_port = be16(segment, 0);
     const dst_port = be16(segment, 2);
@@ -232,282 +416,562 @@ pub fn input(segment: []const u8, src_ip: net.Ipv4Addr) void {
     const ack = be32(segment, 8);
     const offset: usize = @as(usize, segment[12] >> 4) * 4;
     const flags = segment[13];
-
+    const window = be16(segment, 14);
     if (offset < 20 or offset > segment.len) return;
     const data = segment[offset..];
 
-    const c = findConn(dst_port, src_ip, src_port) orelse return;
+    const c = findConn(dst_port, src_ip, src_port) orelse {
+        if (flags & FLAG_RST == 0) sendResetFor(src_ip, src_port, dst_port, seq, ack, flags, @intCast(data.len));
+        return;
+    };
+    const now = tsc.microsSinceBoot();
+    c.last_heard = now;
+    c.keepalive_sent = 0;
+    c.keepalive_at = 0;
 
     if (flags & FLAG_RST != 0) {
-        c.reset = true;
-        c.state = .closed;
+        switch (c.state) {
+            .syn_sent => if (flags & FLAG_ACK != 0 and ack == c.snd_nxt) fail(c, Error.Refused),
+            .time_wait => fail(c, Error.Reset),
+            // Only a reset at the expected sequence number counts, so a
+            // blind reset needs the right guess (RFC 5961, simplified).
+            else => if (seq == c.rcv_nxt) fail(c, Error.Reset),
+        }
         return;
     }
 
-    switch (c.state) {
-        .syn_sent => {
-            if (flags & FLAG_SYN == 0 or flags & FLAG_ACK == 0) return;
-            if (ack != c.snd_nxt) return;
-
-            c.rcv_nxt = seq +% 1;
-            c.snd_una = ack;
-            c.state = .established;
-            c.tx_len = 0;
-            c.tx_flags = 0;
-            transmit(c, FLAG_ACK, c.snd_nxt, &.{});
-        },
-
-        .established, .fin_wait_1, .fin_wait_2 => {
-            if (flags & FLAG_ACK != 0 and seqGT(ack, c.snd_una)) {
-                c.snd_una = ack;
-                c.tx_len = 0;
-            }
-
-            // In-order data only. A segment ahead of the window is dropped and
-            // the peer will send it again; one behind is a duplicate.
-            if (data.len > 0 and seq == c.rcv_nxt) {
-                const space = RX_BUFFER - c.rx_len;
-                const n = @min(data.len, space);
-                @memcpy(c.rx[c.rx_len .. c.rx_len + n], data[0..n]);
-                c.rx_len += n;
-                c.rcv_nxt +%= @intCast(n);
-                transmit(c, FLAG_ACK, c.snd_nxt, &.{});
-            } else if (data.len > 0) {
-                // Re-acknowledge what we do have, so the peer resends.
-                transmit(c, FLAG_ACK, c.snd_nxt, &.{});
-            }
-
-            if (flags & FLAG_FIN != 0 and seq +% @as(u32, @intCast(data.len)) == c.rcv_nxt) {
-                c.rcv_nxt +%= 1;
-                c.peer_closed = true;
-                transmit(c, FLAG_ACK, c.snd_nxt, &.{});
-
-                c.state = switch (c.state) {
-                    .established => .close_wait,
-                    .fin_wait_1, .fin_wait_2 => .time_wait,
-                    else => c.state,
-                };
-            } else if (c.state == .fin_wait_1 and seqGE(c.snd_una, c.snd_nxt)) {
-                c.state = .fin_wait_2;
-            }
-        },
-
-        .last_ack => {
-            if (flags & FLAG_ACK != 0) c.state = .closed;
-        },
-
-        else => {},
+    if (c.state == .syn_sent) {
+        if (flags & FLAG_SYN == 0 or flags & FLAG_ACK == 0 or ack != c.snd_nxt) {
+            if (flags & FLAG_ACK != 0 and ack != c.snd_nxt) sendResetFor(src_ip, src_port, dst_port, seq, ack, flags, 0);
+            return;
+        }
+        c.rcv_nxt = seq +% 1;
+        c.snd_una = ack;
+        c.snd_wnd = window;
+        c.peer_mss = parseMss(segment[20..offset]) orelse DEFAULT_PEER_MSS;
+        c.state = .established;
+        c.retransmit_at = 0;
+        c.retries = 0;
+        c.rto_us = INITIAL_RTO_US;
+        sendAck(c);
+        output(c, false);
+        changed(c);
+        return;
     }
+
+    var notify = false;
+    if (flags & FLAG_ACK != 0 and seqGT(ack, c.snd_una) and seqLE(ack, c.snd_nxt)) {
+        var acked: usize = ack -% c.snd_una;
+        const fin_acked = c.fin_sent and ack == c.snd_nxt;
+        if (fin_acked) acked -= 1;
+        consumeSent(c, acked);
+        c.snd_una = ack;
+        c.retries = 0;
+        c.rto_us = INITIAL_RTO_US;
+        c.retransmit_at = if (c.snd_una != c.snd_nxt) now + c.rto_us else 0;
+        notify = true;
+        if (fin_acked) {
+            c.state = switch (c.state) {
+                .fin_wait_1 => if (c.peer_fin) .time_wait else .fin_wait_2,
+                .closing => .time_wait,
+                .last_ack => .closed,
+                else => c.state,
+            };
+            if (c.state == .time_wait) c.deadline = now + TIME_WAIT_US;
+            if (c.state == .fin_wait_2 and !c.attached) c.deadline = now + ORPHAN_FIN_WAIT_US;
+        }
+    }
+    if (flags & FLAG_ACK != 0 and seqGE(ack, c.snd_una)) {
+        const opened = c.snd_wnd == 0 and window > 0;
+        c.snd_wnd = window;
+        if (opened) notify = true;
+    }
+
+    if (data.len > 0) {
+        switch (c.state) {
+            .established, .fin_wait_1, .fin_wait_2 => if (seq == c.rcv_nxt) {
+                const taken = appendReceived(c, data);
+                c.rcv_nxt +%= @intCast(taken);
+                if (taken > 0) notify = true;
+            },
+            else => {},
+        }
+        // Acknowledge everything, in order or not, so the peer resends what
+        // is missing.
+        sendAck(c);
+    }
+
+    if (flags & FLAG_FIN != 0 and !c.peer_fin and seq +% @as(u32, @intCast(data.len)) == c.rcv_nxt) {
+        c.rcv_nxt +%= 1;
+        c.peer_fin = true;
+        sendAck(c);
+        notify = true;
+        c.state = switch (c.state) {
+            .established => .close_wait,
+            .fin_wait_1 => if (c.fin_sent and c.snd_una == c.snd_nxt) .time_wait else .closing,
+            .fin_wait_2 => .time_wait,
+            else => c.state,
+        };
+        if (c.state == .time_wait) c.deadline = now + TIME_WAIT_US;
+    } else if (flags & FLAG_FIN != 0 and c.state == .time_wait) {
+        sendAck(c); // our last ACK was lost
+    }
+
+    output(c, false);
+    if (notify) changed(c);
 }
 
-// ── Public API ──────────────────────────────────────────────────────────────
+// ── Timers ──────────────────────────────────────────────────────────────────
 
+fn freeTcb(c: *Tcb) void {
+    heap.free(c.rx.ptr);
+    heap.free(c.tx.ptr);
+    heap.destroy(c);
+}
+
+/// Retransmissions, zero-window probes, TIME_WAIT, keepalive, and freeing
+/// detached connections that are done. Returns whether any connection is
+/// still active, so the network thread knows how often to call again.
 /// Caller holds the network lock.
-fn allocateLocked(owner_tid: u32) ?*Tcb {
-    for (&conns) |*c| {
-        if (c.used) continue;
-        const generation = c.generation +% 1;
-        c.* = .{ .used = true, .owner_tid = owner_tid, .generation = generation };
-        return c;
+pub fn timersLocked() bool {
+    const now = tsc.microsSinceBoot();
+    var active = false;
+    var link = &connections;
+    while (link.*) |c| {
+        if (c.state == .closed) {
+            if (!c.attached) {
+                link.* = c.next;
+                freeTcb(c);
+                continue;
+            }
+            link = &c.next;
+            continue;
+        }
+        active = true;
+        if (c.retransmit_at != 0 and now >= c.retransmit_at) retransmit(c, now);
+        if ((c.state == .time_wait or (c.state == .fin_wait_2 and !c.attached)) and c.deadline != 0 and now >= c.deadline) {
+            c.state = .closed;
+            changed(c);
+        }
+        if (c.keepalive and c.state == .established) keepalive(c, now);
+        link = &c.next;
+    }
+    return active;
+}
+
+fn retransmit(c: *Tcb, now: u64) void {
+    c.retransmit_at = 0;
+    if (c.state == .syn_sent) {
+        if (c.retries >= MAX_SYN_RETRIES) return fail(c, Error.Timeout);
+        c.retries += 1;
+        c.rto_us = @min(c.rto_us * 2, MAX_RTO_US);
+        transmit(c, FLAG_SYN, c.snd_una, 0, 0);
+        c.retransmit_at = now + c.rto_us;
+        return;
+    }
+    if (c.snd_una == c.snd_nxt) {
+        // Nothing in flight: the persist timer for a zero window.
+        output(c, true);
+        return;
+    }
+    if (c.retries >= MAX_RETRIES) {
+        transmit(c, FLAG_RST | FLAG_ACK, c.snd_nxt, 0, 0);
+        return fail(c, Error.Timeout);
+    }
+    c.retries += 1;
+    c.rto_us = @min(c.rto_us * 2, MAX_RTO_US);
+    // Go back to the oldest unacknowledged byte and send again from there;
+    // an unacknowledged FIN goes out again after the data, and the state
+    // (FIN_WAIT_1, CLOSING or LAST_ACK) stays as it is.
+    c.snd_nxt = c.snd_una;
+    c.fin_sent = false;
+    output(c, true);
+    if (c.retransmit_at == 0) c.retransmit_at = now + c.rto_us;
+}
+
+fn keepalive(c: *Tcb, now: u64) void {
+    if (c.keepalive_at == 0) {
+        c.keepalive_at = @max(c.last_heard, 1) + KEEPALIVE_IDLE_US;
+        return;
+    }
+    if (now < c.keepalive_at) return;
+    if (c.keepalive_sent >= KEEPALIVE_PROBES) {
+        transmit(c, FLAG_RST | FLAG_ACK, c.snd_nxt, 0, 0);
+        return fail(c, Error.Timeout);
+    }
+    // A segment one byte before snd_una: the peer must acknowledge it.
+    transmit(c, FLAG_ACK, c.snd_una -% 1, 0, 0);
+    c.keepalive_sent += 1;
+    c.keepalive_at = now + KEEPALIVE_INTERVAL_US;
+}
+
+// ── For sockets ─────────────────────────────────────────────────────────────
+
+/// A new, closed connection with its buffers. Not yet on the list.
+pub fn create() Error!*Tcb {
+    const rx = heap.alloc(RX_CAPACITY) catch return Error.OutOfMemory;
+    const tx = heap.alloc(TX_CAPACITY) catch {
+        heap.free(rx);
+        return Error.OutOfMemory;
+    };
+    const c = heap.create(Tcb) catch {
+        heap.free(rx);
+        heap.free(tx);
+        return Error.OutOfMemory;
+    };
+    c.* = .{ .rx = rx[0..RX_CAPACITY], .tx = tx[0..TX_CAPACITY] };
+    return c;
+}
+
+/// Free a connection that never joined the list.
+pub fn destroyUnused(c: *Tcb) void {
+    freeTcb(c);
+}
+
+fn portInUseLocked(port: u16) bool {
+    var cursor = connections;
+    while (cursor) |c| : (cursor = c.next) {
+        if (c.state != .closed and c.local_port == port) return true;
+    }
+    return false;
+}
+
+/// An ephemeral port no live connection uses (32768-60999, as Linux).
+pub fn ephemeralPortLocked() ?u16 {
+    var tries: usize = 0;
+    while (tries < 28232) : (tries += 1) {
+        const port = next_port;
+        next_port = if (next_port >= 60999) 32768 else next_port + 1;
+        if (!portInUseLocked(port)) return port;
     }
     return null;
 }
 
-pub fn indexOf(c: *Tcb) usize {
-    return (@intFromPtr(c) - @intFromPtr(&conns[0])) / @sizeOf(Tcb);
+pub fn portBusyLocked(port: u16) bool {
+    return portInUseLocked(port);
 }
 
+/// Active open: send the SYN. Completion arrives through `input`.
+/// `local_port` 0 picks an ephemeral port. Caller holds the network lock.
+pub fn connectLocked(c: *Tcb, dst_ip: net.Ipv4Addr, dst_port: u16, local_port: u16) Error!void {
+    const port = if (local_port != 0) local_port else ephemeralPortLocked() orelse return Error.AddressInUse;
+    var iss_bytes: [4]u8 = undefined;
+    random.fill(&iss_bytes, .insecure) catch {};
+    const iss = std.mem.readInt(u32, &iss_bytes, .little);
+    c.local_port = port;
+    c.remote_ip = dst_ip;
+    c.remote_port = dst_port;
+    c.snd_una = iss;
+    c.snd_nxt = iss +% 1;
+    c.state = .syn_sent;
+    c.rto_us = SYN_RTO_US;
+    c.last_heard = tsc.microsSinceBoot();
+    c.next = connections;
+    connections = c;
+    transmit(c, FLAG_SYN, iss, 0, 0);
+    c.retransmit_at = tsc.microsSinceBoot() + c.rto_us;
+}
+
+/// Queue bytes to send. Returns how many fit (0 when the ring is full).
 /// Caller holds the network lock.
-fn getLocked(index: usize) ?*Tcb {
-    if (index >= MAX_CONNECTIONS or !conns[index].used) return null;
-    return &conns[index];
+pub fn writeLocked(c: *Tcb, data: []const u8) usize {
+    const space = c.tx.len - c.tx_len;
+    const n = @min(space, data.len);
+    var copied: usize = 0;
+    while (copied < n) {
+        const at = (c.tx_head + c.tx_len + copied) % c.tx.len;
+        const run = @min(n - copied, c.tx.len - at);
+        @memcpy(c.tx[at .. at + run], data[copied .. copied + run]);
+        copied += run;
+    }
+    c.tx_len += n;
+    if (n > 0) output(c, false);
+    return n;
 }
 
-/// The same connection a wait started with, not a reuse of its slot.
-/// Caller holds the network lock.
-fn liveLocked(index: usize, generation: u32) ?*Tcb {
-    const c = getLocked(index) orelse return null;
-    return if (c.generation == generation) c else null;
+pub fn sendSpaceLocked(c: *const Tcb) usize {
+    return c.tx.len - c.tx_len;
 }
 
-pub fn ownedBy(index: usize, owner_tid: u32) bool {
-    const irq = net.acquire();
-    defer net.release(irq);
-    const c = getLocked(index) orelse return false;
-    return c.owner_tid == owner_tid;
+/// Copy received bytes out; `consume` false peeks. Reading enough to reopen
+/// a small window sends a window update. Caller holds the network lock.
+pub fn readLocked(c: *Tcb, out: []u8, consume: bool) usize {
+    const n = @min(out.len, c.rx_len);
+    var copied: usize = 0;
+    while (copied < n) {
+        const at = (c.rx_head + copied) % c.rx.len;
+        const run = @min(n - copied, c.rx.len - at);
+        @memcpy(out[copied .. copied + run], c.rx[at .. at + run]);
+        copied += run;
+    }
+    if (consume and n > 0) {
+        c.rx_head = (c.rx_head + n) % c.rx.len;
+        c.rx_len -= n;
+        const now_open = windowToAdvertise(c);
+        if (c.state != .closed and c.state != .syn_sent and c.advertised < 2 * @as(usize, MSS) and now_open >= 2 * @as(usize, MSS))
+            sendAck(c);
+    }
+    return n;
 }
 
-/// Exit cannot spend 500 ms per connection on graceful FIN handshakes.
-/// Stop retransmissions and release every connection owned by this process.
-pub fn abortOwnedBy(owner_tid: u32) void {
-    if (owner_tid == 0) return;
-    const irq = net.acquire();
-    defer net.release(irq);
-    for (&conns) |*c| {
-        if (c.used and c.owner_tid == owner_tid) {
-            c.used = false;
+pub fn pendingLocked(c: *const Tcb) usize {
+    return c.rx_len;
+}
+
+/// No more data from this side: a FIN follows what is queued.
+pub fn shutdownWriteLocked(c: *Tcb) void {
+    if (c.fin_queued) return;
+    c.fin_queued = true;
+    output(c, false);
+    changed(c);
+}
+
+/// Abandon the connection with a reset.
+pub fn abortLocked(c: *Tcb) void {
+    switch (c.state) {
+        .closed => {},
+        .syn_sent => c.state = .closed,
+        else => {
+            transmit(c, FLAG_RST | FLAG_ACK, c.snd_nxt, 0, 0);
             c.state = .closed;
-        }
+        },
+    }
+    c.retransmit_at = 0;
+    changed(c);
+}
+
+/// The user is gone. Unread data or an unfinished open end the connection
+/// with a reset, as Linux does; otherwise it closes gracefully in the
+/// background and the timers free it. Caller holds the network lock.
+pub fn detachLocked(c: *Tcb) void {
+    c.attached = false;
+    c.source = null;
+    c.wake_channel = 0;
+    switch (c.state) {
+        .closed => {},
+        .syn_sent => c.state = .closed,
+        else => if (c.rx_len > 0) abortLocked(c) else {
+            c.fin_queued = true;
+            output(c, false);
+            if (c.state == .fin_wait_2) c.deadline = tsc.microsSinceBoot() + ORPHAN_FIN_WAIT_US;
+        },
     }
 }
 
-/// Active open. Waits until the handshake completes or times out.
+pub const Readiness = struct { readable: bool, writable: bool, failed: bool, hangup: bool, read_hangup: bool };
+
+pub fn pollLocked(c: *const Tcb) Readiness {
+    const connected = switch (c.state) {
+        .established, .close_wait, .fin_wait_1, .fin_wait_2, .closing, .last_ack, .time_wait => true,
+        else => false,
+    };
+    const failed = c.failure != null;
+    const writable_state = c.state == .established or c.state == .close_wait;
+    return .{
+        .readable = c.rx_len > 0 or c.peer_fin or failed,
+        .writable = (writable_state and !c.fin_queued and c.tx.len - c.tx_len >= 4096) or failed,
+        .failed = failed,
+        .hangup = failed or (c.peer_fin and c.fin_queued) or (!connected and c.state == .closed),
+        .read_hangup = c.peer_fin,
+    };
+}
+
+pub fn keepaliveLocked(c: *Tcb, on: bool) void {
+    c.keepalive = on;
+    c.keepalive_at = 0;
+    c.keepalive_sent = 0;
+}
+
+pub fn activeCount() usize {
+    const irq = net.acquire();
+    defer net.release(irq);
+    var n: usize = 0;
+    var cursor = connections;
+    while (cursor) |c| : (cursor = c.next) n += 1;
+    return n;
+}
+
+// ── The original native interface (syscalls 97-100) ─────────────────────────
+//
+// Programs from before BSD sockets hold small connection numbers owned by
+// their process. Each number names a connection here with a generation, so a
+// wait whose connection another thread closed notices instead of reading a
+// reused slot. Waits sleep on the connection's channel.
+
+const LEGACY_SLOTS = 16;
+const Legacy = struct { tcb: ?*Tcb = null, owner: u32 = 0, generation: u32 = 0 };
+var legacy: [LEGACY_SLOTS]Legacy = [_]Legacy{.{}} ** LEGACY_SLOTS;
+
+fn legacyLocked(index: usize, generation: ?u32) ?*Tcb {
+    if (index >= LEGACY_SLOTS) return null;
+    const slot = &legacy[index];
+    const c = slot.tcb orelse return null;
+    if (generation) |g| if (slot.generation != g) return null;
+    return c;
+}
+
+fn legacyChannel(index: usize) usize {
+    return @intFromPtr(&legacy[index]);
+}
+
+/// Wait for `ready` on a legacy connection, up to `deadline_us`. Returns
+/// false on timeout, interruption or when the slot was closed.
+fn legacyWait(index: usize, generation: u32, deadline_us: u64, comptime ready: fn (*Tcb) bool) bool {
+    while (true) {
+        sched.prepareWait(legacyChannel(index));
+        {
+            const irq = net.acquire();
+            defer net.release(irq);
+            const c = legacyLocked(index, generation) orelse {
+                sched.cancelWait();
+                return false;
+            };
+            if (ready(c)) {
+                sched.cancelWait();
+                return true;
+            }
+        }
+        const now = tsc.microsSinceBoot();
+        if (now >= deadline_us or sched.interruptPending()) {
+            sched.cancelWait();
+            return false;
+        }
+        sched.commitWaitTimeout(@max((deadline_us - now) / 1000, 1));
+    }
+}
+
+/// Active open; waits until the handshake completes or times out.
 pub fn connect(dst_ip: net.Ipv4Addr, dst_port: u16, timeout_ms: u64, owner_tid: u32) Error!usize {
     const deadline = tsc.microsSinceBoot() + timeout_ms * 1000;
-    // Warm the ARP cache so the SYN leaves at once; a failure here only
-    // delays it until retransmission.
-    _ = net.resolve(net.nextHop(dst_ip), @min(timeout_ms, 1000));
-
+    if (net.isLoopback(dst_ip)) return Error.Unreachable;
+    const c = try create();
     var index: usize = undefined;
     var generation: u32 = undefined;
     {
         const irq = net.acquire();
         defer net.release(irq);
-        const c = allocateLocked(owner_tid) orelse return Error.NoSockets;
-        c.local_port = next_port;
-        next_port +%= 1;
-        if (next_port < 32768) next_port = 32768;
-
-        c.remote_ip = dst_ip;
-        c.remote_port = dst_port;
-
-        isn_counter +%= 0x9E37_79B9;
-        c.snd_una = isn_counter;
-        c.snd_nxt = isn_counter;
-        c.state = .syn_sent;
-
-        transmitTracked(c, FLAG_SYN, &.{});
-        index = indexOf(c);
-        generation = c.generation;
+        const free = for (&legacy, 0..) |*slot, i| {
+            if (slot.tcb == null) break i;
+        } else {
+            destroyUnused(c);
+            return Error.NoSockets;
+        };
+        legacy[free] = .{ .tcb = c, .owner = owner_tid, .generation = legacy[free].generation +% 1 };
+        index = free;
+        generation = legacy[free].generation;
+        c.wake_channel = legacyChannel(free);
+        connectLocked(c, dst_ip, dst_port, 0) catch |e| {
+            legacy[free].tcb = null;
+            destroyUnused(c);
+            return e;
+        };
     }
-
-    while (true) {
-        {
-            const irq = net.acquire();
-            defer net.release(irq);
-            const c = liveLocked(index, generation) orelse return Error.NotConnected;
-            net.pollLocked();
-            maybeRetransmit(c);
-            if (c.reset) {
-                c.used = false;
-                return Error.Refused;
-            }
-            if (c.state == .established) return index;
+    const done = legacyWait(index, generation, deadline, struct {
+        fn f(t: *Tcb) bool {
+            return t.state != .syn_sent;
         }
-        if (!net.waitStep(deadline)) {
-            const irq = net.acquire();
-            defer net.release(irq);
-            if (liveLocked(index, generation)) |c| c.used = false;
-            return Error.Timeout;
-        }
-    }
+    }.f);
+    const irq = net.acquire();
+    defer net.release(irq);
+    const live = legacyLocked(index, generation) orelse return Error.NotConnected;
+    if (done and live.state == .established) return index;
+    const why = live.failure orelse Error.Timeout;
+    legacy[index].tcb = null;
+    detachLocked(live);
+    if (live.state != .closed) abortLocked(live);
+    return why;
 }
 
+pub fn ownedBy(index: usize, owner_tid: u32) bool {
+    const irq = net.acquire();
+    defer net.release(irq);
+    if (index >= LEGACY_SLOTS or legacy[index].tcb == null) return false;
+    return legacy[index].owner == owner_tid;
+}
+
+/// Queue data, waiting up to 3 s for room in the send ring.
 pub fn send(index: usize, data: []const u8) Error!usize {
     const deadline = tsc.microsSinceBoot() + 3_000_000;
     var generation: u32 = undefined;
-    var n: usize = undefined;
     {
         const irq = net.acquire();
         defer net.release(irq);
-        const c = getLocked(index) orelse return Error.NotConnected;
-        if (c.reset) return Error.Reset;
-        if (c.state != .established and c.state != .close_wait) return Error.NotConnected;
-        n = @min(data.len, MSS);
-        transmitTracked(c, FLAG_ACK | FLAG_PSH, data[0..n]);
-        generation = c.generation;
+        if (index >= LEGACY_SLOTS or legacy[index].tcb == null) return Error.NotConnected;
+        generation = legacy[index].generation;
     }
-
-    // Wait for the acknowledgement before returning, so a caller that sends in
-    // a loop cannot outrun the single retransmission slot.
     while (true) {
         {
             const irq = net.acquire();
             defer net.release(irq);
-            const c = liveLocked(index, generation) orelse return Error.NotConnected;
-            net.pollLocked();
-            maybeRetransmit(c);
-            if (c.reset) return Error.Reset;
-            if (seqGE(c.snd_una, c.snd_nxt)) return n;
+            const c = legacyLocked(index, generation) orelse return Error.NotConnected;
+            if (c.failure) |why| return why;
+            if (c.state != .established and c.state != .close_wait) return Error.NotConnected;
+            const n = writeLocked(c, data);
+            if (n > 0) return n;
         }
-        if (!net.waitStep(deadline)) return Error.Timeout;
+        if (!legacyWait(index, generation, deadline, struct {
+            fn f(t: *Tcb) bool {
+                return t.tx.len - t.tx_len > 0 or t.failure != null;
+            }
+        }.f)) return Error.Timeout;
     }
 }
 
-/// Read whatever has arrived, waiting up to `timeout_ms` for something.
+/// Read what has arrived, waiting up to `timeout_ms`; 0 at end of stream or
+/// on timeout.
 pub fn recv(index: usize, out: []u8, timeout_ms: u64) Error!usize {
     const deadline = tsc.microsSinceBoot() + timeout_ms * 1000;
-    var generation: ?u32 = null;
-    while (true) {
-        {
-            const irq = net.acquire();
-            defer net.release(irq);
-            const c = if (generation) |g| liveLocked(index, g) else getLocked(index);
-            const conn = c orelse return Error.NotConnected;
-            generation = conn.generation;
-            net.pollLocked();
-            maybeRetransmit(conn);
-
-            if (conn.rx_len > 0) {
-                const n = @min(out.len, conn.rx_len);
-                @memcpy(out[0..n], conn.rx[0..n]);
-                // Shift the remainder down. A ring would avoid the copy; at these
-                // sizes the simpler invariant is worth more than the memmove.
-                const left = conn.rx_len - n;
-                if (left > 0) std.mem.copyForwards(u8, conn.rx[0..left], conn.rx[n..conn.rx_len]);
-                conn.rx_len = left;
-                return n;
-            }
-
-            if (conn.reset) return Error.Reset;
-            if (conn.peer_closed) return 0; // orderly end of stream
-        }
-        if (!net.waitStep(deadline)) return 0;
-    }
-}
-
-pub fn close(index: usize) void {
     var generation: u32 = undefined;
     {
         const irq = net.acquire();
         defer net.release(irq);
-        const c = getLocked(index) orelse return;
-        if (c.state == .established) {
-            transmitTracked(c, FLAG_ACK | FLAG_FIN, &.{});
-            c.state = .fin_wait_1;
-        } else if (c.state == .close_wait) {
-            transmitTracked(c, FLAG_ACK | FLAG_FIN, &.{});
-            c.state = .last_ack;
-        }
-        generation = c.generation;
+        if (index >= LEGACY_SLOTS or legacy[index].tcb == null) return Error.NotConnected;
+        generation = legacy[index].generation;
     }
-
-    // Give the close a moment to complete, then release regardless. A proper
-    // TIME_WAIT holds the port for twice the segment lifetime; nothing here
-    // reuses ports fast enough for that to matter yet.
-    const deadline = tsc.microsSinceBoot() + 500_000;
-    while (true) {
-        {
-            const irq = net.acquire();
-            defer net.release(irq);
-            const c = liveLocked(index, generation) orelse return;
-            net.pollLocked();
-            if (c.state == .closed) break;
+    _ = legacyWait(index, generation, deadline, struct {
+        fn f(t: *Tcb) bool {
+            return t.rx_len > 0 or t.peer_fin or t.failure != null;
         }
-        if (!net.waitStep(deadline)) break;
-    }
-
+    }.f);
     const irq = net.acquire();
     defer net.release(irq);
-    if (liveLocked(index, generation)) |c| {
-        c.used = false;
-        c.state = .closed;
-    }
+    const c = legacyLocked(index, generation) orelse return Error.NotConnected;
+    const n = readLocked(c, out, true);
+    if (n > 0) return n;
+    if (c.failure) |why| return why;
+    return 0;
+}
+
+/// Close gracefully in the background and free the number now.
+pub fn close(index: usize) void {
+    const irq = net.acquire();
+    defer net.release(irq);
+    if (index >= LEGACY_SLOTS) return;
+    const c = legacy[index].tcb orelse return;
+    legacy[index].tcb = null;
+    sched.wakeChannel(legacyChannel(index));
+    detachLocked(c);
 }
 
 pub fn state(index: usize) State {
     const irq = net.acquire();
     defer net.release(irq);
-    const c = getLocked(index) orelse return .closed;
+    const c = legacyLocked(index, null) orelse return .closed;
     return c.state;
+}
+
+/// A process exiting cannot spend time on graceful handshakes: reset every
+/// connection it owned through the legacy numbers.
+pub fn abortOwnedBy(owner_tid: u32) void {
+    if (owner_tid == 0) return;
+    const irq = net.acquire();
+    defer net.release(irq);
+    for (&legacy, 0..) |*slot, i| {
+        const c = slot.tcb orelse continue;
+        if (slot.owner != owner_tid) continue;
+        slot.tcb = null;
+        sched.wakeChannel(legacyChannel(i));
+        abortLocked(c);
+        detachLocked(c);
+    }
 }

@@ -358,7 +358,7 @@ def main():
         g.click(330,300)
         g.until(lambda: 'files: listed /etc:' in g.log(),"Files browses System")
         g.click(520,298)
-        g.until(lambda: 'files: preview /etc/motd' in g.log(),"Files previews real text")
+        g.until(lambda: 'files: preview /etc/hosts' in g.log(),"Files previews real text")
         time.sleep(1)
         g.screenshot("09-files-preview")
         # Back closes preview first; another Back returns to the prior folder.

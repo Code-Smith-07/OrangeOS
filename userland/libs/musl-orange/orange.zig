@@ -56,6 +56,13 @@ const OR = struct {
     const sendmsg = 139;
     const recvmsg = 140;
     const shutdown = 141;
+    const inet_socket = 157;
+    const connect = 158;
+    const bind = 159;
+    const listen = 160;
+    const sockname = 161;
+    const getsockopt = 162;
+    const setsockopt = 163;
     const wait = 9;
     const chdir = 35;
     const getcwd = 36;
@@ -150,6 +157,15 @@ const SYS = struct {
     const recvmsg = 47;
     const shutdown = 48;
     const socketpair = 53;
+    const connect = 42;
+    const accept = 43;
+    const bind = 49;
+    const listen = 50;
+    const getsockname = 51;
+    const getpeername = 52;
+    const setsockopt = 54;
+    const getsockopt = 55;
+    const accept4 = 288;
     const wait4 = 61;
     const kill = 62;
     const rt_sigpending = 127;
@@ -501,10 +517,13 @@ fn vectored(nr: u64, fd: u64, vec: u64, count: u64) i64 {
 // ── Socket pairs and descriptor passing ─────────────────────────────────────
 
 const AF_UNIX = 1;
+const AF_INET = 2;
 const SOCK_TYPE_MASK: u64 = 0xf;
 const SOCK_NONBLOCK: u64 = 0o4000;
 const SOCK_CLOEXEC: u64 = 0o2000000;
 const MSG_DONTWAIT: u64 = 0x40;
+const MSG_PEEK: u64 = 0x2;
+const MSG_TRUNC_REQUEST: u64 = 0x20;
 const MSG_NOSIGNAL: u64 = 0x4000;
 const MSG_CMSG_CLOEXEC: u64 = 0x40000000;
 const MSG_CTRUNC: u32 = 0x8;
@@ -528,8 +547,36 @@ const MsgHeader = extern struct {
 /// struct cmsghdr, then data aligned to 8 bytes.
 const CMSG_HEADER = 16;
 
-/// The native message (see the kernel's sendmsg/recvmsg).
-const NativeMessage = extern struct { iov: u64, iov_count: u64, fds: u64, fd_count: u32, flags: u32 };
+/// The native message (see the kernel's sendmsg/recvmsg). Addresses are in
+/// Linux's sockaddr_in layout, which the kernel takes as it is.
+const NativeMessage = extern struct {
+    iov: u64,
+    iov_count: u64,
+    fds: u64,
+    fd_count: u32,
+    flags: u32,
+    name: u64 = 0,
+    name_len: u32 = 0,
+    reserved: u32 = 0,
+};
+
+/// socket(): AF_INET stream (TCP) and datagram (UDP) sockets. IPv6 and named
+/// local sockets are not offered (socketpair covers local ones).
+fn socket(domain: u64, kind: u64, protocol: u64) i64 {
+    if (domain != AF_INET) return err(97); // EAFNOSUPPORT
+    const base = kind & SOCK_TYPE_MASK;
+    if (kind & ~(SOCK_TYPE_MASK | SOCK_NONBLOCK | SOCK_CLOEXEC) != 0) return err(E.INVAL);
+    const flags = (if (kind & SOCK_NONBLOCK != 0) FD_NONBLOCK else 0) | (if (kind & SOCK_CLOEXEC != 0) FD_CLOEXEC else 0);
+    return raw(OR.inet_socket, domain, base, protocol, flags, 0);
+}
+
+/// accept(): nothing can listen, so nothing can be accepted.
+fn accept(fd: u64) i64 {
+    var status: Status = undefined;
+    const r = raw2(OR.fstat, fd, @intFromPtr(&status));
+    if (r < 0) return r;
+    return if (status.kind == 5) err(E.INVAL) else err(88); // ENOTSOCK
+}
 
 fn socketpair(domain: u64, kind: u64, protocol: u64, out: u64) i64 {
     if (domain != AF_UNIX) return err(97); // EAFNOSUPPORT
@@ -543,13 +590,16 @@ fn socketpair(domain: u64, kind: u64, protocol: u64, out: u64) i64 {
 
 fn messageFlags(flags: u64, allowed: u64) ?u64 {
     if (flags & ~(allowed | MSG_NOSIGNAL) != 0) return null;
-    return (if (flags & MSG_DONTWAIT != 0) @as(u64, 1) else 0) | (if (flags & MSG_CMSG_CLOEXEC != 0) @as(u64, 2) else 0);
+    return (if (flags & MSG_DONTWAIT != 0) @as(u64, 1) else 0) |
+        (if (flags & MSG_CMSG_CLOEXEC != 0) @as(u64, 2) else 0) |
+        (if (flags & MSG_PEEK != 0) @as(u64, 4) else 0) |
+        (if (flags & MSG_NOSIGNAL != 0) @as(u64, 8) else 0) |
+        (if (flags & MSG_TRUNC_REQUEST != 0) @as(u64, 16) else 0);
 }
 
 fn sendMessage(fd: u64, header_address: u64, flags: u64) i64 {
     const native_flags = messageFlags(flags, MSG_DONTWAIT) orelse return err(E.OPNOTSUPP);
     const header: *const MsgHeader = @ptrFromInt(header_address);
-    if (header.name != 0) return err(106); // EISCONN
     var rights: [MAX_RIGHTS]i32 = undefined;
     var count: usize = 0;
     var offset: u64 = 0;
@@ -567,12 +617,12 @@ fn sendMessage(fd: u64, header_address: u64, flags: u64) i64 {
         count += n;
         offset += std.mem.alignForward(u64, length, 8);
     }
-    var message = NativeMessage{ .iov = header.iov, .iov_count = header.iovlen, .fds = @intFromPtr(&rights), .fd_count = @intCast(count), .flags = 0 };
+    var message = NativeMessage{ .iov = header.iov, .iov_count = header.iovlen, .fds = @intFromPtr(&rights), .fd_count = @intCast(count), .flags = 0, .name = header.name, .name_len = header.namelen };
     return raw3(OR.sendmsg, fd, @intFromPtr(&message), native_flags);
 }
 
 fn receiveMessage(fd: u64, header_address: u64, flags: u64) i64 {
-    const native_flags = messageFlags(flags, MSG_DONTWAIT | MSG_CMSG_CLOEXEC) orelse return err(E.OPNOTSUPP);
+    const native_flags = messageFlags(flags, MSG_DONTWAIT | MSG_CMSG_CLOEXEC | MSG_PEEK | MSG_TRUNC_REQUEST) orelse return err(E.OPNOTSUPP);
     const header: *MsgHeader = @ptrFromInt(header_address);
     // Room for descriptors in the caller's control buffer.
     const room: usize = if (header.control != 0 and header.controllen > CMSG_HEADER)
@@ -580,9 +630,10 @@ fn receiveMessage(fd: u64, header_address: u64, flags: u64) i64 {
     else
         0;
     var rights: [MAX_RIGHTS]i32 = undefined;
-    var message = NativeMessage{ .iov = header.iov, .iov_count = header.iovlen, .fds = @intFromPtr(&rights), .fd_count = @intCast(room), .flags = 0 };
+    var message = NativeMessage{ .iov = header.iov, .iov_count = header.iovlen, .fds = @intFromPtr(&rights), .fd_count = @intCast(room), .flags = 0, .name = header.name, .name_len = header.namelen };
     const r = raw3(OR.recvmsg, fd, @intFromPtr(&message), native_flags);
     if (r < 0) return r;
+    if (header.name != 0) header.namelen = message.name_len;
     header.flags = 0;
     if (message.flags & 1 != 0) header.flags |= MSG_TRUNC;
     if (message.flags & 2 != 0) header.flags |= MSG_CTRUNC;
@@ -998,7 +1049,39 @@ fn futex(address: u64, op: u64, value: u64, timeout: u64, address2: u64, value3:
 
 // ── The translation table ───────────────────────────────────────────────────
 
+/// ORANGE_SYSCALL_TRACE=1 in a program's environment logs every Linux call
+/// it makes, with its first four arguments and the result, to its standard
+/// error: a porting aid, and nothing when unset. Decided at the first call
+/// made once musl has set up the environment.
+const Trace = enum(u8) { unknown, off, on };
+var trace: Trace = .unknown;
+extern var __environ: ?[*]?[*:0]const u8;
+
+fn tracing() bool {
+    if (trace == .unknown) {
+        const environment = __environ orelse return false;
+        trace = .off;
+        var i: usize = 0;
+        while (environment[i]) |entry| : (i += 1) {
+            if (std.mem.eql(u8, std.mem.span(entry), "ORANGE_SYSCALL_TRACE=1")) trace = .on;
+        }
+    }
+    return trace == .on;
+}
+
 export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) callconv(.c) i64 {
+    const r = translate(n, a1, a2, a3, a4, a5, a6);
+    if (tracing()) {
+        var line: [160]u8 = undefined;
+        const text = std.fmt.bufPrint(&line, "[trace] {d}({x}, {x}, {x}, {x}) = {d}\n", .{
+            n, @as(u64, @bitCast(a1)), @as(u64, @bitCast(a2)), @as(u64, @bitCast(a3)), @as(u64, @bitCast(a4)), r,
+        }) catch line[0..0];
+        _ = raw3(OR.write, 2, @intFromPtr(text.ptr), text.len);
+    }
+    return r;
+}
+
+fn translate(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) i64 {
     const a: u64 = @bitCast(a1);
     const b: u64 = @bitCast(a2);
     const c: u64 = @bitCast(a3);
@@ -1130,25 +1213,31 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
         // No signals are ever delivered, so the pwait masks change nothing.
         SYS.epoll_wait, SYS.epoll_pwait => raw(OR.epoll_wait, a, b, c, @bitCast(@as(i64, @as(i32, @truncate(a4)))), 0),
         SYS.epoll_pwait2 => raw(OR.epoll_wait, a, b, c, timeoutMs(d) orelse break :dispatch err(E.INVAL), 0),
-        // BSD sockets (network and named local sockets) are not offered yet.
-        SYS.socket => err(97), // EAFNOSUPPORT
+        SYS.socket => socket(a, b, c),
         SYS.socketpair => socketpair(a, b, c, d),
         SYS.sendmsg => sendMessage(a, b, c),
         SYS.recvmsg => receiveMessage(a, b, c),
         SYS.sendto => blk: {
-            if (e != 0) break :blk err(106); // EISCONN: pairs are connected
             var vector = Iovec{ .base = b, .len = c };
-            var header = MsgHeader{ .iov = @intFromPtr(&vector), .iovlen = 1 };
+            var header = MsgHeader{ .iov = @intFromPtr(&vector), .iovlen = 1, .name = e, .namelen = @truncate(f) };
             break :blk sendMessage(a, @intFromPtr(&header), d);
         },
         SYS.recvfrom => blk: {
             var vector = Iovec{ .base = b, .len = c };
-            var header = MsgHeader{ .iov = @intFromPtr(&vector), .iovlen = 1 };
+            const capacity: u32 = if (e != 0 and f != 0) @as(*const u32, @ptrFromInt(f)).* else 0;
+            var header = MsgHeader{ .iov = @intFromPtr(&vector), .iovlen = 1, .name = if (capacity != 0) e else 0, .namelen = capacity };
             const r = receiveMessage(a, @intFromPtr(&header), d);
-            // Socket pairs have no addresses.
-            if (r >= 0 and e != 0 and f != 0) @as(*u32, @ptrFromInt(f)).* = 0;
+            if (r >= 0 and e != 0 and f != 0) @as(*u32, @ptrFromInt(f)).* = header.namelen;
             break :blk r;
         },
+        SYS.connect => raw3(OR.connect, a, b, c),
+        SYS.bind => raw3(OR.bind, a, b, c),
+        SYS.listen => raw1(OR.listen, a),
+        SYS.accept, SYS.accept4 => accept(a),
+        SYS.getsockname => raw(OR.sockname, a, 0, b, c, 0),
+        SYS.getpeername => raw(OR.sockname, a, 1, b, c, 0),
+        SYS.getsockopt => raw(OR.getsockopt, a, b, c, d, e),
+        SYS.setsockopt => raw(OR.setsockopt, a, b, c, d, e),
         SYS.shutdown => raw2(OR.shutdown, a, b),
         SYS.eventfd => raw2(OR.eventfd, a, 0),
         SYS.eventfd2 => blk: {
@@ -1418,6 +1507,15 @@ fn ioctl(fd: u64, request: u64, argument: u64) i64 {
             if (status.kind != 3) return err(E.NOTTY);
             const size: *[4]u16 = @ptrFromInt(argument);
             size.* = .{ 25, 80, 0, 0 };
+            return 0;
+        },
+        // FIONREAD: bytes waiting (sockets, pipes), which fstat reports.
+        0x541B => {
+            var status: Status = undefined;
+            const r = raw2(OR.fstat, fd, @intFromPtr(&status));
+            if (r < 0) return r;
+            if (status.kind != 4 and status.kind != 5) return err(E.NOTTY);
+            @as(*c_int, @ptrFromInt(argument)).* = @intCast(@min(status.size, std.math.maxInt(c_int)));
             return 0;
         },
         // FIONBIO: set or clear nonblocking mode.

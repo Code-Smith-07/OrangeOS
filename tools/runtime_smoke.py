@@ -16,11 +16,24 @@ TCP_FIXTURE_PORT = 38457
 TCP_PAYLOAD = 6000
 
 
+# inet-probe's patterned bulk replies: byte i is (131 i + 7) mod 256.
+BULK_BLOCK = bytes((i * 131 + 7) & 0xFF for i in range(256))
+UDP_FIXTURE_PORT = 38458
+
+
 class TcpFixture(socketserver.StreamRequestHandler):
-    """Answer "orange-tcp <token>" with a payload derived from the token."""
+    """Answer "orange-tcp <token>" with a payload derived from the token,
+    and "orange-bulk <bytes>" with that many patterned bytes."""
 
     def handle(self):
         parts = self.rfile.readline(64).decode("ascii", "replace").split()
+        if len(parts) == 2 and parts[0] == "orange-bulk" and parts[1].isdigit():
+            count = min(int(parts[1]), 8 << 20)
+            payload = BULK_BLOCK * (count // 256 + 1)
+            self.wfile.write(payload[:count])
+            with self.server.lock:
+                self.server.bulk += 1
+            return
         if len(parts) != 2 or parts[0] != "orange-tcp" or not parts[1].isdigit():
             return
         token = int(parts[1]) & 0xFF
@@ -36,10 +49,19 @@ class FixtureServer(socketserver.ThreadingTCPServer):
     def __init__(self):
         self.lock = threading.Lock()
         self.served = 0
+        self.bulk = 0
         try:
             super().__init__(("127.0.0.1", TCP_FIXTURE_PORT), TcpFixture)
         except OSError as error:
             raise SystemExit(f"TCP fixture port 127.0.0.1:{TCP_FIXTURE_PORT} unavailable: {error}")
+
+
+class UdpEcho(socketserver.BaseRequestHandler):
+    """Send each datagram back reversed."""
+
+    def handle(self):
+        data, sock = self.request
+        sock.sendto(data[::-1], self.client_address)
 
 
 def main():
@@ -51,6 +73,11 @@ def main():
         parser.error("--orphan-waves must be 1..1024")
     fixture = FixtureServer()
     threading.Thread(target=fixture.serve_forever, daemon=True).start()
+    try:
+        udp_fixture = socketserver.ThreadingUDPServer(("127.0.0.1", UDP_FIXTURE_PORT), UdpEcho)
+    except OSError as error:
+        raise SystemExit(f"UDP fixture port 127.0.0.1:{UDP_FIXTURE_PORT} unavailable: {error}")
+    threading.Thread(target=udp_fixture.serve_forever, daemon=True).start()
     guest = Guest()
     print(f"Evidence: {guest.output}", flush=True)
     try:
@@ -166,6 +193,14 @@ def main():
                     "POSIX signals", 120)
         assert ("signal-probe: PASS handlers with siginfo, masks and pending, SIG_IGN, SA_RESETHAND, sigaltstack, "
                 "SIGSEGV repair, SIGILL rip edit, SIGFPE siglongjmp, EINTR, kill of children, abort") in guest.log(), guest.log()[-2000:]
+        guest.until(lambda: "runtime: PASS internet sockets" in guest.log()
+                    or "inet-probe: FAIL" in guest.log() or "runtime: FAIL internet sockets" in guest.log(),
+                    "internet sockets", 120)
+        inet = re.search(r"inet-probe: PASS /etc/hosts and DNS, blocking and nonblocking TCP with epoll, 2 MiB at (\d+) KiB/s, "
+                         r"half-close, refused, UDP sendto/recvfrom/connect/MSG_TRUNC, options, refusals", guest.log())
+        assert inet, guest.log()[-2000:]
+        assert fixture.bulk == 2, fixture.bulk
+        print(f"PASS BSD sockets through musl: DNS, TCP (2 MiB at {inet.group(1)} KiB/s), UDP, epoll, refusals", flush=True)
         # WPE WebKit trial probes run only in images built with -Dwpe-probes.
         if os.environ.get("ORANGE_WPE_PROBES") == "1":
             guest.until(lambda: "runtime: PASS GLib, GObject and GIO" in guest.log()
@@ -179,6 +214,12 @@ def main():
                         "WPE base libraries", 240)
             assert ("wpe-libs-probe: PASS PNG, JPEG, WebP, FreeType, HarfBuzz+ICU, fontconfig, WOFF2, ICU locales, "
                     "libxml2, libxslt, SQLite on tmpfs, libgcrypt AES-GCM, libtasn1, brotli, xkbcommon, no EGL") in guest.log(), guest.log()[-2000:]
+            guest.until(lambda: "runtime: PASS JavaScriptCore" in guest.log()
+                        or "jsc-probe: FAIL" in guest.log() or "runtime: FAIL JavaScriptCore" in guest.log(),
+                        "JavaScriptCore", 300)
+            jsc = re.search(r"jsc-probe: PASS (\d+) checks \(.*\) in (\d+) ms", guest.log())
+            assert jsc and int(jsc.group(1)) == 17, guest.log()[-3000:]
+            print(f"PASS JavaScriptCore (LLInt): {jsc.group(1)} checks, workload {jsc.group(2)} ms", flush=True)
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]
@@ -267,6 +308,7 @@ def main():
     finally:
         guest.close()
         fixture.shutdown()
+        udp_fixture.shutdown()
         fixture.server_close()
 
 

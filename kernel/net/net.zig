@@ -160,6 +160,7 @@ fn handleArp(frame: []const u8) void {
     // Learn from any ARP traffic, request or reply. A host that ARPs us is
     // about to be talked to anyway.
     arpInsert(sender_ip, sender_mac);
+    flushPending(sender_ip, sender_mac);
 
     if (op != ARP_REQUEST) return;
 
@@ -482,6 +483,36 @@ pub fn sendTo(index: usize, dst_ip: Ipv4Addr, dst_port: u16, payload: []const u8
     try e1000.send(frame[0..n]);
 }
 
+/// Whether an original-interface UDP slot holds `port`. Caller holds the
+/// network lock.
+pub fn legacyUdpPortBusyLocked(port: u16) bool {
+    for (&sockets) |*s| {
+        if (s.used and s.port == port) return true;
+    }
+    return false;
+}
+
+/// Send one datagram from `src_port`. An unresolved next hop holds it until
+/// the address is known (NoRoute is reported, the datagram is not lost).
+/// Caller holds the network lock.
+pub fn sendUdpLocked(src_port: u16, dst_ip: Ipv4Addr, dst_port: u16, payload: []const u8) Error!void {
+    if (payload.len > 1500 - 20 - 8) return Error.TooLarge;
+    var udp: [1500 - 20]u8 = undefined;
+    putBe16(&udp, 0, src_port);
+    putBe16(&udp, 2, dst_port);
+    putBe16(&udp, 4, @intCast(8 + payload.len));
+    putBe16(&udp, 6, 0);
+    @memcpy(udp[8 .. 8 + payload.len], payload);
+    const total = 8 + payload.len;
+    putBe16(&udp, 6, udpChecksum(local_ip, dst_ip, udp[0..total]));
+    if (std.mem.eql(u8, &dst_ip, &BROADCAST_IP)) {
+        var frame: [1600]u8 = undefined;
+        const n = buildIpv4(&frame, BROADCAST, dst_ip, PROTO_UDP, udp[0..total]);
+        return e1000.send(frame[0..n]);
+    }
+    return sendRawLocked(dst_ip, PROTO_UDP, udp[0..total]);
+}
+
 /// Drain the receive ring, then take a pending datagram into `out`. The copy
 /// is made under the lock: the socket's buffer is overwritten by the next
 /// arrival, possibly on another CPU.
@@ -528,23 +559,68 @@ fn handleUdp(payload: []const u8, src_ip: Ipv4Addr) void {
         s.pending = true;
         return;
     }
+    @import("socket.zig").deliverUdpLocked(dst_port, src_ip, src_port, data);
 }
 
 /// Send a raw IPv4 payload with the given protocol number. Used by TCP, which
 /// builds its own segments, and by ping. Never waits: an unknown next hop gets
 /// an ARP request and the packet is reported undeliverable for now.
 pub fn sendRawLocked(dst_ip: Ipv4Addr, proto: u8, payload: []const u8) Error!void {
+    if (payload.len + ETH_HEADER_LEN + 20 > 1600) return Error.TooLarge;
     const via = nextHop(dst_ip);
     const dst_mac = arpLookup(via) orelse {
+        // Hold the packet until the answer arrives, so a connection's first
+        // SYN is not lost to address resolution.
+        holdPending(via, dst_ip, proto, payload);
         sendArpRequest(via) catch {};
         return Error.NoRoute;
     };
 
     var frame: [1600]u8 = undefined;
-    if (payload.len + ETH_HEADER_LEN + 20 > frame.len) return Error.TooLarge;
-
     const n = buildIpv4(&frame, dst_mac, dst_ip, proto, payload);
     try e1000.send(frame[0..n]);
+}
+
+/// Packets waiting for their next hop's hardware address. A few are enough:
+/// they cover the first packets to a new host; later ones find the cache.
+const Pending = struct {
+    used: bool = false,
+    via: Ipv4Addr = .{ 0, 0, 0, 0 },
+    dst: Ipv4Addr = .{ 0, 0, 0, 0 },
+    proto: u8 = 0,
+    len: usize = 0,
+    since_us: u64 = 0,
+    payload: [1560]u8 = undefined,
+};
+var pending: [8]Pending = [_]Pending{.{}} ** 8;
+
+fn holdPending(via: Ipv4Addr, dst: Ipv4Addr, proto: u8, payload: []const u8) void {
+    const now = tsc.microsSinceBoot();
+    var slot: ?*Pending = null;
+    for (&pending) |*p| {
+        // Unanswered for 3 s: the host is not there.
+        if (p.used and now - p.since_us > 3_000_000) p.used = false;
+        if (!p.used and slot == null) slot = p;
+    }
+    const p = slot orelse return; // full: the sender retransmits
+    p.* = .{ .used = true, .via = via, .dst = dst, .proto = proto, .len = payload.len, .since_us = now };
+    @memcpy(p.payload[0..payload.len], payload);
+}
+
+fn flushPending(ip: Ipv4Addr, mac: MacAddr) void {
+    for (&pending) |*p| {
+        if (!p.used or !std.mem.eql(u8, &p.via, &ip)) continue;
+        p.used = false;
+        var frame: [1600]u8 = undefined;
+        const n = buildIpv4(&frame, mac, p.dst, p.proto, p.payload[0..p.len]);
+        e1000.send(frame[0..n]) catch {};
+    }
+}
+
+/// 127.0.0.0/8. OrangeOS has no loopback interface yet; connections there
+/// are refused as unreachable rather than sent to the gateway.
+pub fn isLoopback(ip: Ipv4Addr) bool {
+    return ip[0] == 127;
 }
 
 // ── Receive path ────────────────────────────────────────────────────────────
@@ -597,6 +673,36 @@ pub fn pollLocked() void {
             else => {},
         }
     }
+}
+
+// ── Network thread ──────────────────────────────────────────────────────────
+//
+// The card is polled, not interrupt-driven (e1000.zig). This thread drains
+// it and runs TCP's timers, so connections progress and sockets become
+// readable while no program is inside a network call. It polls every
+// millisecond while any connection is active and every 20 ms otherwise
+// (ARP answers, stray datagrams), which bounds the idle cost. Waiters are
+// woken by the changes it makes, not by polling themselves.
+
+fn serviceThread(_: ?*anyopaque) void {
+    while (true) {
+        const active = blk: {
+            const state = acquire();
+            defer release(state);
+            pollLocked();
+            break :blk @import("tcp.zig").timersLocked() or @import("socket.zig").udpOpenLocked();
+        };
+        sched.sleepMs(if (active) 1 else 20);
+    }
+}
+
+/// Start the network thread; after the scheduler is up and only if a card
+/// was found.
+pub fn startService() void {
+    if (!isUp()) return;
+    _ = sched.spawn("net", serviceThread, null, .normal) catch {
+        console.warn("net: could not start the network thread", .{});
+    };
 }
 
 pub fn init() !void {
