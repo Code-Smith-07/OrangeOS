@@ -41,6 +41,10 @@ G_DECLARE_FINAL_TYPE(OrangeKeymap, orange_keymap, ORANGE, KEYMAP, WPEKeymap)
  * calling `commit` for the changed logical rectangle. */
 WPEDisplay *orange_display_new(const OrangeSurface *surface, void (*commit)(int x, int y, int width, int height));
 
+/* Tabs: only the active view is drawn into the window. Each view keeps its
+ * last frame, so making a view active shows it at once. */
+void orange_view_set_active(WPEView *view, gboolean active);
+
 /* A set-1 scancode (with its E0 flag) as a Linux/XKB key: the XKB keycode
  * (evdev + 8) and the US-layout keysym for the modifiers. FALSE for keys
  * this layout does not know. */

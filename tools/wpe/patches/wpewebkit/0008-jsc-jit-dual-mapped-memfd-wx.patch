@@ -1,0 +1,206 @@
+OrangeOS: JavaScriptCore's JIT with W^X, through a dual-mapped memfd.
+
+OrangeOS never maps memory writable and executable at once, so the Linux
+JIT, which reserves its pool read/write/execute, could not start and JSC
+ran on its interpreter. JSC already supports keeping code pages
+read/execute and writing them through a second, writable mapping
+(ENABLE(SEPARATED_WX_HEAP), used by Darwin through mach_vm_remap). This
+adds the Linux form of it: the pool is reserved read/execute, one memfd
+is mapped over it read/execute and once more read/write, and
+performJITMemcpy writes through the writable alias. The build turns it
+on with -DENABLE_SEPARATED_WX_HEAP=1 (tools/wpe/build_deps.py).
+
+- ExecutableAllocator.cpp: initializeSeparatedWXHeaps for Linux; if the
+  aliases cannot be made, the JIT is left off rather than writable.
+- ExecutableAllocator.h: the pool is not reserved writable.
+- X86Assembler.h: code patches go through performJITMemcpy (as with
+  MPROTECT_RX_TO_RWX) instead of storing into code directly.
+
+userland/bin/jit-alias-probe checks the kernel side (docs/design/012).
+
+diff -ru a/Source/JavaScriptCore/assembler/X86Assembler.h b/Source/JavaScriptCore/assembler/X86Assembler.h
+--- a/Source/JavaScriptCore/assembler/X86Assembler.h	2026-09-28 17:24:43
++++ b/Source/JavaScriptCore/assembler/X86Assembler.h	2026-09-28 17:25:14
+@@ -6434,7 +6434,7 @@
+ 
+     static void replaceWithHlt(void* instructionStart)
+     {
+-#if ENABLE(MPROTECT_RX_TO_RWX)
++#if ENABLE(MPROTECT_RX_TO_RWX) || ENABLE(SEPARATED_WX_HEAP)
+         uint8_t op = OP_HLT;
+         performJITMemcpy<jitMemcpyRepatch>(instructionStart, &op, 1);
+ #else
+@@ -6447,7 +6447,7 @@
+         uint8_t* ptr = std::bit_cast<uint8_t*>(instructionStart);
+         uint8_t* dstPtr = std::bit_cast<uint8_t*>(to);
+         intptr_t distance = (intptr_t)(dstPtr - (ptr + 5));
+-#if ENABLE(MPROTECT_RX_TO_RWX)
++#if ENABLE(MPROTECT_RX_TO_RWX) || ENABLE(SEPARATED_WX_HEAP)
+         uint8_t buffer[5];
+         buffer[0] = static_cast<uint8_t>(OP_JMP_rel32);
+         WTF::unalignedStore<int32_t>(buffer + 1, static_cast<int32_t>(distance));
+@@ -6485,7 +6485,7 @@
+             uint8_t asBytes[8];
+         } u;
+         u.asWord = imm;
+-#if ENABLE(MPROTECT_RX_TO_RWX)
++#if ENABLE(MPROTECT_RX_TO_RWX) || ENABLE(SEPARATED_WX_HEAP)
+         uint8_t buffer[instructionSize];
+         buffer[0] = PRE_REX | (1 << 3) | (dst >> 3);
+         buffer[1] = OP_MOV_EAXIv | (dst & 7);
+@@ -6515,7 +6515,7 @@
+             uint8_t asBytes[4];
+         } u;
+         u.asWord = imm;
+-#if ENABLE(MPROTECT_RX_TO_RWX)
++#if ENABLE(MPROTECT_RX_TO_RWX) || ENABLE(SEPARATED_WX_HEAP)
+         uint8_t buffer[instructionSize];
+         buffer[0] = PRE_REX | (1 << 3) | (dst >> 3);
+         buffer[1] = OP_MOV_EAXIv | (dst & 7);
+@@ -6540,7 +6540,7 @@
+             uint8_t asBytes[4];
+         } u;
+         u.asWord = imm;
+-#if ENABLE(MPROTECT_RX_TO_RWX)
++#if ENABLE(MPROTECT_RX_TO_RWX) || ENABLE(SEPARATED_WX_HEAP)
+         uint8_t buffer[maxJumpReplacementSize()];
+         buffer[0] = OP_GROUP1_EvIz;
+         buffer[1] = (X86InstructionFormatter::ModRmRegister << 6) | (GROUP1_OP_CMP << 3) | dst;
+@@ -6566,7 +6566,7 @@
+             uint8_t asBytes[4];
+         } u;
+         u.asWord = imm;
+-#if ENABLE(MPROTECT_RX_TO_RWX)
++#if ENABLE(MPROTECT_RX_TO_RWX) || ENABLE(SEPARATED_WX_HEAP)
+         uint8_t buffer[maxJumpReplacementSize()];
+         buffer[0] = OP_GROUP1_EvIz;
+         buffer[1] = (X86InstructionFormatter::ModRmMemoryNoDisp << 6) | (GROUP1_OP_CMP << 3) | dst;
+@@ -6643,7 +6643,7 @@
+                 *bufferWriter++ = nops[nopRest-1][i];
+ 
+             ASSERT(nopSize == bufferWriter - buffer);
+-#if ENABLE(MPROTECT_RX_TO_RWX)
++#if ENABLE(MPROTECT_RX_TO_RWX) || ENABLE(SEPARATED_WX_HEAP)
+             machineCodeCopy<jitMemcpyRepatch>(where, buffer, nopSize);
+ #else
+             machineCodeCopy<memcpyRepatch>(where, buffer, nopSize);
+@@ -6660,7 +6660,7 @@
+ 
+     static void setPointer(void* where, void* value)
+     {
+-#if ENABLE(MPROTECT_RX_TO_RWX)
++#if ENABLE(MPROTECT_RX_TO_RWX) || ENABLE(SEPARATED_WX_HEAP)
+         performJITMemcpy<jitMemcpyRepatch>(std::bit_cast<void**>(where) - 1, &value, sizeof(void*));
+ #else
+         WTF::unalignedStore<void*>(std::bit_cast<void**>(where) - 1, value);
+@@ -6669,7 +6669,7 @@
+ 
+     static void setInt32(void* where, int32_t value)
+     {
+-#if ENABLE(MPROTECT_RX_TO_RWX)
++#if ENABLE(MPROTECT_RX_TO_RWX) || ENABLE(SEPARATED_WX_HEAP)
+         performJITMemcpy<jitMemcpyRepatch>(std::bit_cast<int32_t*>(where) - 1, &value, sizeof(int32_t));
+ #else
+         WTF::unalignedStore<int32_t>(std::bit_cast<int32_t*>(where) - 1, value);
+@@ -6678,7 +6678,7 @@
+     
+     static void setInt8(void* where, int8_t value)
+     {
+-#if ENABLE(MPROTECT_RX_TO_RWX)
++#if ENABLE(MPROTECT_RX_TO_RWX) || ENABLE(SEPARATED_WX_HEAP)
+         performJITMemcpy<jitMemcpyRepatch>(std::bit_cast<int8_t*>(where) - 1, &value, sizeof(int8_t));
+ #else
+         WTF::unalignedStore<int8_t>(std::bit_cast<int8_t*>(where) - 1, value);
+diff -ru a/Source/JavaScriptCore/jit/ExecutableAllocator.cpp b/Source/JavaScriptCore/jit/ExecutableAllocator.cpp
+--- a/Source/JavaScriptCore/jit/ExecutableAllocator.cpp	2026-09-28 17:24:43
++++ b/Source/JavaScriptCore/jit/ExecutableAllocator.cpp	2026-09-28 17:25:33
+@@ -61,6 +61,11 @@
+ #include <wtf/cocoa/Entitlements.h>
+ #endif
+ 
++#if ENABLE(SEPARATED_WX_HEAP) && OS(LINUX)
++#include <sys/mman.h>
++#include <unistd.h>
++#endif
++
+ #if OS(DARWIN)
+ #include <fcntl.h>
+ #include <mach/mach.h>
+@@ -352,6 +357,46 @@
+ 
+ #endif // OS(DARWIN) && HAVE(REMAP_JIT)
+ 
++#if ENABLE(SEPARATED_WX_HEAP) && OS(LINUX)
++// OrangeOS (docs/design/012 §4.5): the kernel never maps memory writable and
++// executable at once. The JIT pool is one memfd mapped twice: read/execute
++// over the reservation, where code runs, and read/write at an address only
++// this file keeps, through which performJITMemcpy writes all code.
++// x86 has no execute-only pages, so unlike Darwin's thunk the writable
++// address lives in ordinary (static) memory.
++static uint8_t* s_jitWritableBase;
++static size_t s_jitWritableSize;
++
++static void jitWriteSeparateHeapsLinux(off_t offset, const void* src, size_t n)
++{
++    RELEASE_ASSERT(offset >= 0 && static_cast<size_t>(offset) <= s_jitWritableSize && n <= s_jitWritableSize - static_cast<size_t>(offset));
++WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
++    memcpyAtomicIfPossible(s_jitWritableBase + offset, src, n);
++WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
++}
++
++static bool initializeSeparatedWXHeaps(void*, size_t, void* jitBase, size_t jitSize)
++{
++    int fd = memfd_create("jsc-jit", MFD_CLOEXEC);
++    if (fd < 0)
++        return false;
++    auto closeDescriptor = makeScopeExit([fd] { close(fd); });
++    if (ftruncate(fd, static_cast<off_t>(jitSize)))
++        return false;
++    void* writable = mmap(nullptr, jitSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++    if (writable == MAP_FAILED)
++        return false;
++    if (mmap(jitBase, jitSize, PROT_READ | PROT_EXEC, MAP_SHARED | MAP_FIXED, fd, 0) != jitBase) {
++        munmap(writable, jitSize);
++        return false;
++    }
++    s_jitWritableBase = static_cast<uint8_t*>(writable);
++    s_jitWritableSize = jitSize;
++    g_jscConfig.jitWriteSeparateHeaps = jitWriteSeparateHeapsLinux;
++    return true;
++}
++#endif // ENABLE(SEPARATED_WX_HEAP) && OS(LINUX)
++
+ struct JITReservation {
+     PageReservation pageReservation;
+     void* base { nullptr };
+@@ -425,7 +470,16 @@
+             ASSERT(reservation.size >= executablePageSize() * 2);
+             reservation.base = (void*)((uintptr_t)(reservation.base) + executablePageSize());
+             reservation.size -= executablePageSize();
++#if OS(LINUX)
++            if (!initializeSeparatedWXHeaps(reservation.pageReservation.base(), executablePageSize(), reservation.base, reservation.size)) {
++                // No aliased memory: run without the JIT rather than with
++                // writable code.
++                reservation.pageReservation.deallocate();
++                return { };
++            }
++#else
+             initializeSeparatedWXHeaps(reservation.pageReservation.base(), executablePageSize(), reservation.base, reservation.size);
++#endif
+         }
+ #endif
+ 
+diff -ru a/Source/JavaScriptCore/jit/ExecutableAllocator.h b/Source/JavaScriptCore/jit/ExecutableAllocator.h
+--- a/Source/JavaScriptCore/jit/ExecutableAllocator.h	2026-09-28 17:24:43
++++ b/Source/JavaScriptCore/jit/ExecutableAllocator.h	2026-09-28 17:25:14
+@@ -49,7 +49,9 @@
+ #include <sys/mman.h>
+ #endif
+ 
+-#if ENABLE(MPROTECT_RX_TO_RWX)
++// OrangeOS: with separated heaps on Linux the pool is reserved read/execute and
++// never becomes writable (ExecutableAllocator.cpp, initializeSeparatedWXHeaps).
++#if ENABLE(MPROTECT_RX_TO_RWX) || (ENABLE(SEPARATED_WX_HEAP) && OS(LINUX))
+ #define EXECUTABLE_POOL_WRITABLE false
+ #else
+ #define EXECUTABLE_POOL_WRITABLE true

@@ -298,6 +298,10 @@ static void orange_toplevel_init(OrangeToplevel *toplevel)
 struct _OrangeView {
 	WPEView parent;
 	WPEBuffer *shown;
+	gboolean active;
+	/* The last frame, in buffer pixels (0x00RRGGBB). */
+	uint32_t *frame;
+	int frame_width, frame_height;
 };
 
 G_DEFINE_FINAL_TYPE(OrangeView, orange_view, WPE_TYPE_VIEW)
@@ -338,6 +342,35 @@ static gboolean view_release(gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
+/* The view's last frame into the window's content area, or white. */
+static void view_show_frame(OrangeView *self)
+{
+	OrangeDisplay *display = ORANGE_DISPLAY(wpe_view_get_display(WPE_VIEW(self)));
+	const OrangeSurface *s = &display->surface;
+	const int width = s->width * s->scale, height = s->height * s->scale;
+	for (int row = 0; row < height; row++) {
+		uint32_t *to = s->pixels + (gsize)(s->y * s->scale + row) * s->stride + s->x * s->scale;
+		int copied = 0;
+		if (self->frame && row < self->frame_height) {
+			copied = MIN(width, self->frame_width);
+			memcpy(to, self->frame + (gsize)row * self->frame_width, (gsize)copied * 4);
+		}
+		for (int column = copied; column < width; column++)
+			to[column] = 0xFFFFFF;
+	}
+	display->commit(s->x, s->y, s->width, s->height);
+}
+
+void orange_view_set_active(WPEView *view, gboolean active)
+{
+	OrangeView *self = ORANGE_VIEW(view);
+	self->active = active;
+	/* Hidden views are throttled by WebKit (timers, animation frames). */
+	wpe_view_set_visible(view, active);
+	if (active)
+		view_show_frame(self);
+}
+
 static gboolean view_render_buffer(WPEView *view, WPEBuffer *buffer, const WPERectangle *damage, guint n_damage,
                                    GError **error)
 {
@@ -355,15 +388,21 @@ static gboolean view_render_buffer(WPEView *view, WPEBuffer *buffer, const WPERe
 	guint source_stride = wpe_buffer_shm_get_stride(shm);
 	int source_width = wpe_buffer_get_width(buffer), source_height = wpe_buffer_get_height(buffer);
 	int width = MIN(source_width, s->width * s->scale), height = MIN(source_height, s->height * s->scale);
+	OrangeView *self = ORANGE_VIEW(view);
+	if (self->frame_width != width || self->frame_height != height) {
+		g_free(self->frame);
+		self->frame = g_new0(uint32_t, (gsize)width * height);
+		self->frame_width = width;
+		self->frame_height = height;
+	}
 	for (int row = 0; row < height && (gsize)(row + 1) * source_stride <= length; row++) {
-		uint32_t *to = s->pixels + (gsize)(s->y * s->scale + row) * s->stride + s->x * s->scale;
 		/* ARGB8888 in memory order B, G, R, A: the same 32-bit value Peel
 		 * reads as 0x00RRGGBB once alpha is ignored. */
-		memcpy(to, data + (gsize)row * source_stride, (gsize)width * 4);
+		memcpy(self->frame + (gsize)row * width, data + (gsize)row * source_stride, (gsize)width * 4);
 	}
-	display->commit(s->x, s->y, s->width, s->height);
+	if (self->active)
+		view_show_frame(self);
 
-	OrangeView *self = ORANGE_VIEW(view);
 	if (self->shown) {
 		wpe_view_buffer_rendered(view, self->shown);
 		wpe_view_buffer_released(view, self->shown);
@@ -377,6 +416,7 @@ static gboolean view_render_buffer(WPEView *view, WPEBuffer *buffer, const WPERe
 static void view_dispose(GObject *object)
 {
 	g_clear_object(&ORANGE_VIEW(object)->shown);
+	g_clear_pointer(&ORANGE_VIEW(object)->frame, g_free);
 	G_OBJECT_CLASS(orange_view_parent_class)->dispose(object);
 }
 
@@ -389,5 +429,5 @@ static void orange_view_class_init(OrangeViewClass *klass)
 
 static void orange_view_init(OrangeView *view)
 {
-	(void)view;
+	(void)view; /* inactive until the program shows it */
 }

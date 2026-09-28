@@ -162,8 +162,10 @@ libsoup and OpenSSL with Mozilla's roots. **Orange Browser** opens from the
 dock's Browser icon on a browser image: an address field, Back, Forward and
 Reload, keyboard, mouse and wheel, and real sites over QEMU's network
 ([Wikipedia in Orange Browser](docs/screenshots/orange-browser-wikipedia.png)).
-Not yet: video and audio, WebGL, a JIT (JavaScript runs on JavaScriptCore's
-interpreter), tabs, and a profile that survives a reboot. The plan, milestones and every
+Tabs, JavaScriptCore's JIT (with W^X kept: code is written through a second
+mapping) and a profile that survives a reboot (cookies and site data on the
+`/data` disk, [013](docs/design/013-data-volume.md)) work too. Not yet:
+playing video and audio (pages with them load), WebGL. The plan, milestones and every
 recorded WebKit patch are in [012](docs/design/012-wpe-webkit-browser.md). The
 earlier Chromium plan was dropped on 2026-09-28 after WPE passed its gate; its
 document stays as the [runtime history](docs/design/011-native-chromium-browser.md).
@@ -296,6 +298,8 @@ Then fetch the bootloader, create a disk, and build:
 | `./scripts/run-desktop.sh` | Run the built desktop; full screen with one guest cursor on macOS |
 | `zig build -Ddesktop-profile -Dwpe-probes && ORANGE_WPE_PROBES=1 ./scripts/mkdisk.sh` | Build the desktop image with Orange Browser (needs the WPE build in `build/wpe`, see [012](docs/design/012-wpe-webkit-browser.md)) |
 | `./scripts/run-browser-profile.sh` | Full-screen desktop with the 4 GiB browser profile; with the image above, Orange Browser is in the dock |
+| `python3 tools/mkdata.py build/data.img` | Create an empty data disk for `/data` (mkdisk makes one if missing and never overwrites it) |
+| `python3 tools/data_volume_smoke.py` | Check that `/data` survives reboots and a damaged save |
 | `python3 tools/browser_smoke.py` | Headless browser checks: dock launch, links, Back, HTTPS address, typing, wheel |
 | `ORANGE_DISK_PROFILE=browser ./scripts/mkdisk.sh` | Build a separate sparse 2 GiB guest filesystem for future browser installation; no browser executable yet |
 | `python3 tools/browser_disk_smoke.py` | Verify and boot the browser-capacity disk in QEMU |

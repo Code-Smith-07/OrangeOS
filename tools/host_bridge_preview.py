@@ -48,6 +48,9 @@ def main():
                 "-cdrom", str(ROOT / "build/orange.iso"), "-boot", "d",
                 "-drive", f"id=disk0,file={ROOT / 'build/disk.img'},format=raw,if=none,snapshot=on",
                 "-device", "ahci,id=ahci", "-device", "ide-hd,drive=disk0,bus=ahci.0",
+                # The data disk is not a snapshot: /data persists across runs.
+                *(["-drive", f"id=data0,file={ROOT / 'build/data.img'},format=raw,if=none",
+                   "-device", "ide-hd,drive=data0,bus=ahci.1"] if (ROOT / "build/data.img").exists() else []),
                 "-netdev", "user,id=n0", "-device", "e1000,netdev=n0",
                 "-display", "cocoa,show-cursor=off,zoom-to-fit=on,zoom-interpolation=on,full-screen=on",
                 "-serial", f"file:{output / 'serial.log'}",

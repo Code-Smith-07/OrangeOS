@@ -63,6 +63,7 @@ const OR = struct {
     const sockname = 161;
     const getsockopt = 162;
     const setsockopt = 163;
+    const fs_sync = 164;
     const wait = 9;
     const chdir = 35;
     const getcwd = 36;
@@ -215,6 +216,7 @@ const SYS = struct {
     const ftruncate = 77;
     const statfs = 137;
     const sync = 162;
+    const syncfs = 306;
     const getdents64 = 217;
     const mkdirat = 258;
     const unlinkat = 263;
@@ -1152,14 +1154,13 @@ fn translate(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) i64 {
             _ = raw1(OR.close, @intCast(fd));
             break :blk r;
         },
-        // Nothing to flush: /tmp lives in memory and the root is read-only.
-        // The descriptor is still checked.
-        SYS.fsync, SYS.fdatasync => blk: {
-            var status: Status = undefined;
-            const r = raw2(OR.fstat, a, @intFromPtr(&status));
-            break :blk if (r < 0) r else 0;
+        // /data is saved to its disk; /tmp lives in memory and the root is
+        // read-only, so for them only the descriptor is checked.
+        SYS.fsync, SYS.fdatasync, SYS.syncfs => raw1(OR.fs_sync, a),
+        SYS.sync => blk: {
+            _ = raw1(OR.fs_sync, std.math.maxInt(u64));
+            break :blk 0;
         },
-        SYS.sync => 0,
         SYS.getdents64 => getdents(a, b, c),
         SYS.statfs => statfs(a, b),
         SYS.access => accessPath(AT_FDCWD, a, b),

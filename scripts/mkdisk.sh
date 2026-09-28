@@ -47,7 +47,7 @@ mkdir -p "$ROOTFS/share/licenses"
 mkdir -p "$ROOTFS/share/wallpapers"
 mkdir -p "$ROOTFS/Trash"
 # Mount point for the in-memory tmpfs, so listings of / show it.
-mkdir -p "$ROOTFS/tmp"
+mkdir -p "$ROOTFS/tmp" "$ROOTFS/data"
 # Mount point for the device files (/dev/null, /dev/urandom, ...).
 mkdir -p "$ROOTFS/dev"
 cp assets/fonts/OFL-Inter.txt "$ROOTFS/share/licenses/OFL-Inter.txt"
@@ -98,7 +98,7 @@ if [ ! -f zig-out/bin/init ]; then
 fi
 
 cp zig-out/bin/init "$ROOTFS/sbin/init"
-for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe cxx-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe tls-probe futex-probe futex-waiter thread-probe thread-exit-probe thread-fault-probe thread-last-probe net-thread-probe net-exit-probe tcp-probe jit-probe fault-wx musl-probe cxx-probe file-probe thread-capacity pipe-probe epoll-probe unix-probe spawn-probe spawn-child mmap-probe shm-probe random-probe signal-probe inet-probe fault-null fault-ro fault-nx fault-opcode; do
+for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe cxx-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe tls-probe futex-probe futex-waiter thread-probe thread-exit-probe thread-fault-probe thread-last-probe net-thread-probe net-exit-probe tcp-probe jit-probe fault-wx musl-probe cxx-probe file-probe thread-capacity pipe-probe epoll-probe unix-probe spawn-probe spawn-child mmap-probe shm-probe random-probe signal-probe inet-probe fault-null fault-ro fault-nx fault-opcode jit-alias-probe data-probe; do
     if [ -f "zig-out/bin/$prog" ]; then
         cp "zig-out/bin/$prog" "$ROOTFS/bin/$prog"
     fi
@@ -116,12 +116,18 @@ if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
     cp -R build/wpe/rootfs/. "$ROOTFS/"
     mkdir -p "$ROOTFS/share/wpe-tests"
     cp userland/bin/jsc-probe/probe.js "$ROOTFS/share/wpe-tests/jsc-probe.js"
+    cp userland/bin/jsc-probe/jit.js "$ROOTFS/share/wpe-tests/jsc-jit.js"
     cp userland/bin/wpe-render/hello.html "$ROOTFS/share/wpe-tests/hello.html"
     # Orange Browser's own pages.
     mkdir -p "$ROOTFS/share/browser"
     cp userland/share/browser/*.html "$ROOTFS/share/browser/"
     if [ "${ORANGE_BROWSER_AUTOSTART:-0}" = 1 ]; then
         printf 'browser /bin/orange-browser once\n' >> "$ROOTFS/etc/seed.conf"
+    fi
+    # Debug images: web page console messages go to the serial log.
+    if [ "${ORANGE_BROWSER_CONSOLE:-0}" = 1 ]; then
+        mkdir -p "$ROOTFS/etc/orange-browser"
+        : > "$ROOTFS/etc/orange-browser/console"
     fi
     # Content types by file name, for file:// URLs (GIO's xdgmime).
     mkdir -p "$ROOTFS/usr/share/mime"
@@ -152,6 +158,14 @@ if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
 fi
 echo "mkdisk: staged /sbin/init and $(ls "$ROOTFS/bin" | tr '\n' ' ')"
 
+# Data volume test images: the probe runs once at boot (data_volume_smoke.py).
+if [ "${ORANGE_DATA_PROBE:-0}" = 1 ]; then
+    printf 'data-probe /bin/data-probe once\n' >> "$ROOTFS/etc/seed.conf"
+fi
+
 # ── Build the filesystem and the partitioned disk ────────────────────────────
 python3 tools/mkcitrusfs/mkcitrusfs.py "$FSIMG" "$ROOTFS" "$FS_MIB"
 python3 tools/mkdisk/mkdisk.py "$DISK" "$DISK_MIB" "$FSIMG"
+# The data disk (/data, docs/design/013) is separate and kept across
+# rebuilds: it holds what programs saved.
+python3 tools/mkdata.py build/data.img --keep

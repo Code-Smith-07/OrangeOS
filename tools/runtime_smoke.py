@@ -69,7 +69,15 @@ class HttpsFixture(http.server.BaseHTTPRequestHandler):
             b"<body style='font:20px Inter,sans-serif;margin:40px;background:#e8f4ff'>"
             b"<h1 style='color:#0047ab'>Served over HTTPS</h1>"
             b"<p>Type here: <input id='q' autofocus style='font-size:20px' "
-            b"oninput=\"document.title='typed:'+this.value\"></p></body></html>")
+            b"oninput=\"document.title='typed:'+this.value\"></p>"
+            b"<p><a id='blank' href='/long.html' target='_blank'>Long page in a new tab</a></p></body></html>")
+    # A cookie and local storage that should outlive a reboot: the title
+    # says what the page found, then both are set.
+    COOKIE = (b"<!DOCTYPE html><html><head><meta charset='utf-8'><title>Cookie</title></head><body><script>"
+              b"document.title='found:'+(document.cookie.indexOf('orange=kept')>=0?'cookie':'none')"
+              b"+','+(localStorage.getItem('orange')||'none');"
+              b"document.cookie='orange=kept; max-age=86400; secure';localStorage.setItem('orange','stored');"
+              b"</script></body></html>")
     # Taller than the window; its title follows the scroll position.
     LONG = (b"<!DOCTYPE html><html><head><meta charset='utf-8'><title>Long page</title></head>"
             b"<body style='margin:0;height:5000px;background:linear-gradient(#fff,#0047ab)'>"
@@ -79,6 +87,8 @@ class HttpsFixture(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/page.html":
             body, kind = self.PAGE, "text/html; charset=utf-8"
+        elif self.path == "/cookie.html":
+            body, kind = self.COOKIE, "text/html; charset=utf-8"
         elif self.path == "/long.html":
             body, kind = self.LONG, "text/html; charset=utf-8"
         elif self.path == "/orange":
@@ -203,6 +213,9 @@ def main():
         guest.until(lambda: "runtime: PASS W^X code generation across threads" in guest.log(),
                     "JIT-style W^X flips run on both threads", 60)
         assert guest.log().count("jit-probe: PASS 64 W^X re-patches run on both threads; RWX refused") == 2
+        guest.until(lambda: "runtime: PASS dual-mapped JIT memory (W^X)" in guest.log()
+                    or "runtime: FAIL dual-mapped JIT memory" in guest.log(), "dual-mapped JIT memory", 60)
+        assert "jit-alias-probe: PASS 256 MiB memfd mapped read/execute and read/write, 200 re-patches run on two threads" in guest.log(), guest.log()[-3000:]
         guest.until(lambda: "runtime: PASS C program on musl" in guest.log() or "musl-probe: FAIL" in guest.log()
                     or "runtime: FAIL musl" in guest.log(), "a C11 program on musl", 60)
         assert "musl-probe: PASS stdio, formatting, malloc, qsort, clocks, files, TLS and 4 pthreads" in guest.log(), guest.log()[-2000:]
@@ -281,6 +294,11 @@ def main():
             jsc = re.search(r"jsc-probe: PASS (\d+) checks \(.*\) in (\d+) ms", guest.log())
             assert jsc and int(jsc.group(1)) == 17, guest.log()[-3000:]
             print(f"PASS JavaScriptCore (LLInt): {jsc.group(1)} checks, workload {jsc.group(2)} ms", flush=True)
+            jit = re.search(r"jsc-probe: with JIT PASS (\d+) checks \(.*\) in (\d+) ms", guest.log())
+            assert jit and int(jit.group(1)) == 17, guest.log()[-3000:]
+            assert "jsc-jit: PASS baseline=true dfg=true ftl=true results=true" in guest.log(), guest.log()[-3000:]
+            print(f"PASS JavaScriptCore JIT (W^X, dual-mapped): {jit.group(1)} checks, workload {jit.group(2)} ms; "
+                  "baseline, DFG and FTL tiers reached", flush=True)
             guest.until(lambda: "runtime: PASS HTTPS" in guest.log()
                         or "https-probe: FAIL" in guest.log() or "runtime: FAIL HTTPS" in guest.log(),
                         "HTTPS", 180)

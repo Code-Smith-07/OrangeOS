@@ -1,8 +1,9 @@
 //! Virtual filesystem layer.
 //!
-//! Two filesystems share one namespace: the read-only CitrusFS root, and a
-//! writable in-memory tmpfs mounted at /tmp. Every path is normalized first
-//! (no empty, "." or ".." components), then dispatched by its mount.
+//! Filesystems share one namespace: the read-only CitrusFS root, the
+//! writable in-memory tmpfs at /tmp, and, when a data disk is attached, the
+//! tmpfs volume /data that persist.zig keeps on it. Every path is normalized
+//! first (no empty, "." or ".." components), then dispatched by its mount.
 //!
 //! CitrusFS resolution walks components from the root, one lookup at a time.
 //! There is no dentry cache yet — every resolution re-reads directory blocks.
@@ -50,8 +51,9 @@ pub const Error = error{
 
 pub const MAX_PATH = 256;
 
-/// Where the tmpfs is mounted.
+/// Where the tmpfs volumes are mounted.
 const TMP_MOUNT = "/tmp";
+const DATA_MOUNT = "/data";
 /// Where the device nodes are.
 const DEV_MOUNT = "/dev";
 
@@ -159,13 +161,24 @@ pub fn normalize(path: []const u8, out: *[MAX_PATH]u8) Error![]const u8 {
     return out[0..len];
 }
 
-/// The part of a normalized path inside the tmpfs ("" for the mount point),
-/// or null when the path is on the root filesystem.
-fn tmpRelative(path: []const u8) ?[]const u8 {
-    if (!std.mem.startsWith(u8, path, TMP_MOUNT)) return null;
-    if (path.len == TMP_MOUNT.len) return "";
-    if (path[TMP_MOUNT.len] != '/') return null;
-    return path[TMP_MOUNT.len + 1 ..];
+const TmpPath = struct { vol: *tmpfs.Volume, rel: []const u8 };
+
+fn under(path: []const u8, mount: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, path, mount)) return null;
+    if (path.len == mount.len) return "";
+    if (path[mount.len] != '/') return null;
+    return path[mount.len + 1 ..];
+}
+
+/// The tmpfs volume holding a normalized path and the part of the path
+/// inside it ("" for the mount point), or null when the path is on the root
+/// filesystem. /data is a volume only while a data disk is mounted.
+fn tmpRelative(path: []const u8) ?TmpPath {
+    if (under(path, TMP_MOUNT)) |rel| return .{ .vol = &tmpfs.tmp, .rel = rel };
+    if (tmpfs.data.persistent) {
+        if (under(path, DATA_MOUNT)) |rel| return .{ .vol = &tmpfs.data, .rel = rel };
+    }
+    return null;
 }
 
 fn deviceRelative(path: []const u8) ?[]const u8 {
@@ -221,8 +234,8 @@ pub fn resolve(path: []const u8) Error!Node {
     if (!mounted) return Error.NotMounted;
     var buffer: [MAX_PATH]u8 = undefined;
     const canonical = try normalize(path, &buffer);
-    if (tmpRelative(canonical)) |relative| {
-        return .{ .tmp = tmpfs.lookup(relative) catch |e| return tmpError(e) };
+    if (tmpRelative(canonical)) |t| {
+        return .{ .tmp = tmpfs.lookup(t.vol, t.rel) catch |e| return tmpError(e) };
     }
     if (deviceRelative(canonical)) |relative| return .{ .device = try deviceNamed(relative) };
     return resolveCitrus(canonical);
@@ -284,9 +297,9 @@ pub fn mkdir(path: []const u8) Error!void {
     if (!mounted) return Error.NotMounted;
     var buffer: [MAX_PATH]u8 = undefined;
     const canonical = try normalize(path, &buffer);
-    const relative = tmpRelative(canonical) orelse return readOnlyChange(canonical, true);
-    if (relative.len == 0) return Error.Exists;
-    tmpfs.mkdir(relative) catch |e| return tmpError(e);
+    const t = tmpRelative(canonical) orelse return readOnlyChange(canonical, true);
+    if (t.rel.len == 0) return Error.Exists;
+    tmpfs.mkdir(t.vol, t.rel) catch |e| return tmpError(e);
 }
 
 /// unlink (`directory` false) or rmdir.
@@ -294,9 +307,9 @@ pub fn remove(path: []const u8, directory: bool) Error!void {
     if (!mounted) return Error.NotMounted;
     var buffer: [MAX_PATH]u8 = undefined;
     const canonical = try normalize(path, &buffer);
-    const relative = tmpRelative(canonical) orelse return readOnlyChange(canonical, false);
-    if (relative.len == 0) return Error.Busy;
-    tmpfs.remove(relative, directory) catch |e| return tmpError(e);
+    const t = tmpRelative(canonical) orelse return readOnlyChange(canonical, false);
+    if (t.rel.len == 0) return Error.Busy;
+    tmpfs.remove(t.vol, t.rel, directory) catch |e| return tmpError(e);
 }
 
 pub fn rename(from: []const u8, to: []const u8) Error!void {
@@ -309,8 +322,9 @@ pub fn rename(from: []const u8, to: []const u8) Error!void {
     const target_tmp = tmpRelative(target);
     if (source_tmp == null and target_tmp == null) return readOnlyChange(source, false);
     if (source_tmp == null or target_tmp == null) return Error.CrossDevice;
-    if (source_tmp.?.len == 0 or target_tmp.?.len == 0) return Error.Busy;
-    tmpfs.rename(source_tmp.?, target_tmp.?) catch |e| return tmpError(e);
+    if (source_tmp.?.vol != target_tmp.?.vol) return Error.CrossDevice;
+    if (source_tmp.?.rel.len == 0 or target_tmp.?.rel.len == 0) return Error.Busy;
+    tmpfs.rename(source_tmp.?.vol, source_tmp.?.rel, target_tmp.?.rel) catch |e| return tmpError(e);
 }
 
 pub const Usage = struct { total_bytes: u64, free_bytes: u64, read_only: bool };
@@ -320,8 +334,8 @@ pub fn usage(path: []const u8) Error!Usage {
     const node = try resolve(path);
     defer release(node);
     return switch (node) {
-        .tmp => blk: {
-            const u = tmpfs.usage();
+        .tmp => |t| blk: {
+            const u = tmpfs.usage(t.volume);
             break :blk .{ .total_bytes = u.total_bytes, .free_bytes = u.free_bytes, .read_only = false };
         },
         .citrus => .{
@@ -351,8 +365,8 @@ pub fn openNode(path: []const u8, flags: u32) Error!Node {
         };
         if (flags & OPEN_CREATE != 0 and flags & OPEN_EXCLUSIVE != 0) return Error.Exists;
         break :blk .{ .device = device };
-    } else if (tmpRelative(canonical)) |relative|
-        .{ .tmp = tmpfs.open(relative, flags & OPEN_CREATE != 0, flags & OPEN_EXCLUSIVE != 0) catch |e| return tmpError(e) }
+    } else if (tmpRelative(canonical)) |t|
+        .{ .tmp = tmpfs.open(t.vol, t.rel, flags & OPEN_CREATE != 0, flags & OPEN_EXCLUSIVE != 0) catch |e| return tmpError(e) }
     else blk: {
         const found = resolveCitrus(canonical) catch |e| {
             if (e == Error.NotFound and flags & OPEN_CREATE != 0) return Error.ReadOnly;

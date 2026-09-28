@@ -63,6 +63,7 @@ const FIS_TYPE_REG_H2D: u8 = 0x27;
 
 const ATA_CMD_READ_DMA_EX: u8 = 0x25;
 const ATA_CMD_WRITE_DMA_EX: u8 = 0x35;
+const ATA_CMD_FLUSH_CACHE_EX: u8 = 0xEA;
 const ATA_CMD_IDENTIFY: u8 = 0xEC;
 
 const PORT_COUNT = 32;
@@ -213,8 +214,9 @@ fn runCommand(
     var z: usize = 0;
     while (z < @sizeOf(CommandTable)) : (z += 1) table_bytes[z] = 0;
 
+    // A command without data (FLUSH CACHE) has no PRDT entry.
     const byte_count: u32 = @as(u32, sectors) * @as(u32, block.SECTOR_SIZE);
-    table.prdt[0] = .{
+    if (byte_count != 0) table.prdt[0] = .{
         .dba = @truncate(data_phys),
         .dbau = @truncate(data_phys >> 32),
         .reserved = 0,
@@ -245,7 +247,7 @@ fn runCommand(
 
     const fis_dwords: u16 = @sizeOf(FisRegH2D) / 4;
     headers[0].flags = fis_dwords | (if (write) @as(u16, 1) << 6 else 0);
-    headers[0].prdt_length = 1;
+    headers[0].prdt_length = if (byte_count != 0) 1 else 0;
     headers[0].prd_byte_count = 0;
     headers[0].ctba = @truncate(port.ctba_phys);
     headers[0].ctbau = @truncate(port.ctba_phys >> 32);
@@ -294,6 +296,11 @@ fn writeSectors(ctx: *anyopaque, lba: u64, count: u32, buf: [*]const u8) block.E
         try runCommand(port, ATA_CMD_WRITE_DMA_EX, lba + done, @intCast(chunk), port.bounce_phys, true);
         done += chunk;
     }
+}
+
+fn flushCache(ctx: *anyopaque) block.Error!void {
+    const port: *Port = @ptrCast(@alignCast(ctx));
+    try runCommand(port, ATA_CMD_FLUSH_CACHE_EX, 0, 0, port.bounce_phys, false);
 }
 
 /// IDENTIFY returns 512 bytes describing the device; word 100 onward holds the
@@ -393,7 +400,7 @@ pub fn init() !usize {
             .name = n.buf,
             .name_len = n.len,
             .ctx = port,
-            .ops = .{ .read = readSectors, .write = writeSectors },
+            .ops = .{ .read = readSectors, .write = writeSectors, .flush = flushCache },
             .sectors = port.sectors,
         });
         found += 1;

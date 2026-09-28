@@ -1,0 +1,39 @@
+OrangeOS: allow ENABLE_VIDEO without GStreamer.
+
+WebKit's GLib ports only offer video with GStreamer, and without video
+there is no HTMLVideoElement: YouTube's scripts stop at a ReferenceError
+and the page never fills in. OrangeOS has no GStreamer yet, so build
+video with no media engine: <video> and <audio> exist and report that
+they cannot play anything (canPlayType answers ""), which is how an
+engine-less media player behaves. Playback needs the GStreamer port.
+
+diff -ru a/Source/WebCore/platform/GStreamer.cmake b/Source/WebCore/platform/GStreamer.cmake
+--- a/Source/WebCore/platform/GStreamer.cmake	2026-09-28 17:29:40
++++ b/Source/WebCore/platform/GStreamer.cmake	2026-09-28 17:29:40
+@@ -1,6 +1,6 @@
+ include(CheckCXXSymbolExists)
+ 
+-if (ENABLE_VIDEO OR ENABLE_WEB_AUDIO)
++if (USE_GSTREAMER AND (ENABLE_VIDEO OR ENABLE_WEB_AUDIO))
+     list(APPEND WebCore_LIBRARIES
+         GLib::GioUnix
+     )
+@@ -79,7 +79,7 @@
+     endif ()
+ endif ()
+ 
+-if (ENABLE_VIDEO)
++if (USE_GSTREAMER AND ENABLE_VIDEO)
+     list(APPEND WebCore_SYSTEM_INCLUDE_DIRECTORIES
+         ${GSTREAMER_TAG_INCLUDE_DIRS}
+         ${GSTREAMER_VIDEO_INCLUDE_DIRS}
+diff -ru a/Source/cmake/GStreamerDependencies.cmake b/Source/cmake/GStreamerDependencies.cmake
+--- a/Source/cmake/GStreamerDependencies.cmake	2026-09-28 17:28:46
++++ b/Source/cmake/GStreamerDependencies.cmake	2026-09-28 17:28:46
+@@ -1,5 +1,5 @@
+ WEBKIT_OPTION_DEPEND(ENABLE_SPEECH_SYNTHESIS USE_GSTREAMER)
+-WEBKIT_OPTION_DEPEND(ENABLE_VIDEO USE_GSTREAMER)
++# OrangeOS: video without a media engine until GStreamer is ported.
+ WEBKIT_OPTION_DEPEND(ENABLE_WEB_AUDIO USE_GSTREAMER)
+ WEBKIT_OPTION_DEPEND(ENABLE_WEB_CODECS USE_GSTREAMER)
+ WEBKIT_OPTION_DEPEND(USE_GSTREAMER_GL ENABLE_VIDEO)

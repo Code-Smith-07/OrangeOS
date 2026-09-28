@@ -78,7 +78,7 @@ on OrangeOS's own compositor, processes, IPC, and framebuffer.
 | Reveal/restore desktop | Desktop menu or F11 |
 | Calendar, month browsing, Today | Top-right date/time |
 | Open Clock from Calendar | Open Clock button (or Clock in the dock) |
-| Cycle visible windows | Tab |
+| Cycle visible windows | Alt+Tab (plain Tab goes to the window) |
 | Dismiss a desktop panel | Escape or a click outside it |
 | Zoom/restore a window | Green title-bar button |
 | Browse the guest filesystem | Files dock icon or Welcome's Files card |
