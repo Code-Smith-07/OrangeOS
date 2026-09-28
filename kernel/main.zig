@@ -165,6 +165,7 @@ export fn kmain() callconv(.c) noreturn {
         _ = sched.spawn("tlb-probe", tlb_test.run, null, .normal) catch {};
     }
 
+    net.startService();
     _ = sched.spawn("orphan-reaper", sched.orphanReaper, null, .batch) catch |e| {
         fbcon.reclaim();
         console.err("could not spawn orphan reaper: {s}", .{@errorName(e)});

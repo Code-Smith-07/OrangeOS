@@ -74,6 +74,7 @@ pub fn build(b: *std.Build) void {
     // checkout has no build/wpe/sysroot.
     const wpe_probes = b.option(bool, "wpe-probes", "Build WPE trial probes against build/wpe/sysroot (run tools/wpe/build_deps.py first)") orelse false;
     ui_options.addOption(bool, "wpe_probes", wpe_probes);
+    ui_options.addOption(bool, "wpe_first", b.option(bool, "wpe-first", "Run the WPE trial probes before the other runtime probes (for iterating on them)") orelse false);
     ui_options.addOption(bool, "desktop_profile", b.option(bool, "desktop-profile", "Emit compositor frame timing for QEMU profiling") orelse false);
     const timezone = b.option(i32, "timezone-minutes", "Local offset from UTC in minutes (default India +330)") orelse 330;
     if (timezone < -720 or timezone > 840) @panic("timezone-minutes must be -720..840");
@@ -335,6 +336,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "shm-probe", .sources = &.{"userland/bin/shm-probe/probe.c"} },
         .{ .name = "random-probe", .sources = &.{"userland/bin/random-probe/probe.c"} },
         .{ .name = "signal-probe", .sources = &.{"userland/bin/signal-probe/probe.c"} },
+        .{ .name = "inet-probe", .sources = &.{"userland/bin/inet-probe/probe.c"} },
     };
     for (c_programs) |program| {
         const mod = b.createModule(.{
@@ -510,6 +512,12 @@ pub fn build(b: *std.Build) void {
                 "woff2enc",  "woff2dec",   "woff2common", "brotlienc",  "brotlidec",    "brotlicommon", "glib-2.0",
                 "pcre2-8",   "z",
             } },
+            .{ .name = "jsc-probe", .sources = &.{"userland/bin/jsc-probe/probe.c"}, .cxx = false, .libs = &.{} },
+            // JavaScriptCore's own shell, compiled by the JSCOnly build
+            // (tools/wpe/build_deps.py wpewebkit) and linked here.
+            .{ .name = "jsc", .sources = &.{}, .cxx = true, .libs = &.{
+                "jsc-shell.o", "JavaScriptCore", "JavaScriptCoreJIT", "WTF", "bmalloc", "icui18n", "icuuc", "icudata",
+            } },
         };
         for (wpe_programs) |program| {
             const mod = b.createModule(.{
@@ -543,7 +551,8 @@ pub fn build(b: *std.Build) void {
             }
             for (musl_headers) |dir| mod.addSystemIncludePath(.{ .cwd_relative = dir });
             for (program.libs) |lib| {
-                mod.addObjectFile(b.path(b.fmt("{s}/lib/lib{s}.a", .{ sysroot, lib })));
+                const file = if (std.mem.endsWith(u8, lib, ".o")) b.fmt("{s}/lib/{s}", .{ sysroot, lib }) else b.fmt("{s}/lib/lib{s}.a", .{ sysroot, lib });
+                mod.addObjectFile(b.path(file));
             }
             if (program.cxx) {
                 mod.linkLibrary(cxx_lib);

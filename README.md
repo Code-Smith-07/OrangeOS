@@ -183,7 +183,11 @@ Done so far, each tested in QEMU on two and four vCPUs:
 - **Files:** a writable in-memory `/tmp` (create, write, truncate, rename,
   unlink while open, directory listing, `pread`/`pwrite`). The disk itself
   stays read-only.
-- **Network:** DNS and blocking TCP/UDP, safe for concurrent threads.
+- **Network:** BSD sockets through musl: TCP and UDP descriptors, blocking and
+  non-blocking with poll/epoll, `getaddrinfo` and DNS through
+  `/etc/resolv.conf`. TCP has 64 KiB windows with several segments in flight,
+  retransmission, resets and keepalive. A kernel network thread handles
+  receive and timers. Not yet: listening sockets, loopback, IPv6.
 - **Reliability:** the long-standing intermittent kernel panic was found and
   fixed. Scheduler, heap and spawn checks catch that class of bug early.
 

@@ -41,6 +41,11 @@ pub const AddressSpace = struct {
     access_epoch: u64 = 0,
     access_counts: [2]u32 = .{ 0, 0 },
     anonymous_vm: user_vm.State = .{},
+    /// The loaded program image, [image_start, image_end): its pages are
+    /// mapped at exec, and mprotect may change them (a program freezing its
+    /// own data, as JavaScriptCore does with its configuration page).
+    image_start: u64 = 0,
+    image_end: u64 = 0,
     shm_next: u64 = SHM_REGION_BASE,
     // Each entry owns one reference, independently of the task's handle table.
     mapped_shm: [128]?*object.Object = [_]?*object.Object{null} ** 128,

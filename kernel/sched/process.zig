@@ -177,6 +177,8 @@ pub fn execNode(node: *const vfs.Node, path: []const u8, arguments: Arguments) E
     const pml4 = space.pml4;
 
     const loaded = try elf.loadFromNode(pml4, node);
+    space.image_start = loaded.start;
+    space.image_end = loaded.brk;
 
     // User stack, writable and non-executable.
     @import("../mm/user_vm.zig").mapStack(space, USER_STACK_TOP, USER_STACK_SIZE, USER_STACK_EAGER) catch return Error.OutOfMemory;

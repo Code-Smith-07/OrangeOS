@@ -1445,9 +1445,9 @@ link musl 1.2.5, whose Linux-numbered calls are translated in userland by
 | 136 | `epoll_wait` | `(epfd, *events, max, timeout_ms) → count` — at most 128 per call; -1 waits indefinitely (implemented) | P5 runtime |
 | 137 | `poll` | `(*pollfd, nfds, timeout_ms) → count` — at most 1024 entries (implemented) | P5 runtime |
 | 138 | `socketpair` | `(type, flags, *[2]i32) → !void` — 1 stream, 2 datagram, 5 seqpacket; flags as for `pipe` (implemented) | P5 runtime |
-| 139 | `sendmsg` | `(fd, *{iov, iov_count, fds, fd_count: u32, flags: u32}, flags) → count` — passes up to 64 descriptions; flag 1 don't wait (implemented) | P5 runtime |
-| 140 | `recvmsg` | `(fd, *message, flags) → count` — installs received descriptions and writes back how many; message flags 1 truncated, 2 descriptions dropped; flags 1 don't wait, 2 close-on-exec (implemented) | P5 runtime |
-| 141 | `shutdown` | `(fd, how) → !void` — 0 read, 1 write, 2 both (implemented) | P5 runtime |
+| 139 | `sendmsg` | `(fd, *{iov, iov_count, fds, fd_count: u32, flags: u32, name, name_len: u32, reserved: u32}, flags) → count` — socket pairs: up to 64 descriptions, no address (EISCONN); internet sockets: an optional destination as a Linux `sockaddr_in`; flags 1 don't wait, 8 no signal (implemented) | P5 runtime |
+| 140 | `recvmsg` | `(fd, *message, flags) → count` — installs received descriptions and writes back how many; internet sockets write the sender's `sockaddr_in` and its length; message flags 1 truncated, 2 descriptions dropped; flags 1 don't wait, 2 close-on-exec, 4 peek, 16 report truncation (implemented) | P5 runtime |
+| 141 | `shutdown` | `(fd, how) → !void` — 0 read, 1 write (a TCP FIN), 2 both; socket pairs and internet sockets (implemented) | P5 runtime |
 | 142 | `resolve_path` | `(dirfd, path_ptr, path_len, out, capacity) → length` — the canonical absolute path, relative to a directory descriptor (-1: the working directory); for the `*at()` calls (implemented) | P5 runtime |
 | 144 | `vm_map` | `(address, length, prot, flags, fd, offset) → address` — memory in the Linux mmap model, backed as it is touched; flags 1 FIXED (replacing lazy mappings), 2 FIXED_NOREPLACE, 4 hint, 8 shared; up to 64 GiB; `fd` -1 for anonymous memory, else a file: shared (tmpfs/memfd frames) or private copies (implemented) | P5 runtime |
 | 147 | `memfd` | `(flags) → fd` — an anonymous tmpfs file; flags 2 close-on-exec, 8 allow sealing; seals through `fd_control` 6 (add) and 7 (get) (implemented) | P5 runtime |
@@ -1461,6 +1461,13 @@ link musl 1.2.5, whose Linux-numbered calls are translated in userland by
 | 154 | `sigreturn` | `(ucontext*)` — returns from a handler, restoring every register through IRETQ (implemented) | P5 runtime |
 | 155 | `sigaltstack` | `(*new, *old)` — Linux `stack_t` (implemented) | P5 runtime |
 | 156 | `sigpending` | `(*set)` (implemented) | P5 runtime |
+| 157 | `socket` | `(domain, type, protocol, flags) → fd` — AF_INET (2) only: 1 stream (TCP), 2 datagram (UDP); flags 1 non-blocking, 2 close-on-exec; other families EAFNOSUPPORT (implemented) | P5 runtime |
+| 158 | `connect` | `(fd, *sockaddr_in, len) → !void` — TCP handshake (EINPROGRESS when non-blocking; SO_ERROR reports the outcome), UDP default peer; 127/8 is ENETUNREACH, as there is no loopback interface (implemented) | P5 runtime |
+| 159 | `bind` | `(fd, *sockaddr_in, len) → !void` — any or the local address; port 0 picks an ephemeral one (implemented) | P5 runtime |
+| 160 | `listen` | `(fd) → EOPNOTSUPP` — passive TCP open is not implemented | P5 runtime |
+| 161 | `sockname` | `(fd, which, *addr, *len) → !void` — 0 getsockname, 1 getpeername (implemented) | P5 runtime |
+| 162 | `getsockopt` | `(fd, level, name, *value, *len) → !void` — Linux levels and names: SO_TYPE/ERROR/DOMAIN/PROTOCOL/ACCEPTCONN/REUSEADDR/BROADCAST/KEEPALIVE/SNDBUF/RCVBUF/LINGER/RCVTIMEO/SNDTIMEO, TCP_NODELAY; others ENOPROTOOPT (implemented) | P5 runtime |
+| 163 | `setsockopt` | `(fd, level, name, *value, len) → !void` — as above; SO_LINGER only in its abortive form (a blocking linger is EOPNOTSUPP) (implemented) | P5 runtime |
 | 143 | `spawn_process` | `(*{path, args, env, fds, cwd})` → pid — NUL-separated argument and environment blocks (together ≤ 32 KiB, ≤ 1024 strings), `{child, parent}` descriptor pairs the program starts with exactly, and a working directory (implemented) | P5 runtime |
 | | **── Threads ──** | | |
 | 40 | `thread_create` | `(entry, stack, arg, tls_base, exit_word) → tid` (implemented; `entry(arg)` in ring 3, kernel stores 0 to `exit_word` and wakes it at thread exit) | P4 runtime |

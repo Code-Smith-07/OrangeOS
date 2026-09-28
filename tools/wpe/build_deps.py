@@ -357,6 +357,50 @@ def build_woff2(src, env):
           f"-DBROTLIDEC_LIBRARIES={os.path.join(lib, 'libbrotlidec.a')};{common}")
 
 
+def build_javascriptcore(src, env):
+    """W4: JavaScriptCore alone (WebKit's JSCOnly port) from the pinned WPE
+    WebKit tarball: static WTF, bmalloc and JavaScriptCore, plus the jsc
+    shell's object file. build.zig links the shell against OrangeOS's musl
+    (-Dwpe-probes); the jsc CMake links here is for the stock Linux ABI and
+    is not used."""
+    build = os.path.join(OBJ, "javascriptcore")
+    os.makedirs(build, exist_ok=True)
+    run(["cmake", "-S", src, "-B", build, "-G", "Ninja",
+         f"-DCMAKE_TOOLCHAIN_FILE={configured('orangeos-x86_64.cmake.in')}",
+         "-DCMAKE_BUILD_TYPE=Release", "-DPORT=JSCOnly", "-DENABLE_STATIC_JSC=ON",
+         "-DDEVELOPER_MODE=OFF", "-DENABLE_API_TESTS=OFF", "-DUSE_LIBBACKTRACE=OFF",
+         "-DENABLE_REMOTE_INSPECTOR=OFF", "-DEVENT_LOOP_TYPE=Generic",
+         # The release tarball omits Tools/Scripts/hmaptool; header maps are
+         # only a build-speed optimisation.
+         "-DUSE_HEADER_MAPS=OFF",
+         # simdutf's AVX-512 kernels need clang's evex512 feature, and
+         # OrangeOS has no AVX state support yet; simdutf picks its kernel
+         # at run time, so the SSE ones remain.
+         "-DCMAKE_CXX_FLAGS=-DSIMDUTF_IMPLEMENTATION_ICELAKE=0",
+         "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"], ROOT, env)
+    run(["cmake", "--build", build, "--target", "jsc"], ROOT, env)
+    lib = os.path.join(SYSROOT, "lib")
+    for archive in ("libJavaScriptCore.a", "libWTF.a", "libbmalloc.a"):
+        found = [os.path.join(base, archive) for base, _dirs, files in os.walk(build) if archive in files]
+        if not found:
+            raise SystemExit(f"javascriptcore: {archive} was not built")
+        shutil.copy2(found[0], os.path.join(lib, archive))
+    # The JIT tiers are a CMake object library linked straight into jsc;
+    # archive them for the OrangeOS link.
+    jit_objects = sorted(os.path.join(base, name) for base, _dirs, files in os.walk(build)
+                         if "JavaScriptCoreJIT.dir" in base for name in files if name.endswith(".o"))
+    jit_archive = os.path.join(lib, "libJavaScriptCoreJIT.a")
+    if os.path.exists(jit_archive):
+        os.remove(jit_archive)
+    run([AR, "qc", jit_archive, *jit_objects], ROOT, env)
+    run([RANLIB, jit_archive], ROOT, env)
+    shell = [os.path.join(base, name) for base, _dirs, files in os.walk(build)
+             for name in files if name == "jsc.cpp.o" and "jsc.dir" in base]
+    if len(shell) != 1:
+        raise SystemExit(f"javascriptcore: expected one jsc.cpp.o, found {shell}")
+    shutil.copy2(shell[0], os.path.join(lib, "jsc-shell.o"))
+
+
 RECIPES = {
     "bison": build_bison,
     "zlib": build_zlib,
@@ -382,12 +426,14 @@ RECIPES = {
     "egl-registry": build_egl_registry,
     "libepoxy": build_libepoxy,
     "woff2": build_woff2,
+    "wpewebkit": build_javascriptcore,
 }
 STAGES = {
     "W1": ["zlib", "libffi", "pcre2", "glib"],
     "W3": ["bison", "libpng", "libjpeg-turbo", "libwebp", "brotli", "freetype", "expat",
            "fontconfig", "icu", "harfbuzz", "libxml2", "libxslt", "sqlite", "libgpg-error",
            "libgcrypt", "libtasn1", "libxkbcommon", "egl-registry", "libepoxy", "woff2"],
+    "W4": ["wpewebkit"],
 }
 
 

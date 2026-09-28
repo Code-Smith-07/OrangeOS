@@ -125,6 +125,13 @@ pub const Nr = enum(u64) {
     sigreturn = 154,
     sigaltstack = 155,
     sigpending = 156,
+    socket = 157,
+    connect = 158,
+    bind = 159,
+    listen = 160,
+    sockname = 161,
+    getsockopt = 162,
+    setsockopt = 163,
     readdir = 34,
     readdir_page = 38,
     port_create = 50,
@@ -235,6 +242,13 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) u64 {
         .sendmsg => sysSendMsg(frame.rdi, frame.rsi, frame.rdx),
         .recvmsg => sysRecvMsg(frame.rdi, frame.rsi, frame.rdx),
         .shutdown => sysShutdown(frame.rdi, frame.rsi),
+        .socket => sysSocket(frame.rdi, frame.rsi, frame.rdx, frame.r10),
+        .connect => sysConnect(frame.rdi, frame.rsi, frame.rdx),
+        .bind => sysBind(frame.rdi, frame.rsi, frame.rdx),
+        .listen => sysListen(frame.rdi),
+        .sockname => sysSockname(frame.rdi, frame.rsi, frame.rdx, frame.r10),
+        .getsockopt => sysGetsockopt(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
+        .setsockopt => sysSetsockopt(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
         .chdir => sysChdir(frame.rdi, frame.rsi),
         .getcwd => sysGetcwd(frame.rdi, frame.rsi),
         .resolve_path => sysResolvePath(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
@@ -1261,20 +1275,31 @@ fn sysSocketPair(kind: u64, flags: u64, out: u64) i64 {
     return 0;
 }
 
-/// The message sendmsg and recvmsg take: data as an iovec array, and
-/// descriptors as an i32 array. recvmsg writes back how many descriptors it
-/// installed and `flags` (1 data truncated, 2 descriptors dropped).
+/// The message sendmsg and recvmsg take: data as an iovec array,
+/// descriptors as an i32 array, and for internet sockets an address in
+/// Linux's sockaddr_in layout (`name`, 0 for none). recvmsg writes back how
+/// many descriptors it installed, the sender's address and its length, and
+/// `flags` (1 data truncated, 2 descriptors dropped).
 const NativeMessage = extern struct {
     iov: u64,
     iov_count: u64,
     fds: u64,
     fd_count: u32,
     flags: u32,
+    name: u64,
+    name_len: u32,
+    reserved: u32,
 };
 const Iovec = extern struct { base: u64, len: u64 };
 /// sendmsg/recvmsg flags.
 const MSG_DONTWAIT: u64 = 1;
 const MSG_CLOEXEC: u64 = 2;
+/// Leave the data queued.
+const MSG_PEEK: u64 = 4;
+/// Accepted: OrangeOS never raises SIGPIPE for a socket.
+const MSG_NOSIGNAL: u64 = 8;
+/// Return a datagram's full length even when it was cut short.
+const MSG_TRUNC: u64 = 16;
 const MAX_IOV = 1024;
 
 fn socketOf(number: u64) error{ BadFd, NotSocket }!struct { desc: *fd_mod.Description, sock: fd_mod.SocketEnd } {
@@ -1320,7 +1345,11 @@ fn totalLength(vectors: []const Iovec) ?usize {
 }
 
 fn sysSendMsg(number: u64, address: u64, flags: u64) i64 {
-    if (flags & ~MSG_DONTWAIT != 0) return EINVAL;
+    if (flags & ~(MSG_DONTWAIT | MSG_NOSIGNAL) != 0) return EINVAL;
+    if (inetOf(number)) |desc| {
+        defer desc.release();
+        return inetSendMsg(desc, address, flags);
+    }
     const target = socketOf(number) catch |e| return if (e == error.BadFd) EBADF else ENOTSOCK;
     defer target.desc.release();
     var message: NativeMessage = undefined;
@@ -1329,6 +1358,8 @@ fn sysSendMsg(number: u64, address: u64, flags: u64) i64 {
     const requested = totalLength(vectors) orelse return EINVAL;
     const length = @min(requested, unix_socket.CAPACITY);
     if (target.sock.pair.kind != .stream and requested > unix_socket.CAPACITY) return EMSGSIZE;
+    // Socket pairs are connected: an address is refused, as on Linux.
+    if (message.name != 0) return EISCONN;
     if (message.fd_count > unix_socket.MAX_RIGHTS) return EINVAL;
 
     const pml4 = vmm.currentCr3();
@@ -1366,7 +1397,12 @@ fn sysSendMsg(number: u64, address: u64, flags: u64) i64 {
 }
 
 fn sysRecvMsg(number: u64, address: u64, flags: u64) i64 {
-    if (flags & ~(MSG_DONTWAIT | MSG_CLOEXEC) != 0) return EINVAL;
+    if (flags & ~(MSG_DONTWAIT | MSG_CLOEXEC | MSG_PEEK | MSG_TRUNC) != 0) return EINVAL;
+    if (inetOf(number)) |desc| {
+        defer desc.release();
+        return inetRecvMsg(desc, address, flags);
+    }
+    if (flags & (MSG_PEEK | MSG_TRUNC) != 0) return EINVAL;
     const target = socketOf(number) catch |e| return if (e == error.BadFd) EBADF else ENOTSOCK;
     defer target.desc.release();
     const proc = sched.currentProcess() orelse return EIO;
@@ -1412,6 +1448,7 @@ fn sysRecvMsg(number: u64, address: u64, flags: u64) i64 {
         validate.copyToUser(pml4, message.fds, std.mem.sliceAsBytes(installed[0..installed_count]), installed_count * 4) catch return EFAULT;
     }
     message.fd_count = @intCast(installed_count);
+    message.name_len = 0;
     message.flags = (if (got.truncated) @as(u32, 1) else 0) | (if (dropped) @as(u32, 2) else 0);
     validate.copyToUser(pml4, address, std.mem.asBytes(&message), @sizeOf(NativeMessage)) catch return EFAULT;
     return @intCast(got.bytes);
@@ -1419,10 +1456,339 @@ fn sysRecvMsg(number: u64, address: u64, flags: u64) i64 {
 
 fn sysShutdown(number: u64, how: u64) i64 {
     if (how > 2) return EINVAL;
+    if (inetOf(number)) |desc| {
+        defer desc.release();
+        inet.shutdown(desc.object.inet, @intCast(how)) catch |e| return inetErrno(e);
+        return 0;
+    }
     const target = socketOf(number) catch |e| return if (e == error.BadFd) EBADF else ENOTSOCK;
     defer target.desc.release();
     unix_socket.shutdown(target.sock.pair, target.sock.end, @intCast(how));
     return 0;
+}
+
+// ── Internet sockets ────────────────────────────────────────────────────────
+//
+// BSD's shape with OrangeOS numbers: addresses are Linux's sockaddr_in and
+// option levels and names are Linux's, so the musl layer passes them on.
+
+const inet = @import("../net/socket.zig");
+const EISCONN: i64 = -106;
+const ENOTCONN: i64 = -107;
+const EAFNOSUPPORT: i64 = -97;
+const EPROTONOSUPPORT: i64 = -93;
+const EOPNOTSUPP: i64 = -95;
+const ENOPROTOOPT: i64 = -92;
+const AF_UNSPEC: u16 = 0;
+const AF_UNIX: u16 = 1;
+const AF_INET: u16 = 2;
+const SOCKADDR_IN_SIZE = 16;
+
+fn inetErrno(e: inet.Error) i64 {
+    return switch (e) {
+        inet.Error.WouldBlock => EAGAIN,
+        inet.Error.Interrupted => EINTR,
+        inet.Error.OutOfMemory => ENOMEM,
+        inet.Error.InvalidArgument => EINVAL,
+        inet.Error.NotConnected => ENOTCONN,
+        inet.Error.AlreadyConnected => EISCONN,
+        inet.Error.InProgress => -115, // EINPROGRESS
+        inet.Error.AlreadyInProgress => -114, // EALREADY
+        inet.Error.Refused => -111, // ECONNREFUSED
+        inet.Error.Reset => -104, // ECONNRESET
+        inet.Error.TimedOut => -110, // ETIMEDOUT
+        inet.Error.Unreachable => -101, // ENETUNREACH
+        inet.Error.BrokenPipe => EPIPE,
+        inet.Error.AddressInUse => -98, // EADDRINUSE
+        inet.Error.AddressUnavailable => -99, // EADDRNOTAVAIL
+        inet.Error.MessageTooLong => EMSGSIZE,
+        inet.Error.DestinationRequired => -89, // EDESTADDRREQ
+        inet.Error.NotPermitted => EACCES,
+        inet.Error.NoProtocolOption => ENOPROTOOPT,
+        inet.Error.NotSupported => EOPNOTSUPP,
+    };
+}
+
+/// The description of an internet socket, with a reference, or null.
+fn inetOf(number: u64) ?*fd_mod.Description {
+    const desc = descriptionOf(number) orelse return null;
+    if (desc.object == .inet) return desc;
+    desc.release();
+    return null;
+}
+
+const AddressError = error{ Fault, Invalid, Family };
+
+fn addressErrno(e: AddressError) i64 {
+    return switch (e) {
+        error.Fault => EFAULT,
+        error.Invalid => EINVAL,
+        error.Family => EAFNOSUPPORT,
+    };
+}
+
+/// A sockaddr_in from user memory. AF_UNSPEC reads as the zero endpoint.
+fn readAddress(address: u64, length: u64) AddressError!inet.Endpoint {
+    if (length < 2) return error.Invalid;
+    var raw: [SOCKADDR_IN_SIZE]u8 = [_]u8{0} ** SOCKADDR_IN_SIZE;
+    const take: usize = @intCast(@min(length, SOCKADDR_IN_SIZE));
+    validate.copyFromUser(vmm.currentCr3(), raw[0..take], address, take) catch return error.Fault;
+    const family = std.mem.readInt(u16, raw[0..2], .little);
+    if (family == AF_UNSPEC) return .{};
+    if (family != AF_INET) return error.Family;
+    if (length < SOCKADDR_IN_SIZE) return error.Invalid;
+    return .{ .ip = raw[4..8].*, .port = std.mem.readInt(u16, raw[2..4], .big) };
+}
+
+/// Write a sockaddr_in into `capacity` bytes at `address`; returns the full
+/// length, which the caller reports.
+fn writeAddress(address: u64, capacity: u64, at: inet.Endpoint) error{Fault}!u32 {
+    var raw: [SOCKADDR_IN_SIZE]u8 = [_]u8{0} ** SOCKADDR_IN_SIZE;
+    std.mem.writeInt(u16, raw[0..2], AF_INET, .little);
+    std.mem.writeInt(u16, raw[2..4], at.port, .big);
+    @memcpy(raw[4..8], &at.ip);
+    const put: usize = @intCast(@min(capacity, SOCKADDR_IN_SIZE));
+    if (put > 0) validate.copyToUser(vmm.currentCr3(), address, raw[0..put], put) catch return error.Fault;
+    return SOCKADDR_IN_SIZE;
+}
+
+/// socket(domain, type, protocol, flags): AF_INET with 1 stream (TCP) or 2
+/// datagram (UDP); flags 1 non-blocking, 2 close-on-exec. Other families
+/// are not offered (socketpair covers local sockets).
+fn sysSocket(domain: u64, kind: u64, protocol: u64, flags: u64) i64 {
+    if (flags & ~(FD_NONBLOCK | FD_CLOEXEC) != 0) return EINVAL;
+    if (domain != AF_INET) return EAFNOSUPPORT;
+    if (!net.isUp()) return -19; // ENODEV: no network card
+    const socket_kind: inet.Kind = switch (kind) {
+        1 => if (protocol == 0 or protocol == 6) .stream else return EPROTONOSUPPORT,
+        2 => if (protocol == 0 or protocol == 17) .datagram else return EPROTONOSUPPORT,
+        else => return EPROTONOSUPPORT,
+    };
+    const proc = sched.currentProcess() orelse return EIO;
+    return fd_mod.createInetSocket(&proc.files, socket_kind, flags & FD_NONBLOCK != 0, flags & FD_CLOEXEC != 0) catch |e| vfsErrno(e);
+}
+
+fn sysConnect(number: u64, address: u64, length: u64) i64 {
+    const desc = inetOf(number) orelse return if (socketOf(number)) |pair| blk: {
+        pair.desc.release();
+        break :blk EISCONN; // socket pairs are born connected
+    } else |e| if (e == error.BadFd) EBADF else ENOTSOCK;
+    defer desc.release();
+    const to = readAddress(address, length) catch |e| return addressErrno(e);
+    io.sti();
+    defer io.cli();
+    inet.connect(desc.object.inet, to, desc.statusFlags() & vfs.OPEN_NONBLOCK != 0) catch |e| return inetErrno(e);
+    return 0;
+}
+
+fn sysBind(number: u64, address: u64, length: u64) i64 {
+    const desc = inetOf(number) orelse return if (descriptionOf(number)) |d| blk: {
+        d.release();
+        break :blk if (d.object == .socket) EINVAL else ENOTSOCK;
+    } else EBADF;
+    defer desc.release();
+    const at = readAddress(address, length) catch |e| return addressErrno(e);
+    inet.bind(desc.object.inet, at) catch |e| return inetErrno(e);
+    return 0;
+}
+
+/// Passive open is not implemented; a listening socket that never accepts
+/// would be worse than a clear refusal.
+fn sysListen(number: u64) i64 {
+    const desc = descriptionOf(number) orelse return EBADF;
+    defer desc.release();
+    return switch (desc.object) {
+        .inet, .socket => EOPNOTSUPP,
+        else => ENOTSOCK,
+    };
+}
+
+/// getsockname (which 0) and getpeername (1). `length_address` points to a
+/// u32 capacity, replaced by the address's length.
+fn sysSockname(number: u64, which: u64, address: u64, length_address: u64) i64 {
+    const desc = descriptionOf(number) orelse return EBADF;
+    defer desc.release();
+    const pml4 = vmm.currentCr3();
+    var capacity: u32 = 0;
+    validate.copyFromUser(pml4, std.mem.asBytes(&capacity), length_address, 4) catch return EFAULT;
+    var length: u32 = undefined;
+    switch (desc.object) {
+        .inet => |sock| {
+            const at = if (which == 0) inet.localAddress(sock) else inet.peerAddress(sock) catch |e| return inetErrno(e);
+            length = writeAddress(address, capacity, at) catch return EFAULT;
+        },
+        .socket => {
+            // Unnamed local sockets: just the family, as Linux reports them.
+            var family: [2]u8 = undefined;
+            std.mem.writeInt(u16, &family, AF_UNIX, .little);
+            const put: usize = @min(capacity, 2);
+            if (put > 0) validate.copyToUser(pml4, address, family[0..put], put) catch return EFAULT;
+            length = 2;
+        },
+        else => return ENOTSOCK,
+    }
+    validate.copyToUser(pml4, length_address, std.mem.asBytes(&length), 4) catch return EFAULT;
+    return 0;
+}
+
+const SO_TYPE: u64 = 3;
+const SO_ERROR: u64 = 4;
+const SO_SNDBUF: u64 = 7;
+const SO_RCVBUF: u64 = 8;
+const SO_LINGER: u64 = 13;
+const SO_RCVTIMEO: u64 = 20;
+const SO_SNDTIMEO: u64 = 21;
+const SO_ACCEPTCONN: u64 = 30;
+const SO_PROTOCOL: u64 = 38;
+const SO_DOMAIN: u64 = 39;
+
+fn putOption(value_address: u64, length_address: u64, bytes: []const u8) i64 {
+    const pml4 = vmm.currentCr3();
+    var capacity: u32 = 0;
+    validate.copyFromUser(pml4, std.mem.asBytes(&capacity), length_address, 4) catch return EFAULT;
+    const put: usize = @min(capacity, bytes.len);
+    if (put > 0) validate.copyToUser(pml4, value_address, bytes[0..put], put) catch return EFAULT;
+    const length: u32 = @intCast(bytes.len);
+    validate.copyToUser(pml4, length_address, std.mem.asBytes(&length), 4) catch return EFAULT;
+    return 0;
+}
+
+fn sysGetsockopt(number: u64, level: u64, name: u64, value_address: u64, length_address: u64) i64 {
+    const desc = descriptionOf(number) orelse return EBADF;
+    defer desc.release();
+    switch (desc.object) {
+        .inet => |sock| {
+            if (level == inet.SOL_SOCKET and name == SO_ERROR) {
+                const pending: i32 = if (inet.takeError(sock)) |e| @intCast(-inetErrno(e)) else 0;
+                return putOption(value_address, length_address, std.mem.asBytes(&pending));
+            }
+            const value = inet.getOption(sock, @truncate(level), @truncate(name)) catch |e| return inetErrno(e);
+            switch (value) {
+                .int => |v| return putOption(value_address, length_address, std.mem.asBytes(&v)),
+                .linger => |l| {
+                    const raw = [2]i32{ @intFromBool(l.on), l.seconds };
+                    return putOption(value_address, length_address, std.mem.sliceAsBytes(&raw));
+                },
+                .timeout_ms => |ms| {
+                    const raw = [2]i64{ @intCast(ms / 1000), @intCast(ms % 1000 * 1000) };
+                    return putOption(value_address, length_address, std.mem.sliceAsBytes(&raw));
+                },
+            }
+        },
+        .socket => |pair| {
+            if (level != inet.SOL_SOCKET) return ENOPROTOOPT;
+            const v: i32 = switch (name) {
+                SO_TYPE => switch (pair.pair.kind) {
+                    .stream => 1,
+                    .datagram => 2,
+                    .seqpacket => 5,
+                },
+                SO_DOMAIN => AF_UNIX,
+                SO_ERROR, SO_PROTOCOL, SO_ACCEPTCONN => 0,
+                SO_SNDBUF, SO_RCVBUF => unix_socket.CAPACITY,
+                else => return ENOPROTOOPT,
+            };
+            return putOption(value_address, length_address, std.mem.asBytes(&v));
+        },
+        else => return ENOTSOCK,
+    }
+}
+
+fn sysSetsockopt(number: u64, level: u64, name: u64, value_address: u64, length: u64) i64 {
+    const desc = descriptionOf(number) orelse return EBADF;
+    defer desc.release();
+    var raw: [16]u8 = [_]u8{0} ** 16;
+    const take: usize = @intCast(@min(length, raw.len));
+    validate.copyFromUser(vmm.currentCr3(), raw[0..take], value_address, take) catch return EFAULT;
+    switch (desc.object) {
+        .inet => |sock| {
+            const value: inet.OptionValue = if (level == inet.SOL_SOCKET and (name == SO_RCVTIMEO or name == SO_SNDTIMEO)) blk: {
+                if (length < 16) return EINVAL;
+                const seconds = std.mem.readInt(i64, raw[0..8], .little);
+                const micros = std.mem.readInt(i64, raw[8..16], .little);
+                if (seconds < 0 or micros < 0 or micros >= 1_000_000) return -33; // EDOM
+                break :blk .{ .timeout_ms = @as(u64, @intCast(seconds)) * 1000 + @as(u64, @intCast(micros)) / 1000 };
+            } else if (level == inet.SOL_SOCKET and name == SO_LINGER) blk: {
+                if (length < 8) return EINVAL;
+                break :blk .{ .linger = .{ .on = std.mem.readInt(i32, raw[0..4], .little) != 0, .seconds = std.mem.readInt(i32, raw[4..8], .little) } };
+            } else blk: {
+                if (length < 4) return EINVAL;
+                break :blk .{ .int = std.mem.readInt(i32, raw[0..4], .little) };
+            };
+            inet.setOption(sock, @truncate(level), @truncate(name), value) catch |e| return inetErrno(e);
+            return 0;
+        },
+        .socket => {
+            // Buffer sizes are hints; the pair's capacity is fixed.
+            if (level == inet.SOL_SOCKET and (name == SO_SNDBUF or name == SO_RCVBUF)) return 0;
+            return ENOPROTOOPT;
+        },
+        else => return ENOTSOCK,
+    }
+}
+
+/// Stream sends take at most one send ring's worth per call.
+const INET_IO_MAX: usize = 64 * 1024;
+
+fn inetSendMsg(desc: *fd_mod.Description, address: u64, flags: u64) i64 {
+    const sock = desc.object.inet;
+    var message: NativeMessage = undefined;
+    const vectors = readMessage(address, &message) catch |e| return messageErrno(e);
+    defer if (vectors.len > 0) heap.free(@ptrCast(vectors.ptr));
+    if (message.fd_count != 0) return EINVAL; // no SCM_RIGHTS over the network
+    const requested = totalLength(vectors) orelse return EINVAL;
+    if (sock.kind == .datagram and requested > inet.MAX_UDP_PAYLOAD) return EMSGSIZE;
+    const length = @min(requested, INET_IO_MAX);
+    const to: ?inet.Endpoint = if (message.name != 0)
+        readAddress(message.name, message.name_len) catch |e| return addressErrno(e)
+    else
+        null;
+    const data = heap.alloc(@max(length, 1)) catch return ENOMEM;
+    defer heap.free(data);
+    const pml4 = vmm.currentCr3();
+    var gathered: usize = 0;
+    for (vectors) |v| {
+        const take = @min(@as(usize, @intCast(v.len)), length - gathered);
+        if (take == 0) break;
+        validate.copyFromUser(pml4, data[gathered .. gathered + take], v.base, take) catch return EFAULT;
+        gathered += take;
+    }
+    io.sti();
+    defer io.cli();
+    const nonblock = flags & MSG_DONTWAIT != 0 or desc.statusFlags() & vfs.OPEN_NONBLOCK != 0;
+    const sent = inet.send(sock, data[0..length], to, nonblock) catch |e| return inetErrno(e);
+    return @intCast(sent);
+}
+
+fn inetRecvMsg(desc: *fd_mod.Description, address: u64, flags: u64) i64 {
+    const sock = desc.object.inet;
+    var message: NativeMessage = undefined;
+    const vectors = readMessage(address, &message) catch |e| return messageErrno(e);
+    defer if (vectors.len > 0) heap.free(@ptrCast(vectors.ptr));
+    const capacity = @min(totalLength(vectors) orelse return EINVAL, INET_IO_MAX);
+    const data = heap.alloc(@max(capacity, 1)) catch return ENOMEM;
+    defer heap.free(data);
+    const got = blk: {
+        io.sti();
+        defer io.cli();
+        const nonblock = flags & MSG_DONTWAIT != 0 or desc.statusFlags() & vfs.OPEN_NONBLOCK != 0;
+        break :blk inet.receive(sock, data[0..capacity], nonblock, flags & MSG_PEEK != 0) catch |e| return inetErrno(e);
+    };
+    const pml4 = vmm.currentCr3();
+    var scattered: usize = 0;
+    for (vectors) |v| {
+        const put = @min(@as(usize, @intCast(v.len)), got.bytes - scattered);
+        if (put == 0) break;
+        validate.copyToUser(pml4, v.base, data[scattered .. scattered + put], put) catch return EFAULT;
+        scattered += put;
+    }
+    if (message.name != 0) {
+        message.name_len = writeAddress(message.name, message.name_len, got.from) catch return EFAULT;
+    } else message.name_len = 0;
+    message.fd_count = 0;
+    message.flags = if (got.truncated) 1 else 0;
+    validate.copyToUser(pml4, address, std.mem.asBytes(&message), @sizeOf(NativeMessage)) catch return EFAULT;
+    return @intCast(got.bytes);
 }
 
 fn sysEventFd(initial: u64, flags: u64) i64 {
@@ -2211,6 +2577,12 @@ fn tcpErrno(e: tcp.Error) i64 {
         tcp.Error.Timeout => -110, // ETIMEDOUT
         tcp.Error.TooLarge => EMSGSIZE,
         tcp.Error.Reset => -104, // ECONNRESET
+        tcp.Error.OutOfMemory => ENOMEM,
+        tcp.Error.WouldBlock => EAGAIN,
+        tcp.Error.Interrupted => EINTR,
+        tcp.Error.Unreachable => -101, // ENETUNREACH
+        tcp.Error.BrokenPipe => EPIPE,
+        tcp.Error.AddressInUse => -98, // EADDRINUSE
     };
 }
 
