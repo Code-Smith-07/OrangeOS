@@ -1,0 +1,9 @@
+#!/bin/sh
+# C compiler for OrangeOS userland libraries: x86-64 baseline (no AVX),
+# Linux/musl headers and ABI (the same musl 1.2.5 OrangeOS links), built
+# the way build.zig builds C programs: no stack protector, no red zone,
+# no sanitizer runtime, non-PIC static code.
+# Configure-time link tests link against Zig's own musl, which has the same
+# ABI; real OrangeOS programs are linked by build.zig against musl-orange.
+exec zig cc -target x86_64-linux-musl -mcpu=baseline -fno-sanitize=all \
+    -fno-stack-protector -mno-red-zone -fno-pic "$@"

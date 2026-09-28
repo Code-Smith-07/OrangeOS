@@ -69,6 +69,11 @@ pub fn build(b: *std.Build) void {
     ui_options.addOption(u32, "runtime_orphan_waves", orphan_waves);
     ui_options.addOption(bool, "runtime_test", runtime_test);
     options.addOption(bool, "runtime_test", runtime_test);
+    // WPE WebKit trial (docs/design/012): probes linked against libraries
+    // cross-built by tools/wpe/build_deps.py. Off by default, since a plain
+    // checkout has no build/wpe/sysroot.
+    const wpe_probes = b.option(bool, "wpe-probes", "Build WPE trial probes against build/wpe/sysroot (run tools/wpe/build_deps.py first)") orelse false;
+    ui_options.addOption(bool, "wpe_probes", wpe_probes);
     ui_options.addOption(bool, "desktop_profile", b.option(bool, "desktop-profile", "Emit compositor frame timing for QEMU profiling") orelse false);
     const timezone = b.option(i32, "timezone-minutes", "Local offset from UTC in minutes (default India +330)") orelse 330;
     if (timezone < -720 or timezone > 840) @panic("timezone-minutes must be -720..840");
@@ -354,6 +359,51 @@ pub fn build(b: *std.Build) void {
         exe.setLinkerScript(b.path("userland/libs/musl-orange/program.ld"));
         exe.entry = .{ .symbol_name = "_start" };
         b.installArtifact(exe);
+    }
+
+    // ── WPE WebKit trial probes ──────────────────────────────────────────────
+    // Built like the C programs above, plus static libraries from the trial
+    // sysroot. Those libraries were compiled for x86_64-linux-musl with the
+    // same code-generation flags (tools/wpe/bin/orange-cc) and link here
+    // against OrangeOS's musl, which has the same headers and ABI.
+    if (wpe_probes) {
+        const sysroot = "build/wpe/sysroot";
+        const WpeProbe = struct { name: []const u8, source: []const u8, libs: []const []const u8 };
+        const wpe_programs = [_]WpeProbe{
+            .{ .name = "glib-probe", .source = "userland/bin/glib-probe/probe.c", .libs = &.{
+                "gio-2.0", "gmodule-2.0", "gobject-2.0", "ffi", "glib-2.0", "pcre2-8", "z",
+            } },
+        };
+        for (wpe_programs) |program| {
+            const mod = b.createModule(.{
+                .root_source_file = b.path("userland/libs/musl-orange/crt.zig"),
+                .target = user_target,
+                .optimize = user_optimize,
+                .strip = user_optimize != .Debug,
+                .red_zone = false,
+                .pic = false,
+                .stack_protector = false,
+                .stack_check = false,
+                .sanitize_c = false,
+                .single_threaded = false,
+            });
+            mod.addCSourceFiles(.{
+                .files = &.{program.source},
+                .flags = &.{ "-std=gnu11", "-nostdinc", "-fno-stack-protector", "-mno-red-zone", "-mno-avx", "-Wall", "-Wextra", "-Werror" },
+            });
+            for ([_][]const u8{ "include", "include/glib-2.0", "lib/glib-2.0/include" }) |dir| {
+                mod.addSystemIncludePath(b.path(b.pathJoin(&.{ sysroot, dir })));
+            }
+            for (musl_headers) |dir| mod.addSystemIncludePath(.{ .cwd_relative = dir });
+            for (program.libs) |lib| {
+                mod.addObjectFile(b.path(b.fmt("{s}/lib/lib{s}.a", .{ sysroot, lib })));
+            }
+            mod.linkLibrary(musl_lib);
+            const exe = b.addExecutable(.{ .name = program.name, .root_module = mod, .use_lld = true });
+            exe.setLinkerScript(b.path("userland/libs/musl-orange/program.ld"));
+            exe.entry = .{ .symbol_name = "_start" };
+            b.installArtifact(exe);
+        }
     }
 
     // ── C++ standard library on musl ─────────────────────────────────────────

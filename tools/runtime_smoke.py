@@ -3,6 +3,7 @@
 
 Build: zig build -Dmm-test -Druntime-test -Ddesktop-profile; scripts/mkdisk.sh
 """
+import os
 import re
 import argparse
 import socketserver
@@ -165,6 +166,14 @@ def main():
                     "POSIX signals", 120)
         assert ("signal-probe: PASS handlers with siginfo, masks and pending, SIG_IGN, SA_RESETHAND, sigaltstack, "
                 "SIGSEGV repair, SIGILL rip edit, SIGFPE siglongjmp, EINTR, kill of children, abort") in guest.log(), guest.log()[-2000:]
+        # WPE WebKit trial probes run only in images built with -Dwpe-probes.
+        if os.environ.get("ORANGE_WPE_PROBES") == "1":
+            guest.until(lambda: "runtime: PASS GLib, GObject and GIO" in guest.log()
+                        or "glib-probe: FAIL" in guest.log() or "runtime: FAIL GLib" in guest.log(),
+                        "GLib, GObject and GIO", 180)
+            assert re.search(r"glib-probe: PASS GLib 2\.88\.3 strings, Unicode, PCRE2 regex, GVariant, SHA-256, threads, "
+                             r"async queue, thread pool, main loop sources and wakeups, GObject signals via libffi, "
+                             r"GIO files and streams, zlib, g_spawn", guest.log()), guest.log()[-2000:]
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]

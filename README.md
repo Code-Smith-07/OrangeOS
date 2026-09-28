@@ -156,7 +156,9 @@ See the [native Control Center screenshot](docs/screenshots/control-center.png).
 being tried first because it should be much faster to bring up. See
 [012](docs/design/012-wpe-webkit-browser.md). If WPE passes its gate, the
 Chromium plan is retired; otherwise Chromium work resumes. The runtime below
-serves either engine.
+serves either engine. First results: the WPE sources are pinned (W0), and
+GLib/GObject/GIO cross-build with the Zig toolchain and pass their checks
+inside OrangeOS (W1).
 
 **Browser runtime progress** (updated 2026-09-25). The goal is Chromium running
 natively inside OrangeOS; no browser engine is installed yet. Chromium will be

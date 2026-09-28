@@ -229,6 +229,16 @@ export fn _start() callconv(.c) noreturn {
             pulp.exit(210);
         }
         pulp.puts("runtime: PASS POSIX signals\n");
+        // WPE WebKit trial (docs/design/012): only in -Dwpe-probes builds.
+        if (pulp.wpe_probes) {
+            const glib_program = pulp.spawn("/bin/glib-probe") catch pulp.exit(211);
+            const glib_code = pulp.wait(glib_program) catch pulp.exit(212);
+            if (glib_code != 0) {
+                pulp.print("runtime: FAIL GLib exit {d}\n", .{glib_code});
+                pulp.exit(213);
+            }
+            pulp.puts("runtime: PASS GLib, GObject and GIO\n");
+        }
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.
         for (0..2) |_| {
