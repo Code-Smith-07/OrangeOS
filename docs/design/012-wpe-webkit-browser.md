@@ -1,8 +1,9 @@
 # OrangeOS browser: WPE WebKit trial
 
-Status (2026-09-28): **the trial passed its W7 gate: WPE WebKit renders a page
-inside OrangeOS** (§6, [screenshot](../screenshots/wpe-first-render.png)). The
-Chromium port is paused, and retiring it awaits the owner's confirmation.
+Status (2026-09-28): **WPE WebKit is OrangeOS's browser engine.** It passed
+its W7 gate by rendering a page inside OrangeOS (§6,
+[screenshot](../screenshots/wpe-first-render.png)), and the owner dropped the
+Chromium plan the same day (doc 011 is archived as runtime history).
 Created: 2026-09-28. Owner decision: try WPE WebKit first, because it looks
 faster to bring up than Chromium. If the trial succeeds, the Chromium plan is
 retired. If it fails, Chromium work resumes where it stopped.
@@ -125,7 +126,8 @@ run. Each option switched off is recorded in the ledger (§6) with the reason.
 4. **Multiple processes.** WebKit runs a UI process, a WebProcess and a
    NetworkProcess, joined by Unix socket pairs with descriptor passing.
    OrangeOS has these pieces (A2/A3), but WebKit has not been run on them.
-5. **JavaScriptCore JIT — open decision (found at W4).** On Linux x86-64,
+5. **JavaScriptCore JIT — decided (owner, 2026-09-28): keep W^X and give JSC
+   a dual-mapped JIT (the first option below); see §7 for its status.** On Linux x86-64,
    JSC maps its JIT memory writable and executable at once. It has no
    separated W/X heap there (`ENABLE_SEPARATED_WX_HEAP` is 0, and its
    dual-mapping path is Darwin-only). OrangeOS refuses such mappings by
@@ -183,7 +185,7 @@ history.
 
   Four IPC handlers WPE generates but never compiles are satisfied by an aborting shim outside WebKit (`userland/bin/wpe-render/unreachable.c`).
 
-**Recommendation:** keep WPE and retire the Chromium plan (doc 011). That is the owner's decision; until it is made, doc 011 stays paused, not archived.
+**Decision (owner, 2026-09-28):** keep WPE; the Chromium plan is dropped and its workspace removed.
 
 Not proven yet: loading an HTTPS page through WebKit itself (W5 proved the stack below it), a page in a real window (W8), and performance beyond this test page.
 

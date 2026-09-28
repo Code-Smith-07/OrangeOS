@@ -2015,9 +2015,10 @@ assistance**, per our earlier estimate of roughly 2.5× solo-unassisted speed.
 
 **Browser planning addendum (September 23, 2026):** the owner has authorized a
 **4 GiB (4096 MiB) total-guest browser qualification profile**, with GPU use as
-supported by implemented drivers. See the
-[native Chromium architecture](docs/design/011-native-chromium-browser.md)
-for memory accounting, performance gates and conditional 4K/8K media tiers.
+supported by implemented drivers. The engine is WPE WebKit
+([012](docs/design/012-wpe-webkit-browser.md)); the archived
+[Chromium plan](docs/design/011-native-chromium-browser.md) keeps the memory
+accounting and media tiers worked out for this profile.
 An explicit `ORANGE_VM_PROFILE=browser` launch/test profile now selects
 4096 MiB and two CPUs; the historical measurements below remain unchanged.
 The current desktop default remains 3 GiB;
