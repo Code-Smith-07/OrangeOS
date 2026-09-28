@@ -1,0 +1,21 @@
+OrangeOS: allow cross-compiling a non-Apple port on a macOS host.
+
+The Xcode SDK setup ran for every build on a Darwin host and stopped
+for ports other than Mac, iOS and JSCOnly. Skip it when a toolchain file
+sets up cross-compilation.
+
+diff -ru a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt	2026-08-15 04:21:10
++++ b/CMakeLists.txt	2026-09-28 11:18:11
+@@ -9,8 +9,9 @@
+ cmake_minimum_required(VERSION 3.20)
+ set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/Source/cmake")
+ 
+-if (CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+-    # Resolve the SDK and pin tools before the call to project().
++if (CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND NOT CMAKE_TOOLCHAIN_FILE)
++    # Resolve the SDK and pin tools before the call to project(). Not when
++    # cross-compiling with a toolchain file (OrangeOS builds WPE on a Mac).
+     include(WebKitXcodeSDK)
+ endif ()
+ 

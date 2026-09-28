@@ -1,0 +1,24 @@
+OrangeOS: guard the HTMLMediaElement custom binding with ENABLE(VIDEO).
+
+With ENABLE_VIDEO off, JSHTMLMediaElement is not generated and this file
+failed to compile; the other media bindings are already guarded.
+
+diff -ru a/Source/WebCore/bindings/js/JSHTMLMediaElementCustom.cpp b/Source/WebCore/bindings/js/JSHTMLMediaElementCustom.cpp
+--- a/Source/WebCore/bindings/js/JSHTMLMediaElementCustom.cpp	2026-08-24 21:02:13
++++ b/Source/WebCore/bindings/js/JSHTMLMediaElementCustom.cpp	2026-09-28 14:32:54
+@@ -24,6 +24,9 @@
+  */
+ 
+ #include "config.h"
++
++#if ENABLE(VIDEO)
++
+ #include "JSHTMLMediaElement.h"
+ 
+ #include "TrackOpaqueRoot.h"
+@@ -40,3 +43,5 @@
+ DEFINE_VISIT_ADDITIONAL_CHILDREN_IN_GC_THREAD(JSHTMLMediaElement);
+ 
+ } // namespace WebCore
++
++#endif // ENABLE(VIDEO)

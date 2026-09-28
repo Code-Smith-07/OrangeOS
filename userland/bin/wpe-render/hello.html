@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<!-- The first page WPE WebKit renders on OrangeOS (docs/design/012, W7). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Orange OS</title>
+<style>
+  html, body { margin: 0; background: #ff8c00; }
+  main { margin: 40px; padding: 24px; background: #ffffff; border-radius: 12px; }
+  h1 { font: bold 40px "Inter", sans-serif; color: #1a1a1a; margin: 0 0 12px; }
+  p { font: 20px "Inter", sans-serif; color: #333333; }
+  .bar { height: 24px; background: linear-gradient(to right, #0047ab, #00a86b); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Hello from WPE WebKit</h1>
+  <p id="line">Rendered by Skia on the CPU inside OrangeOS.</p>
+  <div class="bar"></div>
+</main>
+<script>
+  document.getElementById("line").textContent += " JavaScript ran: " + [1, 2, 3].map(x => x * 14).join("+") + ".";
+  document.title = "Orange OS " + (6 * 7);
+</script>
+</body>
+</html>

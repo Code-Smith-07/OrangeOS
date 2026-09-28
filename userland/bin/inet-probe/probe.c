@@ -170,6 +170,11 @@ static int nonblocking_tcp(void)
 	socklen_t size = sizeof failure;
 	CHECK(getsockopt(fd, SOL_SOCKET, SO_ERROR, &failure, &size) == 0 && failure == 0, "SO_ERROR 0");
 
+	/* Nothing is sent before a request: a non-blocking read must not wait. */
+	char idle;
+	errno = 0;
+	CHECK(recv(fd, &idle, 1, 0) == -1 && errno == EAGAIN, "EAGAIN on an idle connection");
+
 	char request[64];
 	snprintf(request, sizeof request, "orange-bulk %d\n", 100000);
 	CHECK(send(fd, request, strlen(request), 0) == (ssize_t)strlen(request), "nonblocking send");
@@ -177,7 +182,7 @@ static int nonblocking_tcp(void)
 	CHECK(epoll_ctl(ep, EPOLL_CTL_MOD, fd, &event) == 0, "epoll mod");
 	static unsigned char buffer[8192];
 	long total = 0;
-	int saw_again = 0, done = 0;
+	int done = 0;
 	while (!done) {
 		CHECK(epoll_wait(ep, &ready, 1, 5000) == 1, "readable");
 		for (;;) {
@@ -193,11 +198,10 @@ static int nonblocking_tcp(void)
 				break;
 			}
 			CHECK(errno == EAGAIN, "EAGAIN between arrivals");
-			saw_again = 1;
 			break;
 		}
 	}
-	CHECK(total == 100000 && saw_again, "nonblocking transfer");
+	CHECK(total == 100000, "nonblocking transfer");
 	int pending = -1;
 	CHECK(ioctl(fd, FIONREAD, &pending) == 0 && pending == 0, "FIONREAD");
 	close(ep);

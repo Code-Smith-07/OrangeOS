@@ -34,8 +34,8 @@ esac
 # files and a larger filesystem; only when asked, so ordinary images are
 # unchanged. Build them first with `zig build -Dwpe-probes`.
 if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
-    FS_MIB=$((FS_MIB + 320))
-    DISK_MIB=$((DISK_MIB + 320))
+    FS_MIB=$((FS_MIB + 900))
+    DISK_MIB=$((DISK_MIB + 900))
 fi
 
 mkdir -p build
@@ -72,6 +72,13 @@ printf 'NAME="Orange OS"\nVERSION="0.1.0"\nKERNEL="Zest"\n' > "$ROOTFS/etc/os-re
 # service that writes this from the DHCP lease is future work.
 printf '127.0.0.1\tlocalhost\n' > "$ROOTFS/etc/hosts"
 printf 'nameserver 10.0.2.3\n' > "$ROOTFS/etc/resolv.conf"
+# TLS trust store (B9): Mozilla's roots as the curl project extracts them
+# (tools/wpe/sources.json pins the release; the file carries its MPL-2.0
+# notice). OpenSSL's default for OrangeOS's /etc/ssl configuration.
+if [ -f build/wpe/sources/cacert-2026-09-25.pem ]; then
+    mkdir -p "$ROOTFS/etc/ssl"
+    cp build/wpe/sources/cacert-2026-09-25.pem "$ROOTFS/etc/ssl/cert.pem"
+fi
 
 cat > "$ROOTFS/etc/seed.conf" <<'CONF'
 # Orange OS service configuration
@@ -97,7 +104,7 @@ for prog in juice echo uname greetd greet peel clock squeeze grove about files t
     fi
 done
 if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
-    for prog in glib-probe wpe-libs-probe jsc jsc-probe; do
+    for prog in glib-probe wpe-libs-probe jsc jsc-probe https-probe wpe-render; do
         if [ ! -f "zig-out/bin/$prog" ]; then
             echo "mkdisk: ERROR - zig-out/bin/$prog not found; run 'zig build -Dwpe-probes' first" >&2
             exit 1
@@ -109,6 +116,18 @@ if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
     cp -R build/wpe/rootfs/. "$ROOTFS/"
     mkdir -p "$ROOTFS/share/wpe-tests"
     cp userland/bin/jsc-probe/probe.js "$ROOTFS/share/wpe-tests/jsc-probe.js"
+    cp userland/bin/wpe-render/hello.html "$ROOTFS/share/wpe-tests/hello.html"
+    # Content types by file name, for file:// URLs (GIO's xdgmime).
+    mkdir -p "$ROOTFS/usr/share/mime"
+    cp userland/share/mime/globs2 "$ROOTFS/usr/share/mime/globs2"
+    # WebKit starts its helper processes from the libexec directory compiled
+    # into it (GNUInstallDirs makes it /usr/libexec for the prefix /).
+    mkdir -p "$ROOTFS/usr/libexec/wpe-webkit-2.0"
+    for prog in WPEWebProcess WPENetworkProcess; do
+        cp "zig-out/bin/$prog" "$ROOTFS/usr/libexec/wpe-webkit-2.0/$prog"
+    done
+    tools/wpe/test_certs.sh
+    cp build/wpe/test-certs/ca.pem "$ROOTFS/share/wpe-tests/test-ca.pem"
     mkdir -p "$ROOTFS/share/fonts"
     cp assets/fonts/Inter.ttf assets/fonts/JetBrainsMono.ttf "$ROOTFS/share/fonts/"
     # Each library's licence travels with the binaries linking it.

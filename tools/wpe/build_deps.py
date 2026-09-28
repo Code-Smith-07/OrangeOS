@@ -73,8 +73,9 @@ def run(command, cwd, env):
     subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
-def unpack(entry):
-    """A clean source tree, so a rebuild never sees stale generated files."""
+def unpack(entry, as_name=None):
+    """A clean source tree, so a rebuild never sees stale generated files.
+    `as_name` unpacks under another name (a host build of a target library)."""
     subprocess.run([sys.executable, os.path.join(TOOLS, "fetch.py"), entry["name"]], check=True)
     tarball = os.path.join(SOURCES, os.path.basename(entry["url"]))
     stage = os.path.join(WORK, "unpack")
@@ -82,7 +83,7 @@ def unpack(entry):
     os.makedirs(stage)
     subprocess.run(["tar", "-xf", tarball, "-C", stage], check=True)
     (top,) = os.listdir(stage)
-    target = os.path.join(SRC, f"{entry['name']}-{entry['version']}")
+    target = os.path.join(SRC, f"{as_name or entry['name']}-{entry['version']}")
     shutil.rmtree(target, ignore_errors=True)
     os.makedirs(SRC, exist_ok=True)
     os.replace(os.path.join(stage, top), target)
@@ -179,6 +180,30 @@ def build_bison(src, env):
     run(["make", "install"], build, host)
 
 
+def build_glib_host(src, env):
+    """GLib's tools for the Mac: WebKit's build runs glib-compile-resources
+    and glib-mkenums. GLib's own wrap files (pinned by hash or revision in
+    the pinned tarball) supply PCRE2, libffi and proxy-libintl."""
+    build = fresh_build_dir("glib-host")
+    host = host_environment()
+    # meson downloads the wraps with Python, which (python.org builds) has
+    # no CA store of its own; use the one macOS ships.
+    if os.path.exists("/etc/ssl/cert.pem"):
+        host["SSL_CERT_FILE"] = "/etc/ssl/cert.pem"
+    run(["meson", "setup", build, src, f"--prefix={HOST_TOOLS}", "--libdir=lib",
+         "--buildtype=release", "--default-library=static", "--wrap-mode=default",
+         "-Dtests=false", "-Dinstalled_tests=false", "-Dintrospection=disabled",
+         "-Ddocumentation=false", "-Dman-pages=disabled", "-Dnls=disabled",
+         "-Dsysprof=disabled", "-Ddtrace=disabled", "-Dsystemtap=disabled",
+         "-Dxattr=false", "-Dlibelf=disabled"], ROOT, host)
+    run(["meson", "compile", "-C", build, "gio/glib-compile-resources"], ROOT, host)
+    os.makedirs(os.path.join(HOST_TOOLS, "bin"), exist_ok=True)
+    shutil.copy2(os.path.join(build, "gio", "glib-compile-resources"), os.path.join(HOST_TOOLS, "bin"))
+    # Python scripts, generated when the build is configured.
+    for script in ("glib-mkenums", "glib-genmarshal"):
+        shutil.copy2(os.path.join(build, "gobject", script), os.path.join(HOST_TOOLS, "bin"))
+
+
 def build_zlib(src, env):
     # zlib's configure is not autoconf: it reads CC/AR from the environment
     # and has no --host; CHOST stops it choosing Apple's libtool.
@@ -210,6 +235,10 @@ def build_glib(src, env):
          "-Dlibelf=disabled", "-Dbsymbolic_functions=false"], ROOT, env)
     run(["meson", "compile", "-C", build], ROOT, env)
     run(["meson", "install", "-C", build, "--no-rebuild", "--quiet"], ROOT, env)
+    # GIO's Unix headers also beside the others: some WebKit targets use
+    # them without the gio-unix-2.0 include directory being passed on.
+    merge_tree(os.path.join(SYSROOT, "include", "gio-unix-2.0", "gio"),
+               os.path.join(SYSROOT, "include", "glib-2.0", "gio"))
 
 
 def build_libpng(src, env):
@@ -229,8 +258,21 @@ def build_libwebp(src, env):
               "--disable-gl", "--disable-sdl", "--disable-wic")
 
 
+def add_static_libs(module, extra):
+    """Static libraries need their private dependencies at every link;
+    name them in the pkg-config file's Libs line."""
+    path = os.path.join(SYSROOT, "lib", "pkgconfig", f"{module}.pc")
+    with open(path) as f:
+        lines = f.read().splitlines()
+    lines = [line + " " + extra if line.startswith("Libs:") and extra not in line else line for line in lines]
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def build_brotli(src, env):
     cmake(src, "brotli", env, "-DBROTLI_DISABLE_TESTS=ON", "-DBROTLI_BUILD_TOOLS=OFF")
+    for module in ("libbrotlidec", "libbrotlienc"):
+        add_static_libs(module, "-lbrotlicommon")
 
 
 def build_freetype(src, env):
@@ -357,6 +399,182 @@ def build_woff2(src, env):
           f"-DBROTLIDEC_LIBRARIES={os.path.join(lib, 'libbrotlidec.a')};{common}")
 
 
+PATCHES = os.path.join(TOOLS, "patches")
+
+# WPE WebKit's configuration for OrangeOS (docs/design/012 section 3): the
+# headless platform only, software rendering, and no media, GPU process,
+# sandbox, speech, spelling, hyphenation, WebDriver or introspection.
+WPE_OPTIONS = [
+    "-DPORT=WPE", "-DCMAKE_BUILD_TYPE=Release", "-DDEVELOPER_MODE=OFF",
+    # Paths compiled in: the helper processes live in /usr/libexec/wpe-webkit-2.0
+    # (GNUInstallDirs puts libexec under /usr when the prefix is /).
+    "-DCMAKE_INSTALL_PREFIX=/", "-DCMAKE_INSTALL_LIBEXECDIR=libexec",
+    # AVX-512 kernels in simdutf and Skia's skcms need clang's evex512
+    # feature, and OrangeOS has no AVX state support yet; both choose their
+    # kernels at run time, so the SSE ones remain.
+    "-DUSE_HEADER_MAPS=OFF",
+    # -g0: zig's clang emits debug information unless told not to.
+    "-DCMAKE_CXX_FLAGS=-g0 -DSIMDUTF_IMPLEMENTATION_ICELAKE=0 -DSKCMS_DISABLE_SKX",
+    "-DCMAKE_C_FLAGS=-g0 -DSKCMS_DISABLE_SKX",
+    "-DENABLE_DOCUMENTATION=OFF", "-DENABLE_INTROSPECTION=OFF", "-DENABLE_JOURNALD_LOG=OFF",
+    "-DENABLE_WPE_PLATFORM=ON", "-DENABLE_WPE_PLATFORM_HEADLESS=ON",
+    "-DENABLE_WPE_PLATFORM_DRM=OFF", "-DENABLE_WPE_PLATFORM_WAYLAND=OFF",
+    "-DENABLE_WPE_LEGACY_API=OFF", "-DENABLE_WPE_QT_API=OFF",
+    "-DUSE_ATK=OFF", "-DUSE_FLITE=OFF", "-DUSE_GBM=OFF", "-DUSE_LIBDRM=OFF",
+    "-DUSE_LIBBACKTRACE=OFF", "-DUSE_LIBHYPHEN=OFF", "-DUSE_VULKAN=OFF",
+    "-DUSE_AVIF=OFF", "-DUSE_JPEGXL=OFF", "-DUSE_LCMS=OFF", "-DUSE_WOFF2=ON",
+    "-DENABLE_BUBBLEWRAP_SANDBOX=OFF", "-DENABLE_VIDEO=OFF", "-DENABLE_WEB_AUDIO=OFF",
+    "-DENABLE_ENCRYPTED_MEDIA=OFF", "-DENABLE_SPELLCHECK=OFF", "-DENABLE_WEBDRIVER=OFF",
+    "-DENABLE_SPEECH_SYNTHESIS=OFF", "-DENABLE_MINIBROWSER=OFF", "-DENABLE_API_TESTS=OFF",
+    "-DENABLE_LAYOUT_TESTS=OFF", "-DENABLE_REMOTE_INSPECTOR=OFF",
+    # The bundled unifdef would be built for OrangeOS and then run on the
+    # Mac; macOS ships unifdef.
+    "-DUSE_SYSTEM_UNIFDEF=ON", "-DUNIFDEF_EXECUTABLE=/usr/bin/unifdef",
+    "-DENABLE_GAMEPAD=OFF", "-DENABLE_WEBGL=OFF", "-DUSE_SYSPROF_CAPTURE=OFF",
+    "-DENABLE_GPU_PROCESS=OFF", "-DENABLE_WEB_CODECS=OFF", "-DENABLE_MEDIA_STREAM=OFF",
+    "-DENABLE_MEDIA_RECORDER=OFF", "-DENABLE_WEB_RTC=OFF", "-DUSE_GSTREAMER=OFF",
+    "-DUSE_GSTREAMER_WEBRTC=OFF",
+]
+
+
+def apply_patches(src, package):
+    directory = os.path.join(PATCHES, package)
+    if not os.path.isdir(directory):
+        return
+    for name in sorted(os.listdir(directory)):
+        if name.endswith(".patch"):
+            run(["patch", "-p1", "-i", os.path.join(directory, name)], src, os.environ)
+
+
+def configure_wpe(src, env):
+    build = os.path.join(OBJ, "wpe")
+    os.makedirs(build, exist_ok=True)
+    run(["cmake", "-S", src, "-B", build, "-G", "Ninja",
+         f"-DCMAKE_TOOLCHAIN_FILE={configured('orangeos-x86_64.cmake.in')}",
+         f"-DGLIB_COMPILE_RESOURCES_EXECUTABLE={os.path.join(HOST_TOOLS, 'bin', 'glib-compile-resources')}",
+         *WPE_OPTIONS], ROOT, env)
+    return build
+
+
+def build_wpe(src, env):
+    """W6: WPE WebKit from the pinned tarball with OrangeOS's patches."""
+    apply_patches(src, "wpewebkit")
+    build = configure_wpe(src, env)
+    # Only what OrangeOS links: WebKit's objects and the two entry points
+    # (collect_wpe). The Linux-ABI jsc and helper executables CMake would
+    # also link are not needed.
+    run(["cmake", "--build", build, "--", "-k", "0", *WPE_TARGETS], ROOT, env)
+    collect_wpe(build, env)
+
+
+WPE_TARGETS = [
+    "lib/libWPEWebKit-2.0.so.1.11.3",
+    "Source/WebKit/CMakeFiles/WebProcess.dir/WebProcess/EntryPoint/unix/WebProcessMain.cpp.o",
+    "Source/WebKit/CMakeFiles/NetworkProcess.dir/NetworkProcess/EntryPoint/unix/NetworkProcessMain.cpp.o",
+]
+
+
+def install_headers(build):
+    """Copy the files cmake_install.cmake installs under include/."""
+    import re
+    pattern = re.compile(r'file\(INSTALL DESTINATION "\$\{CMAKE_INSTALL_PREFIX\}/(?:usr/)?include/([^"]+)" TYPE FILE FILES(.*?)\)', re.S)
+    for base, _dirs, files in os.walk(build):
+        if "cmake_install.cmake" not in files:
+            continue
+        with open(os.path.join(base, "cmake_install.cmake")) as f:
+            text = f.read()
+        for match in pattern.finditer(text):
+            target = os.path.join(SYSROOT, "include", match.group(1))
+            os.makedirs(target, exist_ok=True)
+            for header in re.findall(r'"([^"]+)"', match.group(2)):
+                shutil.copy2(header, target)
+
+
+def collect_wpe(build, env):
+    """OrangeOS links programs statically, so take WebKit apart where CMake
+    would link libWPEWebKit-2.0.so: its object files become
+    libWPEWebKitStatic.a, WebKit's own static libraries (PAL, Skia,
+    xdgmime...) and the web and network processes' entry points are copied
+    next to it, and the API headers are installed. build.zig links the UI
+    program and the helper processes from these (-Dwpe-probes)."""
+    lib = os.path.join(SYSROOT, "lib")
+    with open(os.path.join(build, "build.ninja")) as f:
+        ninja = f.read()
+    start = ninja.index("build lib/libWPEWebKit-2.0.so.")
+    header = ninja[start:ninja.index("\n", start)]
+    objects = [token for token in header.split() if token.endswith(".o")]
+    block = ninja[start:ninja.index("\n\n", start)]
+    libraries = next(line for line in block.splitlines() if line.strip().startswith("LINK_LIBRARIES"))
+    own = sorted({token for token in libraries.split() if token.startswith("lib/") and token.endswith(".a")})
+    archive = os.path.join(lib, "libWPEWebKitStatic.a")
+    if os.path.exists(archive):
+        os.remove(archive)
+    listing = os.path.join(WORK, "wpe-objects.txt")
+    with open(listing, "w") as f:
+        f.write("\n".join(os.path.join(build, o) for o in objects) + "\n")
+    # One archive; the object list is long, so it is passed in chunks.
+    for i in range(0, len(objects), 400):
+        run([AR, "qc", archive, *[os.path.join(build, o) for o in objects[i:i + 400]]], ROOT, env)
+    run([RANLIB, archive], ROOT, env)
+    for name in own:
+        shutil.copy2(os.path.join(build, name), os.path.join(lib, "libWPE" + os.path.basename(name)[3:]))
+    for entry, target in (("WebProcess.dir/WebProcess/EntryPoint/unix/WebProcessMain.cpp.o", "wpe-web-process.o"),
+                          ("NetworkProcess.dir/NetworkProcess/EntryPoint/unix/NetworkProcessMain.cpp.o", "wpe-network-process.o")):
+        shutil.copy2(os.path.join(build, "Source/WebKit/CMakeFiles", entry), os.path.join(lib, target))
+    # The API headers, as CMake's install rules list them (its install
+    # would also want the shared library, which is not built).
+    install_headers(build)
+    print(f"collected {len(objects)} objects and {', '.join(own)}")
+
+
+def build_openssl(src, env):
+    # OPENSSLDIR is where OrangeOS keeps TLS configuration: the default
+    # trust store is /etc/ssl/cert.pem (B9). No async (it needs ucontext,
+    # which musl lacks), no engines or shared objects to load.
+    build = fresh_build_dir("openssl")
+    run(["perl", os.path.join(src, "Configure"), "linux-x86_64", f"--prefix={SYSROOT}",
+         "--libdir=lib", "--openssldir=/etc/ssl", "no-shared", "no-dso", "no-async",
+         "no-engine", "no-tests", "no-docs", "no-apps", f"CC={CC}", f"AR={AR}", f"RANLIB={RANLIB}"], build, env)
+    run(["make", f"-j{os.cpu_count()}", "build_libs"], build, env)
+    run(["make", "install_dev"], build, env)
+
+
+def build_libpsl(src, env):
+    # The public suffix list is compiled in (from the tarball's copy), so
+    # nothing is read at run time.
+    meson(src, "libpsl", env, "-Druntime=no", "-Dbuiltin=true", "-Dtests=false", "-Ddocs=false")
+
+
+def build_nghttp2(src, env):
+    cmake(src, "nghttp2", env, "-DENABLE_LIB_ONLY=ON", "-DBUILD_STATIC_LIBS=ON",
+          "-DENABLE_DOC=OFF", "-DWITH_LIBXML2=OFF", "-DWITH_JEMALLOC=OFF")
+
+
+def build_libsoup(src, env):
+    meson(src, "libsoup", env, "-Dgssapi=disabled", "-Dntlm=disabled", "-Dbrotli=enabled",
+          "-Dtls_check=false", "-Dintrospection=disabled", "-Dvapi=disabled", "-Ddocs=disabled",
+          "-Ddoc_tests=false", "-Dtests=false", "-Dautobahn=disabled", "-Dsysprof=disabled",
+          "-Dpkcs11_tests=disabled")
+
+
+def build_glib_networking(src, env):
+    # A static build also produces libgioopenssl.a with g_io_openssl_load(),
+    # which programs call to register the TLS backend (no dlopen).
+    # Its install ends by running gio-querymodules, an OrangeOS binary, on
+    # the Mac to index shared modules, which OrangeOS does not load. The
+    # files are installed by then; only that script fails.
+    try:
+        meson(src, "glib-networking", env, "-Dopenssl=enabled", "-Dgnutls=disabled",
+              "-Dlibproxy=disabled", "-Dgnome_proxy=disabled", "-Dinstalled_tests=false")
+    except subprocess.CalledProcessError:
+        if not os.path.exists(os.path.join(SYSROOT, "lib", "gio", "modules", "libgioopenssl.a")):
+            raise
+    for base, _dirs, files in os.walk(os.path.join(SYSROOT, "lib", "gio")):
+        for name in files:
+            if name.endswith(".a"):
+                shutil.copy2(os.path.join(base, name), os.path.join(SYSROOT, "lib", name))
+
+
 def build_javascriptcore(src, env):
     """W4: JavaScriptCore alone (WebKit's JSCOnly port) from the pinned WPE
     WebKit tarball: static WTF, bmalloc and JavaScriptCore, plus the jsc
@@ -407,6 +625,8 @@ RECIPES = {
     "libffi": build_libffi,
     "pcre2": build_pcre2,
     "glib": build_glib,
+    "glib-host": build_glib_host,
+    "wpe": build_wpe,
     "libpng": build_libpng,
     "libjpeg-turbo": build_libjpeg_turbo,
     "libwebp": build_libwebp,
@@ -427,13 +647,22 @@ RECIPES = {
     "libepoxy": build_libepoxy,
     "woff2": build_woff2,
     "wpewebkit": build_javascriptcore,
+    "openssl": build_openssl,
+    "libpsl": build_libpsl,
+    "nghttp2": build_nghttp2,
+    "libsoup": build_libsoup,
+    "glib-networking": build_glib_networking,
 }
+# Recipes that build a pinned source under another name.
+ALIASES = {"glib-host": "glib", "wpe": "wpewebkit"}
+
 STAGES = {
     "W1": ["zlib", "libffi", "pcre2", "glib"],
     "W3": ["bison", "libpng", "libjpeg-turbo", "libwebp", "brotli", "freetype", "expat",
            "fontconfig", "icu", "harfbuzz", "libxml2", "libxslt", "sqlite", "libgpg-error",
            "libgcrypt", "libtasn1", "libxkbcommon", "egl-registry", "libepoxy", "woff2"],
     "W4": ["wpewebkit"],
+    "W5": ["openssl", "libpsl", "nghttp2", "libsoup", "glib-networking"],
 }
 
 
@@ -448,8 +677,9 @@ def main(argv):
     pins = manifest()
     env = environment()
     for name in names:
-        print(f"== {name} {pins[name]['version']}", flush=True)
-        RECIPES[name](unpack(pins[name]), env)
+        pin = pins[ALIASES.get(name, name)]
+        print(f"== {name} {pin['version']}", flush=True)
+        RECIPES[name](unpack(pin, as_name=name), env)
     print(f"installed into {SYSROOT}")
 
 

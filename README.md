@@ -158,7 +158,14 @@ being tried first because it should be much faster to bring up. See
 Chromium plan is retired; otherwise Chromium work resumes. The runtime below
 serves either engine. First results: the WPE sources are pinned (W0), and
 GLib/GObject/GIO cross-build with the Zig toolchain and pass their checks
-inside OrangeOS (W1).
+inside OrangeOS (W1). Since then:
+- WebKit's libraries work in the guest, and JavaScriptCore runs (on its
+  interpreter).
+- HTTPS works through libsoup and OpenSSL with Mozilla's roots.
+- **WPE WebKit renders a web page inside OrangeOS, on the CPU**
+  ([first render](docs/screenshots/wpe-first-render.png)).
+
+Next: a Peel window with input (W8), then the browser shell (W9).
 
 **Browser runtime progress** (updated 2026-09-25). The goal is Chromium running
 natively inside OrangeOS; no browser engine is installed yet. Chromium will be

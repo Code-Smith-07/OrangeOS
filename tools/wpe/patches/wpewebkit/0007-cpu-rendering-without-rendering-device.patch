@@ -1,0 +1,37 @@
+OrangeOS: render on the CPU when the WPE display has no rendering device.
+
+WPE turns hardware acceleration and accelerated compositing on by default
+and, unlike GTK, has no API for a NEVER policy. Without GBM support or a
+DRM device the web process can only render with Skia into shared memory,
+so apply what the GTK policy applies: hardware acceleration, accelerated
+compositing, forced compositing and threaded scrolling off.
+
+diff -ru a/Source/WebKit/UIProcess/API/glib/WebKitWebView.cpp b/Source/WebKit/UIProcess/API/glib/WebKitWebView.cpp
+--- a/Source/WebKit/UIProcess/API/glib/WebKitWebView.cpp	2026-09-16 02:46:45
++++ b/Source/WebKit/UIProcess/API/glib/WebKitWebView.cpp	2026-09-28 15:23:31
+@@ -987,6 +987,25 @@
+     if (!priv->settings)
+         priv->settings = adoptGRef(webkit_settings_new());
+ 
++#if PLATFORM(WPE) && ENABLE(WPE_PLATFORM) && !OS(ANDROID)
++    // OrangeOS: without a rendering device (no GBM support in the build, or
++    // a display without a DRM device), the web process can only render into
++    // shared memory with Skia on the CPU, so turn off what needs the GPU,
++    // as GTK's WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER does. WPE has no
++    // public API for that policy.
++    bool canRenderWithHardware = false;
++#if USE(GBM)
++    canRenderWithHardware = priv->display && wpe_display_get_drm_device(priv->display.get());
++#endif
++    if (!canRenderWithHardware) {
++        auto* preferences = webkitSettingsGetPreferences(priv->settings.get());
++        preferences->setHardwareAccelerationEnabled(false);
++        preferences->setAcceleratedCompositingEnabled(false);
++        preferences->setForceCompositingMode(false);
++        preferences->setThreadedScrollingEnabled(false);
++    }
++#endif
++
+     if (!priv->userContentManager)
+         priv->userContentManager = adoptGRef(webkit_user_content_manager_new());
+ 
