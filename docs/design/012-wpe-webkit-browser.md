@@ -148,6 +148,7 @@ are shared, so that work carries over.
 | Date | Entry |
 |---|---|
 | 2026-09-28 | Trial opened. Chromium paused after A1–A7 (last commit `513c374`). No WPE code, pins or builds yet. |
+| 2026-09-28 | **W0 done.** WPE WebKit **2.54.0** (released 2026-09-16) and 27 libraries pinned in `tools/wpe/sources.json` with SHA-256. `tools/wpe/fetch.py` downloads with the system curl and verifies each file. For WebKit, GLib, fontconfig, libxml2, libxslt, libepoxy, OpenSSL, libsoup and glib-networking it also cross-checks upstream's published checksum; all matched. Choices: GLib 2.88.3 (latest fix release of the mature series, not the fresh 2.90.0); libsoup 3.6.6 (3.7 is the development series); OpenSSL 3.5.8 LTS (not 4.0) for glib-networking; ICU 78.3. Deferred with their first-build switches: lcms2, libavif, libjxl, GStreamer, libwpe. All sources come to 200 MB. |
 
 ## References
 
