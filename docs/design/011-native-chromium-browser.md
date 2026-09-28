@@ -1,5 +1,11 @@
 # OrangeOS native Chromium browser architecture
 
+> **Paused (2026-09-28).** The owner chose to try WPE WebKit first:
+> [012-wpe-webkit-browser.md](012-wpe-webkit-browser.md). Everything below is
+> kept unchanged. The runtime work A1–A7 is engine-neutral and carries over,
+> and so do B8–B11. If the WPE trial passes its gate (012 §6), this plan is
+> retired. If it fails, work resumes here at §11.0.
+
 Status (updated 2026-09-25): **Phase 1 reference build done; Phase 2 runtime
 largely built; no browser engine is installed or qualified.** The platform
 target is decided (§2.1). What remains is in §11.0.

@@ -152,6 +152,12 @@ may change with macOS updates. Interactive physical-slider acceptance is still
 manual. Radio changes and Bluetooth pairing remain unfinished.
 See the [native Control Center screenshot](docs/screenshots/control-center.png).
 
+**Engine trial (2026-09-28):** the Chromium port is paused, and WPE WebKit is
+being tried first because it should be much faster to bring up. See
+[012](docs/design/012-wpe-webkit-browser.md). If WPE passes its gate, the
+Chromium plan is retired; otherwise Chromium work resumes. The runtime below
+serves either engine.
+
 **Browser runtime progress** (updated 2026-09-25). The goal is Chromium running
 natively inside OrangeOS; no browser engine is installed yet. Chromium will be
 built from source as a Linux target against musl. OrangeOS provides a
