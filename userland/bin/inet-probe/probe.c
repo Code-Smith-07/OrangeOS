@@ -265,6 +265,42 @@ static int datagrams(void)
 	return 0;
 }
 
+/* Datagrams to 127/8 stay on this machine. musl's getaddrinfo with
+ * AI_ADDRCONFIG (GLib's resolver asks for it) connects a UDP socket to
+ * 127.0.0.1 to learn whether IPv4 is configured; without this every name
+ * failed with EAI_NODATA. */
+static int loopback_datagrams(void)
+{
+	struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM, .ai_flags = AI_ADDRCONFIG }, *found = NULL;
+	CHECK(getaddrinfo("localhost", "80", &hints, &found) == 0 && found && found->ai_family == AF_INET,
+	      "getaddrinfo with AI_ADDRCONFIG finds IPv4");
+	freeaddrinfo(found);
+
+	int a = socket(AF_INET, SOCK_DGRAM, 0), b = socket(AF_INET, SOCK_DGRAM, 0);
+	CHECK(a >= 0 && b >= 0, "two UDP sockets");
+	struct sockaddr_in at = endpoint("127.0.0.1", 0);
+	socklen_t size = sizeof at;
+	CHECK(bind(a, (struct sockaddr *)&at, sizeof at) == 0 && getsockname(a, (struct sockaddr *)&at, &size) == 0, "bind on 127.0.0.1");
+	CHECK(connect(b, (struct sockaddr *)&at, sizeof at) == 0, "UDP connect to 127.0.0.1");
+	struct sockaddr_in mine;
+	size = sizeof mine;
+	CHECK(getsockname(b, (struct sockaddr *)&mine, &size) == 0 && mine.sin_addr.s_addr == htonl(INADDR_LOOPBACK),
+	      "a socket connected to loopback is on 127.0.0.1");
+	CHECK(send(b, "ping", 4, 0) == 4, "send to loopback");
+	struct pollfd watch = { .fd = a, .events = POLLIN };
+	CHECK(poll(&watch, 1, 2000) == 1, "loopback datagram arrives");
+	char got[8];
+	struct sockaddr_in from;
+	size = sizeof from;
+	CHECK(recvfrom(a, got, sizeof got, 0, (struct sockaddr *)&from, &size) == 4 && memcmp(got, "ping", 4) == 0 &&
+	      from.sin_addr.s_addr == htonl(INADDR_LOOPBACK) && from.sin_port == mine.sin_port, "loopback datagram and sender");
+	CHECK(sendto(a, "pong", 4, 0, (struct sockaddr *)&from, sizeof from) == 4 && recv(b, got, sizeof got, 0) == 4 &&
+	      memcmp(got, "pong", 4) == 0, "loopback reply");
+	close(a);
+	close(b);
+	return 0;
+}
+
 static int refusals(void)
 {
 	errno = 0;
@@ -274,7 +310,7 @@ static int refusals(void)
 	CHECK(listen(fd, 4) == -1 && errno == EOPNOTSUPP, "listen refused");
 	struct sockaddr_in loopback = endpoint("127.0.0.1", 80);
 	errno = 0;
-	CHECK(connect(fd, (struct sockaddr *)&loopback, sizeof loopback) == -1 && errno == ENETUNREACH, "no loopback interface");
+	CHECK(connect(fd, (struct sockaddr *)&loopback, sizeof loopback) == -1 && errno == ENETUNREACH, "no TCP over loopback");
 	int value = 1;
 	errno = 0;
 	CHECK(setsockopt(fd, IPPROTO_IP, IP_TOS, &value, sizeof value) == -1 && errno == ENOPROTOOPT, "unknown option");
@@ -291,10 +327,10 @@ static int refusals(void)
 int main(void)
 {
 	long rate = 0;
-	if (names() || blocking_tcp(&rate) || nonblocking_tcp() || refused() || datagrams() || refusals())
+	if (names() || blocking_tcp(&rate) || nonblocking_tcp() || refused() || datagrams() || loopback_datagrams() || refusals())
 		return 1;
 	printf("inet-probe: PASS /etc/hosts and DNS, blocking and nonblocking TCP with epoll, 2 MiB at %ld KiB/s, "
-	       "half-close, refused, UDP sendto/recvfrom/connect/MSG_TRUNC, options, refusals\n",
+	       "half-close, refused, UDP sendto/recvfrom/connect/MSG_TRUNC, UDP loopback and AI_ADDRCONFIG, options, refusals\n",
 	       rate * 1000 / 1024);
 	return 0;
 }

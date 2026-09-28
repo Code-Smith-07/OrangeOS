@@ -2,10 +2,10 @@
 """Orange Browser (WPE WebKit in a Peel window) on the OrangeOS desktop.
 
 Build: zig build -Ddesktop-profile -Dwpe-probes
-       ORANGE_WPE_PROBES=1 ORANGE_BROWSER_AUTOSTART=1 scripts/mkdisk.sh
+       ORANGE_WPE_PROBES=1 scripts/mkdisk.sh
 
-Boots the desktop with the browser started, then drives it the way a person
-would, through QEMU's mouse and keyboard: the start page renders; a link
+Boots the desktop, opens the browser from its dock icon, then drives it the
+way a person would, through QEMU's mouse and keyboard: the start page renders; a link
 opens another page; Back returns; an HTTPS address typed into the address
 field loads from the host fixture (10.0.2.2:38459, whose certificate the
 test image trusts for that address only); keys typed into the page reach
@@ -25,6 +25,7 @@ from desktop_smoke import Guest  # noqa: E402
 BACK = (28, 100)
 ADDRESS = (500, 100)
 ABOUT_CARD = (300, 320)
+DOCK_BROWSER = (702, 732)
 
 
 def loads(guest, uri):
@@ -49,6 +50,10 @@ def main():
     g = Guest()
     try:
         start = "file:///share/browser/start.html"
+        g.until(lambda: '"Welcome"' in g.log() and "squeeze: window" in g.log(), "boot to desktop", 90)
+        time.sleep(1)
+        g.click(*DOCK_BROWSER)
+        g.until(lambda: "desktop: launched /bin/orange-browser" in g.log(), "the dock launches the browser", 30)
         g.until(lambda: loads(g, start) >= 1 or "orange-browser: failed" in g.log(), "the start page loads", 600)
         assert "orange-browser: test certificate allowed for 10.0.2.2" in g.log(), g.log()[-2000:]
         time.sleep(2)

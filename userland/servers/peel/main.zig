@@ -174,7 +174,7 @@ const WALLPAPER_PATHS = [_][]const u8{
     "/share/wallpapers/citrus-atelier.bmp",
     "/share/wallpapers/midnight-aurora.bmp",
 };
-var pending_apps: [7]i64 = [_]i64{-1} ** 7;
+var pending_apps: [8]i64 = [_]i64{-1} ** 8;
 var shell_pressed: ?u16 = null;
 var control_pressed: ?struct { id: u32, control: i32 } = null;
 var desktop_hidden: [MAX_WINDOWS]u32 = [_]u32{0} ** MAX_WINDOWS;
@@ -191,6 +191,7 @@ fn appIndex(title: []const u8) usize {
     if (@import("std").mem.eql(u8, title, "Control Center")) return 6;
     if (@import("std").mem.eql(u8, title, "Files")) return 4;
     if (@import("std").mem.eql(u8, title, "Trash")) return 5;
+    if (@import("std").mem.eql(u8, title, "Orange Browser")) return 7;
     if (title.len >= 7 and @import("std").mem.eql(u8, title[0..7], "Squeeze")) return 1;
     if (@import("std").mem.eql(u8, title, "clock")) return 2;
     if (title.len >= 5 and @import("std").mem.eql(u8, title[0..5], "About")) return 3;
@@ -208,7 +209,7 @@ fn syncShell() void {
             break;
         }
     }
-    shell.running = [_]bool{false} ** 7;
+    shell.running = [_]bool{false} ** 8;
     shell.count = 0;
     shell.controls_open = false;
     for (0..window_count) |i| {
@@ -267,7 +268,7 @@ fn launchApp(app: usize, new_instance: bool) void {
         shell.notice = "Window limit reached. Close a window.";
         return;
     }
-    const paths = [_][]const u8{ "/bin/grove", "/bin/squeeze", "/bin/clock", "/bin/about", "/bin/files", "/bin/trash", "/bin/hardware" };
+    const paths = [_][]const u8{ "/bin/grove", "/bin/squeeze", "/bin/clock", "/bin/about", "/bin/files", "/bin/trash", "/bin/hardware", "/bin/orange-browser" };
     pending_apps[app] = pulp.spawn(paths[app]) catch {
         shell.notice = "Could not start the application.";
         return;
@@ -318,6 +319,7 @@ fn shellAction(action: u16) void {
         desktop.Action.files => launchApp(4, false),
         desktop.Action.trash => launchApp(5, false),
         desktop.Action.hardware => if (!panel_was_open) launchApp(6, false),
+        desktop.Action.browser => launchApp(7, false),
         desktop.Action.menu => shell.popup = if (old == .menu) .none else .menu,
         desktop.Action.overview => shell.popup = if (old == .overview) .none else .overview,
         desktop.Action.settings => shell.popup = if (old == .settings) .none else .settings,

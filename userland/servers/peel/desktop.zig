@@ -31,6 +31,7 @@ pub const Action = struct {
     pub const today: u16 = 16;
     pub const keep_popup: u16 = 17;
     pub const hardware: u16 = 18;
+    pub const browser: u16 = 19;
     pub const wallpaper: u16 = 20;
     pub const window: u16 = 100;
 };
@@ -50,7 +51,7 @@ pub const State = struct {
     hover: u16 = 0,
     palette: usize = 0,
     active: []const u8 = "Desktop",
-    running: [7]bool = [_]bool{false} ** 7,
+    running: [8]bool = [_]bool{false} ** 8,
     items: [8]Item = [_]Item{.{}} ** 8,
     count: usize = 0,
     seconds: ?u64 = null,
@@ -101,10 +102,10 @@ fn activateTheme(index: usize) void {
     ACCENT = active_theme.accent;
 }
 const COLORS = [_]u32{ 0xFF9258, 0x7879F1, 0xFF5B86, 0x39CFC0, 0x63B5FF, 0xA895F3 };
-const LABELS = [_][]const u8{ "Files", "Welcome", "Terminal", "Clock", "About", "Windows", "Appearance", "Trash" };
-const DOCK_ACTIONS = [_]u16{ Action.files, Action.home, Action.terminal, Action.clock, Action.about, Action.overview, Action.settings, Action.trash };
-const DOCK_ICONS = [_]ui.Icon{ .dock_files, .dock_welcome, .dock_terminal, .dock_clock, .dock_about, .dock_windows, .dock_appearance, .dock_trash };
-const DOCK_APPS = [_]?usize{ 4, 0, 1, 2, 3, null, null, 5 };
+const LABELS = [_][]const u8{ "Files", "Welcome", "Terminal", "Clock", "About", "Browser", "Windows", "Appearance", "Trash" };
+const DOCK_ACTIONS = [_]u16{ Action.files, Action.home, Action.terminal, Action.clock, Action.about, Action.browser, Action.overview, Action.settings, Action.trash };
+const DOCK_ICONS = [_]ui.Icon{ .dock_files, .dock_welcome, .dock_terminal, .dock_clock, .dock_about, .dock_browser, .dock_windows, .dock_appearance, .dock_trash };
+const DOCK_APPS = [_]?usize{ 4, 0, 1, 2, 3, 7, null, null, 5 };
 // Clean assets derived from the three approved concepts. The BMP resources
 // live on CitrusFS, not inside Peel's ELF (keeping the app binary lean).
 // Peel loads each once into bounded SHM and installs a read-only slice here.
@@ -148,11 +149,11 @@ fn bitmapPixel(x: i32, y: i32, width: i32, height: i32, bmp: []const u8) u32 {
 }
 
 pub fn dockRect(s: *const Surface) Rect {
-    return .{ .x = @divTrunc(s.width - 664, 2), .y = s.height - DOCK_H - 14, .w = 664, .h = DOCK_H };
+    return .{ .x = @divTrunc(s.width - 740, 2), .y = s.height - DOCK_H - 14, .w = 740, .h = DOCK_H };
 }
 pub fn dockItem(s: *const Surface, index: usize) Rect {
     const d = dockRect(s);
-    return .{ .x = d.x + 16 + @as(i32, @intCast(index)) * 76 + (if (index >= 5) @as(i32, 12) else 0) + (if (index == 7) @as(i32, 12) else 0), .y = d.y + 8, .w = 72, .h = 54 };
+    return .{ .x = d.x + 16 + @as(i32, @intCast(index)) * 76 + (if (index >= 6) @as(i32, 12) else 0) + (if (index == 8) @as(i32, 12) else 0), .y = d.y + 8, .w = 72, .h = 54 };
 }
 pub fn popupRect(s: *const Surface, popup: Popup) Rect {
     return switch (popup) {
@@ -475,8 +476,8 @@ pub fn paint(s: *const Surface, state: *const State) void {
     const shelf = Rect{ .x = dock.x, .y = dock.y + 7, .w = dock.w, .h = dock.h - 10 };
     dock_material.paintShadowed(s, shelf, 16, active_theme.dock, 165);
     if (active_theme.edge_highlights) s.rounded(.{ .x = shelf.x + 20, .y = shelf.y, .w = shelf.w - 40, .h = 1 }, 0, active_theme.rim, 115);
-    s.rounded(.{ .x = dock.x + 410, .y = dock.y + 17, .w = 1, .h = 31 }, 0, 0x778397, 60);
-    s.rounded(.{ .x = dock.x + 575, .y = dock.y + 17, .w = 1, .h = 31 }, 0, 0x778397, 60);
+    s.rounded(.{ .x = dock.x + 486, .y = dock.y + 17, .w = 1, .h = 31 }, 0, 0x778397, 60);
+    s.rounded(.{ .x = dock.x + 651, .y = dock.y + 17, .w = 1, .h = 31 }, 0, 0x778397, 60);
     var drawing = s.*;
     for (DOCK_ACTIONS, 0..) |action, i| {
         const r = dockItem(s, i);

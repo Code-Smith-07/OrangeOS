@@ -258,7 +258,7 @@ def main():
                     or "inet-probe: FAIL" in guest.log() or "runtime: FAIL internet sockets" in guest.log(),
                     "internet sockets", 120)
         inet = re.search(r"inet-probe: PASS /etc/hosts and DNS, blocking and nonblocking TCP with epoll, 2 MiB at (\d+) KiB/s, "
-                         r"half-close, refused, UDP sendto/recvfrom/connect/MSG_TRUNC, options, refusals", guest.log())
+                         r"half-close, refused, UDP sendto/recvfrom/connect/MSG_TRUNC, UDP loopback and AI_ADDRCONFIG, options, refusals", guest.log())
         assert inet, guest.log()[-2000:]
         assert fixture.bulk == 2, fixture.bulk
         print(f"PASS BSD sockets through musl: DNS, TCP (2 MiB at {inet.group(1)} KiB/s), UDP, epoll, refusals", flush=True)

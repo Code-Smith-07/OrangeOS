@@ -158,7 +158,12 @@ for OrangeOS; the kernel ABI is its own, and a userland layer translates musl's
 Linux calls. **WPE WebKit already renders web pages inside OrangeOS on the CPU**
 ([first render](docs/screenshots/wpe-first-render.png)): its UI, web and network
 processes run in the guest, pages load, JavaScript runs, and HTTPS works through
-libsoup and OpenSSL with Mozilla's roots. The plan, milestones and every
+libsoup and OpenSSL with Mozilla's roots. **Orange Browser** opens from the
+dock's Browser icon on a browser image: an address field, Back, Forward and
+Reload, keyboard, mouse and wheel, and real sites over QEMU's network
+([Wikipedia in Orange Browser](docs/screenshots/orange-browser-wikipedia.png)).
+Not yet: video and audio, WebGL, a JIT (JavaScript runs on JavaScriptCore's
+interpreter), tabs, and a profile that survives a reboot. The plan, milestones and every
 recorded WebKit patch are in [012](docs/design/012-wpe-webkit-browser.md). The
 earlier Chromium plan was dropped on 2026-09-28 after WPE passed its gate; its
 document stays as the [runtime history](docs/design/011-native-chromium-browser.md).
@@ -289,7 +294,9 @@ Then fetch the bootloader, create a disk, and build:
 |---------|--------------|
 | `zig build` | Compile and assemble `build/orange.iso` |
 | `./scripts/run-desktop.sh` | Run the built desktop; full screen with one guest cursor on macOS |
-| `./scripts/run-browser-profile.sh` | Full-screen existing desktop with the 4 GiB browser capacity profile; not a browser engine |
+| `zig build -Ddesktop-profile -Dwpe-probes && ORANGE_WPE_PROBES=1 ./scripts/mkdisk.sh` | Build the desktop image with Orange Browser (needs the WPE build in `build/wpe`, see [012](docs/design/012-wpe-webkit-browser.md)) |
+| `./scripts/run-browser-profile.sh` | Full-screen desktop with the 4 GiB browser profile; with the image above, Orange Browser is in the dock |
+| `python3 tools/browser_smoke.py` | Headless browser checks: dock launch, links, Back, HTTPS address, typing, wheel |
 | `ORANGE_DISK_PROFILE=browser ./scripts/mkdisk.sh` | Build a separate sparse 2 GiB guest filesystem for future browser installation; no browser executable yet |
 | `python3 tools/browser_disk_smoke.py` | Verify and boot the browser-capacity disk in QEMU |
 | `ORANGE_VM_PROFILE=browser zig build run` | Boot the 4 GiB profile through the normal build target |

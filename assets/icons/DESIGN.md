@@ -26,6 +26,6 @@ enamel, deep terminal glass, blue information porcelain and layered violet
 windows add colour; dial, gear and wastebasket retain material-specific metal
 and glass detail. Running dots are outside the artwork, not painted into icons.
 
-Validation: all 48 sprites render within clipping at 1x/2x; monochrome tint,
+Validation: all 49 sprites render within clipping at 1x/2x; monochrome tint,
 pointer capture and private publication tests pass. This is a refinement pass,
 not a claim of macOS visual or functional parity.
