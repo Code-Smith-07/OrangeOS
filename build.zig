@@ -361,51 +361,6 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(exe);
     }
 
-    // ── WPE WebKit trial probes ──────────────────────────────────────────────
-    // Built like the C programs above, plus static libraries from the trial
-    // sysroot. Those libraries were compiled for x86_64-linux-musl with the
-    // same code-generation flags (tools/wpe/bin/orange-cc) and link here
-    // against OrangeOS's musl, which has the same headers and ABI.
-    if (wpe_probes) {
-        const sysroot = "build/wpe/sysroot";
-        const WpeProbe = struct { name: []const u8, source: []const u8, libs: []const []const u8 };
-        const wpe_programs = [_]WpeProbe{
-            .{ .name = "glib-probe", .source = "userland/bin/glib-probe/probe.c", .libs = &.{
-                "gio-2.0", "gmodule-2.0", "gobject-2.0", "ffi", "glib-2.0", "pcre2-8", "z",
-            } },
-        };
-        for (wpe_programs) |program| {
-            const mod = b.createModule(.{
-                .root_source_file = b.path("userland/libs/musl-orange/crt.zig"),
-                .target = user_target,
-                .optimize = user_optimize,
-                .strip = user_optimize != .Debug,
-                .red_zone = false,
-                .pic = false,
-                .stack_protector = false,
-                .stack_check = false,
-                .sanitize_c = false,
-                .single_threaded = false,
-            });
-            mod.addCSourceFiles(.{
-                .files = &.{program.source},
-                .flags = &.{ "-std=gnu11", "-nostdinc", "-fno-stack-protector", "-mno-red-zone", "-mno-avx", "-Wall", "-Wextra", "-Werror" },
-            });
-            for ([_][]const u8{ "include", "include/glib-2.0", "lib/glib-2.0/include" }) |dir| {
-                mod.addSystemIncludePath(b.path(b.pathJoin(&.{ sysroot, dir })));
-            }
-            for (musl_headers) |dir| mod.addSystemIncludePath(.{ .cwd_relative = dir });
-            for (program.libs) |lib| {
-                mod.addObjectFile(b.path(b.fmt("{s}/lib/lib{s}.a", .{ sysroot, lib })));
-            }
-            mod.linkLibrary(musl_lib);
-            const exe = b.addExecutable(.{ .name = program.name, .root_module = mod, .use_lld = true });
-            exe.setLinkerScript(b.path("userland/libs/musl-orange/program.ld"));
-            exe.entry = .{ .symbol_name = "_start" };
-            b.installArtifact(exe);
-        }
-    }
-
     // ── C++ standard library on musl ─────────────────────────────────────────
     // libc++, libc++abi and libunwind (LLVM 19) from the pinned Zig
     // toolchain, configured the way Zig configures them for a musl target
@@ -533,6 +488,74 @@ pub fn build(b: *std.Build) void {
         exe.entry = .{ .symbol_name = "_start" };
         exe.link_eh_frame_hdr = true;
         b.installArtifact(exe);
+    }
+
+    // ── WPE WebKit trial probes ──────────────────────────────────────────────
+    // Built like the C and C++ programs above, plus static libraries from the
+    // trial sysroot. Those were compiled for x86_64-linux-musl with the same
+    // code-generation flags (tools/wpe/bin/orange-cc) and link here against
+    // OrangeOS's musl, which has the same headers and ABI, and, for C++
+    // libraries (ICU, HarfBuzz, woff2), against the libc++ built above.
+    if (wpe_probes) {
+        const sysroot = "build/wpe/sysroot";
+        const WpeProbe = struct { name: []const u8, sources: []const []const u8, libs: []const []const u8, cxx: bool };
+        const wpe_programs = [_]WpeProbe{
+            .{ .name = "glib-probe", .sources = &.{"userland/bin/glib-probe/probe.c"}, .cxx = false, .libs = &.{
+                "gio-2.0", "gmodule-2.0", "gobject-2.0", "ffi", "glib-2.0", "pcre2-8", "z",
+            } },
+            .{ .name = "wpe-libs-probe", .sources = &.{ "userland/bin/wpe-libs-probe/probe.c", "userland/bin/wpe-libs-probe/woff2.cpp" }, .cxx = true, .libs = &.{
+                "png16",     "jpeg",       "webpdemux",  "webp",        "sharpyuv",     "harfbuzz-icu", "harfbuzz",
+                "fontconfig", "expat",     "freetype",   "icui18n",     "icuuc",        "icudata",      "xslt",
+                "xml2",      "sqlite3",    "gcrypt",     "gpg-error",   "tasn1",        "xkbcommon",    "epoxy",
+                "woff2enc",  "woff2dec",   "woff2common", "brotlienc",  "brotlidec",    "brotlicommon", "glib-2.0",
+                "pcre2-8",   "z",
+            } },
+        };
+        for (wpe_programs) |program| {
+            const mod = b.createModule(.{
+                .root_source_file = b.path("userland/libs/musl-orange/crt.zig"),
+                .target = user_target,
+                .optimize = user_optimize,
+                .strip = user_optimize != .Debug,
+                .red_zone = false,
+                .pic = false,
+                .stack_protector = false,
+                .stack_check = false,
+                .sanitize_c = false,
+                .single_threaded = false,
+                .unwind_tables = if (program.cxx) .sync else null,
+            });
+            // libc++'s headers wrap the C ones, so only C++ files may see them.
+            var cxx_includes: [cxx_headers.len][]const u8 = undefined;
+            for (cxx_headers, 0..) |dir, i| cxx_includes[i] = b.fmt("-I{s}", .{dir});
+            // The freestanding target defines no platform macro, and Khronos's
+            // eglplatform.h has a portable fallback for exactly that case.
+            const wpe_defines = [_][]const u8{"-DEGL_NO_PLATFORM_SPECIFIC_TYPES"};
+            for (program.sources) |source| {
+                if (std.mem.endsWith(u8, source, ".cpp")) {
+                    mod.addCSourceFile(.{ .file = b.path(source), .flags = b.allocator.dupe([]const u8, &(cxx_includes ++ cxx_common ++ cxx_config ++ wpe_defines ++ [_][]const u8{ "-std=c++20", "-Wall", "-Wextra", "-Werror" })) catch @panic("OOM") });
+                } else {
+                    mod.addCSourceFile(.{ .file = b.path(source), .flags = &(wpe_defines ++ [_][]const u8{ "-std=gnu11", "-nostdinc", "-fno-stack-protector", "-mno-red-zone", "-mno-avx", "-Wall", "-Wextra", "-Werror" }) });
+                }
+            }
+            for ([_][]const u8{ "include", "include/glib-2.0", "lib/glib-2.0/include", "include/harfbuzz", "include/freetype2", "include/libxml2" }) |dir| {
+                mod.addSystemIncludePath(b.path(b.pathJoin(&.{ sysroot, dir })));
+            }
+            for (musl_headers) |dir| mod.addSystemIncludePath(.{ .cwd_relative = dir });
+            for (program.libs) |lib| {
+                mod.addObjectFile(b.path(b.fmt("{s}/lib/lib{s}.a", .{ sysroot, lib })));
+            }
+            if (program.cxx) {
+                mod.linkLibrary(cxx_lib);
+                mod.linkLibrary(unwind_lib);
+            }
+            mod.linkLibrary(musl_lib);
+            const exe = b.addExecutable(.{ .name = program.name, .root_module = mod, .use_lld = true });
+            exe.setLinkerScript(b.path("userland/libs/musl-orange/program.ld"));
+            exe.entry = .{ .symbol_name = "_start" };
+            if (program.cxx) exe.link_eh_frame_hdr = true;
+            b.installArtifact(exe);
+        }
     }
 
     // ── Zest kernel ──────────────────────────────────────────────────────────

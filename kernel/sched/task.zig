@@ -111,7 +111,7 @@ pub const Process = struct {
 
     pub fn create(pid: u32) Error!*Process {
         const self = heap.create(Process) catch return Error.OutOfMemory;
-        self.* = .{ .pid = pid };
+        self.* = .{ .pid = pid, .files = .{ .owner_pid = pid } };
         return self;
     }
 

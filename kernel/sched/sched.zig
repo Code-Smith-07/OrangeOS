@@ -826,6 +826,8 @@ pub fn exit(code: i32) noreturn {
     if (last) {
         const p = process.?;
         p.files.clear();
+        const record_lock = @import("../fs/lock.zig");
+        record_lock.releaseAll(record_lock.Owner.process(p.pid));
         @import("../ipc/ipc.zig").clearInputSinkOwnedBy(p.pid);
         @import("../net/net.zig").socketCloseOwnedBy(p.pid);
         @import("../net/tcp.zig").abortOwnedBy(p.pid);

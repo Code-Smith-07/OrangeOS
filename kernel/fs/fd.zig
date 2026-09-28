@@ -24,6 +24,7 @@ const readiness = @import("../ipc/readiness.zig");
 const epoll = @import("../ipc/epoll.zig");
 const unix_socket = @import("../ipc/unix_socket.zig");
 const console_file = @import("console_file.zig");
+const record_lock = @import("lock.zig");
 
 pub const Error = vfs.Error;
 pub const MAX_OPEN = 256;
@@ -88,6 +89,8 @@ pub const Description = struct {
         if (previous != 1) return;
         switch (self.object) {
             .node => |n| {
+                // Its open-file-description locks go with it.
+                record_lock.releaseAll(record_lock.Owner.description(@intFromPtr(self)));
                 vfs.release(n.node);
                 if (n.path) |path| heap.free(path.ptr);
             },
@@ -131,6 +134,9 @@ pub const Entry = struct { desc: ?*Description = null, cloexec: bool = false };
 /// only; it is never held while a description is released or used.
 pub const FileTable = struct {
     lock: spinlock.SpinLock = .{},
+    /// The process owning the table, whose POSIX record locks on a file go
+    /// when it closes any descriptor for that file (0: none, in tests).
+    owner_pid: u32 = 0,
     entries: [MAX_OPEN]Entry = [_]Entry{.{}} ** MAX_OPEN,
 
     pub fn clear(self: *FileTable) void {
@@ -181,7 +187,10 @@ pub fn installAt(table: *FileTable, desc: *Description, fd: i32, cloexec: bool) 
         table.entries[i] = .{ .desc = desc, .cloexec = cloexec };
         break :blk old;
     };
-    if (previous) |d| d.release();
+    if (previous) |d| {
+        closedLocks(table, d);
+        d.release();
+    }
 }
 
 /// The description behind `fd` with a reference for the caller, or null if
@@ -208,7 +217,18 @@ pub fn close(table: *FileTable, fd: i32) Error!void {
         table.entries[i] = .{};
         break :blk d;
     };
+    closedLocks(table, desc);
     desc.release();
+}
+
+/// POSIX: closing any descriptor for a file drops the process's record
+/// locks on it, even when other descriptors for the file stay open.
+fn closedLocks(table: *FileTable, desc: *Description) void {
+    if (table.owner_pid == 0) return;
+    switch (desc.object) {
+        .node => |*file| record_lock.releaseFile(record_lock.keyOf(&file.node), record_lock.Owner.process(table.owner_pid)),
+        else => {},
+    }
 }
 
 /// dup / F_DUPFD: the lowest free descriptor at or above `min`.
@@ -344,6 +364,14 @@ fn eventError(e: eventfd.Error) Error {
         eventfd.Error.Interrupted => Error.Interrupted,
         eventfd.Error.InvalidArgument => Error.InvalidArgument,
         eventfd.Error.OutOfMemory => Error.OutOfMemory,
+    };
+}
+
+/// A file description's current offset (record locks relative to it).
+pub fn position(desc: *Description) u64 {
+    return switch (desc.object) {
+        .node => offsetOf(desc),
+        else => 0,
     };
 }
 

@@ -30,6 +30,14 @@ case "${ORANGE_DISK_PROFILE:-desktop}" in
         ;;
 esac
 
+# WPE WebKit trial probes (docs/design/012) need their libraries' run-time
+# files and a larger filesystem; only when asked, so ordinary images are
+# unchanged. Build them first with `zig build -Dwpe-probes`.
+if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
+    FS_MIB=$((FS_MIB + 160))
+    DISK_MIB=$((DISK_MIB + 160))
+fi
+
 mkdir -p build
 
 # ── Stage the root filesystem ────────────────────────────────────────────────
@@ -78,11 +86,33 @@ if [ ! -f zig-out/bin/init ]; then
 fi
 
 cp zig-out/bin/init "$ROOTFS/sbin/init"
-for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe cxx-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe tls-probe futex-probe futex-waiter thread-probe thread-exit-probe thread-fault-probe thread-last-probe net-thread-probe net-exit-probe tcp-probe jit-probe fault-wx musl-probe cxx-probe file-probe thread-capacity pipe-probe epoll-probe unix-probe spawn-probe spawn-child mmap-probe shm-probe random-probe signal-probe glib-probe fault-null fault-ro fault-nx fault-opcode; do
+for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe cxx-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe tls-probe futex-probe futex-waiter thread-probe thread-exit-probe thread-fault-probe thread-last-probe net-thread-probe net-exit-probe tcp-probe jit-probe fault-wx musl-probe cxx-probe file-probe thread-capacity pipe-probe epoll-probe unix-probe spawn-probe spawn-child mmap-probe shm-probe random-probe signal-probe fault-null fault-ro fault-nx fault-opcode; do
     if [ -f "zig-out/bin/$prog" ]; then
         cp "zig-out/bin/$prog" "$ROOTFS/bin/$prog"
     fi
 done
+if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
+    for prog in glib-probe wpe-libs-probe; do
+        if [ ! -f "zig-out/bin/$prog" ]; then
+            echo "mkdisk: ERROR - zig-out/bin/$prog not found; run 'zig build -Dwpe-probes' first" >&2
+            exit 1
+        fi
+        cp "zig-out/bin/$prog" "$ROOTFS/bin/$prog"
+    done
+    # fontconfig's configuration and other data installed by the trial
+    # libraries (tools/wpe/build_deps.py), and the fonts it should find.
+    cp -R build/wpe/rootfs/. "$ROOTFS/"
+    mkdir -p "$ROOTFS/share/fonts"
+    cp assets/fonts/Inter.ttf assets/fonts/JetBrainsMono.ttf "$ROOTFS/share/fonts/"
+    # Each library's licence travels with the binaries linking it.
+    for src in build/wpe/src/*/; do
+        name=$(basename "$src")
+        case "$name" in bison-*) continue ;; esac # a build tool, not shipped
+        for notice in "$src"COPYING* "$src"LICENSE* "$src"LICENCE* "$src"COPYRIGHT* "$src"NOTICE*; do
+            [ -f "$notice" ] && cp "$notice" "$ROOTFS/share/licenses/$name-$(basename "$notice")"
+        done
+    done
+fi
 echo "mkdisk: staged /sbin/init and $(ls "$ROOTFS/bin" | tr '\n' ' ')"
 
 # ── Build the filesystem and the partitioned disk ────────────────────────────

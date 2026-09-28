@@ -238,6 +238,13 @@ export fn _start() callconv(.c) noreturn {
                 pulp.exit(213);
             }
             pulp.puts("runtime: PASS GLib, GObject and GIO\n");
+            const libs_program = pulp.spawn("/bin/wpe-libs-probe") catch pulp.exit(214);
+            const libs_code = pulp.wait(libs_program) catch pulp.exit(215);
+            if (libs_code != 0) {
+                pulp.print("runtime: FAIL WPE libraries exit {d}\n", .{libs_code});
+                pulp.exit(216);
+            }
+            pulp.puts("runtime: PASS WPE base libraries\n");
         }
         // Distinct live processes compete for two CPUs; a second wave checks
         // that later processes never inherit the previous users' register data.

@@ -5,5 +5,5 @@
 # no sanitizer runtime, non-PIC static code.
 # Configure-time link tests link against Zig's own musl, which has the same
 # ABI; real OrangeOS programs are linked by build.zig against musl-orange.
-exec zig cc -target x86_64-linux-musl -mcpu=baseline -fno-sanitize=all \
-    -fno-stack-protector -mno-red-zone -fno-pic "$@"
+. "$(dirname "$0")/orange-flags.sh"
+exec zig cc $ORANGE_TARGET_FLAGS "$@"

@@ -225,6 +225,10 @@ const SYS = struct {
     const prlimit64 = 302;
     const statx = 332;
     const faccessat2 = 439;
+    const chmod = 90;
+    const fchmod = 91;
+    const fchmodat = 268;
+    const fchmodat2 = 452;
 };
 
 const E = struct {
@@ -369,6 +373,21 @@ fn statusOf(dirfd: i64, path_address: u64, flags: u64, out: *Status) i64 {
         .path => |full| raw3(OR.stat, @intFromPtr(full.ptr), full.len, @intFromPtr(out)),
         .errno => |code| code,
     };
+}
+
+/// The chmod family. OrangeOS has one user and keeps no permission bits:
+/// every file reports the mode modeOf gives its kind. Asking for that mode
+/// changes nothing and succeeds; any other mode is refused with EPERM, and
+/// a read-only filesystem refuses with EROFS, as Linux does for filesystems
+/// without mode bits.
+fn changeMode(dirfd: i64, path_address: u64, flags: u64, mode: u64) i64 {
+    var status: Status = undefined;
+    const r = statusOf(dirfd, path_address, flags, &status);
+    if (r < 0) return r;
+    const by_path = path_address != 0 and (cString(path_address) orelse "").len != 0;
+    if (by_path and status.mode & OPEN_WRITE == 0) return err(E.ROFS);
+    if (mode & 0o7777 != modeOf(status.kind) & 0o7777) return err(E.PERM);
+    return 0;
 }
 
 /// Linux `struct stat` for x86-64 (musl's kstat).
@@ -1066,6 +1085,10 @@ export fn __orange_syscall(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, 
         // symbolic links and every program's real and effective ids are
         // the same, so AT_SYMLINK_NOFOLLOW (0x100) and AT_EACCESS (0x200)
         // cannot change the answer; other flags are refused.
+        SYS.chmod => changeMode(AT_FDCWD, a, 0, b),
+        SYS.fchmodat => changeMode(a1, b, 0, c),
+        SYS.fchmodat2 => if (d & ~@as(u64, 0x100 | AT_EMPTY_PATH) != 0) err(E.INVAL) else changeMode(a1, b, d, c),
+        SYS.fchmod => changeMode(a1, 0, AT_EMPTY_PATH, b),
         SYS.faccessat2 => if (d & ~@as(u64, 0x100 | 0x200) != 0) err(E.INVAL) else accessPath(a1, b, c),
         SYS.mmap => mmap(a, b, c, d, a5, f),
         SYS.mprotect => blk: {
@@ -1417,6 +1440,12 @@ const F_SETFL = 4;
 const F_DUPFD_CLOEXEC = 1030;
 const F_ADD_SEALS = 1033;
 const F_GET_SEALS = 1034;
+const F_GETLK = 5;
+const F_SETLK = 6;
+const F_SETLKW = 7;
+const F_OFD_GETLK = 36;
+const F_OFD_SETLK = 37;
+const F_OFD_SETLKW = 38;
 const FD_CLOEXEC_BIT = 1;
 
 fn fcntl(fd: u64, command: u64, argument: u64) i64 {
@@ -1438,6 +1467,14 @@ fn fcntl(fd: u64, command: u64, argument: u64) i64 {
         },
         F_ADD_SEALS => raw3(OR.fd_control, fd, 6, argument),
         F_GET_SEALS => raw3(OR.fd_control, fd, 7, 0),
+        // Record locks. The native request has struct flock's layout, so
+        // the caller's structure is passed as it is.
+        F_GETLK => raw3(OR.fd_control, fd, 8, argument),
+        F_SETLK => raw3(OR.fd_control, fd, 9, argument),
+        F_SETLKW => raw3(OR.fd_control, fd, 10, argument),
+        F_OFD_GETLK => raw3(OR.fd_control, fd, 11, argument),
+        F_OFD_SETLK => raw3(OR.fd_control, fd, 12, argument),
+        F_OFD_SETLKW => raw3(OR.fd_control, fd, 13, argument),
         F_SETFL => raw3(OR.fd_control, fd, 5, (if (argument & O_APPEND != 0) OPEN_APPEND else 0) |
             (if (argument & O_NONBLOCK != 0) OPEN_NONBLOCK else 0)),
         else => err(E.INVAL),

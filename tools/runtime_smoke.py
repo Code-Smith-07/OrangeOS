@@ -125,7 +125,7 @@ def main():
         print("PASS C++20 program on libc++: iostreams, format, exceptions, RTTI, thread-safe statics and threads", flush=True)
         guest.until(lambda: "runtime: PASS writable files in /tmp" in guest.log() or "file-probe: FAIL" in guest.log()
                     or "runtime: FAIL writable files" in guest.log(), "writable files in /tmp", 90)
-        assert "file-probe: PASS stdio, pread/pwrite, truncate, rename, unlink-while-open, readdir, errors, 4 writers and 2 appenders, space returned" in guest.log(), guest.log()[-2000:]
+        assert "file-probe: PASS stdio, pread/pwrite, truncate, rename, unlink-while-open, readdir, errors, 4 writers and 2 appenders, record locks, space returned" in guest.log(), guest.log()[-2000:]
         print("PASS writable tmpfs through musl: stdio, positioned I/O, truncate, rename, readdir, errors, concurrency, space returned", flush=True)
         guest.until(lambda: "runtime: PASS 511 threads in one program" in guest.log() or "thread-capacity: FAIL" in guest.log()
                     or "runtime: FAIL thread capacity" in guest.log(), "511 POSIX threads in one program, twice", 180)
@@ -174,6 +174,11 @@ def main():
             assert re.search(r"glib-probe: PASS GLib 2\.88\.3 strings, Unicode, PCRE2 regex, GVariant, SHA-256, threads, "
                              r"async queue, thread pool, main loop sources and wakeups, GObject signals via libffi, "
                              r"GIO files and streams, zlib, g_spawn", guest.log()), guest.log()[-2000:]
+            guest.until(lambda: "runtime: PASS WPE base libraries" in guest.log()
+                        or "wpe-libs-probe: FAIL" in guest.log() or "runtime: FAIL WPE libraries" in guest.log(),
+                        "WPE base libraries", 240)
+            assert ("wpe-libs-probe: PASS PNG, JPEG, WebP, FreeType, HarfBuzz+ICU, fontconfig, WOFF2, ICU locales, "
+                    "libxml2, libxslt, SQLite on tmpfs, libgcrypt AES-GCM, libtasn1, brotli, xkbcommon, no EGL") in guest.log(), guest.log()[-2000:]
         guest.until(lambda: "runtime: PASS concurrent SIMD process isolation" in guest.log(),
                     "twelve native SIMD probes in two concurrent waves", 90)
         masks = [int(mask, 16) for mask in re.findall(r"simd-probe: PASS pid=\d+ cpus=([0-9a-f]+)", guest.log())]
