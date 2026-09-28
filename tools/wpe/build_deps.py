@@ -428,10 +428,15 @@ WPE_OPTIONS = [
     "-DUSE_ATK=OFF", "-DUSE_FLITE=OFF", "-DUSE_GBM=OFF", "-DUSE_LIBDRM=OFF",
     "-DUSE_LIBBACKTRACE=OFF", "-DUSE_LIBHYPHEN=OFF", "-DUSE_VULKAN=OFF",
     "-DUSE_AVIF=OFF", "-DUSE_JPEGXL=OFF", "-DUSE_LCMS=OFF", "-DUSE_WOFF2=ON",
-        # Video on without a media engine (no GStreamer yet): <video> and
-    # <audio> exist, so pages that use them run, but report that they cannot
-    # play anything. Without it YouTube's scripts stop at HTMLVideoElement.
-    "-DENABLE_BUBBLEWRAP_SANDBOX=OFF", "-DENABLE_VIDEO=ON", "-DENABLE_WEB_AUDIO=OFF",
+        # Media (W11): GStreamer linked statically (gst-orange's
+    # libgstreamer-full-1.0.a: plugins, FFmpeg decoders, /dev/audio sink).
+    # No GL (CPU rendering), no MPEG-TS, no WebRTC.
+    "-DUSE_GSTREAMER_FULL=ON", "-DUSE_GSTREAMER_GL=OFF", "-DUSE_GSTREAMER_MPEGTS=OFF",
+    # Stated, not left to defaults: options that depend on video keep the
+    # value from the first configure, which had video off. MSE is how
+    # YouTube streams.
+    "-DENABLE_MEDIA_SOURCE=ON", "-DENABLE_VIDEO_USES_ELEMENT_FULLSCREEN=ON",
+    "-DENABLE_BUBBLEWRAP_SANDBOX=OFF", "-DENABLE_VIDEO=ON", "-DENABLE_WEB_AUDIO=ON",
     "-DENABLE_ENCRYPTED_MEDIA=OFF", "-DENABLE_SPELLCHECK=OFF", "-DENABLE_WEBDRIVER=OFF",
     "-DENABLE_SPEECH_SYNTHESIS=OFF", "-DENABLE_MINIBROWSER=OFF", "-DENABLE_API_TESTS=OFF",
     "-DENABLE_LAYOUT_TESTS=OFF", "-DENABLE_REMOTE_INSPECTOR=OFF",
@@ -440,7 +445,7 @@ WPE_OPTIONS = [
     "-DUSE_SYSTEM_UNIFDEF=ON", "-DUNIFDEF_EXECUTABLE=/usr/bin/unifdef",
     "-DENABLE_GAMEPAD=OFF", "-DENABLE_WEBGL=OFF", "-DUSE_SYSPROF_CAPTURE=OFF",
     "-DENABLE_GPU_PROCESS=OFF", "-DENABLE_WEB_CODECS=OFF", "-DENABLE_MEDIA_STREAM=OFF",
-    "-DENABLE_MEDIA_RECORDER=OFF", "-DENABLE_WEB_RTC=OFF", "-DUSE_GSTREAMER=OFF",
+    "-DENABLE_MEDIA_RECORDER=OFF", "-DENABLE_WEB_RTC=OFF", "-DUSE_GSTREAMER=ON",
     "-DUSE_GSTREAMER_WEBRTC=OFF",
 ]
 
@@ -640,7 +645,136 @@ def build_javascriptcore(src, env):
     shutil.copy2(shell[0], os.path.join(lib, "jsc-shell.o"))
 
 
+# ── W11: media ──────────────────────────────────────────────────────────────
+
+
+def build_nasm(src, env):
+    # A host tool: FFmpeg's x86 SIMD decoders are NASM sources, and
+    # decoding without them is several times slower.
+    build = fresh_build_dir("nasm-host")
+    host = host_environment()
+    run([os.path.join(src, "configure"), f"--prefix={HOST_TOOLS}"], build, host)
+    run(["make", f"-j{os.cpu_count()}"], build, host)
+    run(["make", "install"], build, host)
+
+
+# What YouTube and most sites serve: H.264 and VP9 video (VP8 for older
+# WebM), AAC and Opus audio (Vorbis, MP3, FLAC for the rest). No encoders,
+# muxers, devices or network: GStreamer does the containers and I/O.
+FFMPEG_DECODERS = "h264,vp8,vp9,aac,aac_latm,opus,vorbis,mp3,mp3float,flac,pcm_s16le,pcm_f32le"
+FFMPEG_PARSERS = "h264,vp8,vp9,aac,aac_latm,opus,vorbis,mpegaudio,flac"
+
+
+def build_ffmpeg(src, env):
+    build = fresh_build_dir("ffmpeg")
+    run([os.path.join(src, "configure"), f"--prefix={SYSROOT}", "--enable-cross-compile",
+         "--target-os=linux", "--arch=x86_64", f"--cc={CC}", f"--cxx={CXX}", f"--ar={AR}",
+         f"--ranlib={RANLIB}", "--nm=/usr/bin/nm", "--x86asmexe=nasm", "--pkg-config=pkg-config",
+         "--enable-static", "--disable-shared", "--enable-pic", "--disable-programs", "--disable-doc",
+         "--disable-network", "--disable-autodetect", "--disable-debug", "--disable-everything",
+         "--enable-avcodec", "--enable-avformat", "--enable-avfilter", "--enable-swresample",
+         f"--enable-decoder={FFMPEG_DECODERS}", f"--enable-parser={FFMPEG_PARSERS}",
+         # OrangeOS has no AVX state support yet; FFmpeg checks XGETBV
+         # before AVX anyway, so the SSE kernels are what runs.
+         "--disable-avx512", "--disable-avx512icl"], build, env)
+    run(["make", f"-j{os.cpu_count()}"], build, env)
+    run(["make", "install"], build, env)
+
+
+# Each module has its own subset of these options.
+GST_COMMON = ["-Dauto_features=disabled", "-Dtests=disabled", "-Ddoc=disabled"]
+GST_MODULE = ["-Dexamples=disabled", "-Dnls=disabled"]
+
+
+def build_gstreamer(src, env):
+    # No registry: plugins are linked in and registered by
+    # gst_init_static_plugins (gst-orange), and scanning would fork a helper.
+    meson(src, "gstreamer", env, *GST_COMMON, *GST_MODULE, "-Dintrospection=disabled", "-Dregistry=false", "-Dtools=disabled",
+          "-Dbenchmarks=disabled", "-Dcheck=disabled", "-Dlibunwind=disabled", "-Dlibdw=disabled",
+          "-Dbash-completion=disabled", "-Dptp-helper=disabled", "-Dcoretracers=disabled",
+          "-Dgst_debug=true",
+          # gst_init() then calls gst_init_static_plugins() (gst-orange)
+          # directly instead of looking it up with GModule.
+          "-Dc_args=-DGST_FULL_STATIC_COMPILATION")
+
+
+def build_gst_plugins_base(src, env):
+    meson(src, "gst-plugins-base", env, *GST_COMMON, *GST_MODULE, "-Dintrospection=disabled",
+          "-Dorc=disabled", "-Dtools=disabled",
+          "-Dapp=enabled", "-Daudioconvert=enabled", "-Daudioresample=enabled", "-Dplayback=enabled",
+          "-Dtypefind=enabled", "-Dvideoconvertscale=enabled", "-Dvolume=enabled",
+          "-Daudiotestsrc=enabled", "-Dvideotestsrc=enabled", "-Drawparse=enabled",
+          "-Dgl=disabled")
+
+
+def build_gst_plugins_good(src, env):
+    meson(src, "gst-plugins-good", env, *GST_COMMON, *GST_MODULE, "-Dorc=disabled",
+          "-Disomp4=enabled", "-Dmatroska=enabled", "-Daudioparsers=enabled", "-Dautodetect=enabled",
+          "-Did3demux=enabled", "-Dwavparse=enabled",
+          # scaletempo (audiofx) for playback rates, deinterlace for playsink.
+          "-Daudiofx=enabled", "-Ddeinterlace=enabled")
+
+
+def build_opus(src, env):
+    # For gst-plugins-bad's opusparse, which WebKit's MSE pipeline uses;
+    # decoding itself is FFmpeg's.
+    meson(src, "opus", env, "-Dtests=disabled", "-Ddocs=disabled", "-Dextra-programs=disabled")
+
+
+def build_gst_plugins_bad(src, env):
+    meson(src, "gst-plugins-bad", env, *GST_COMMON, *GST_MODULE, "-Dintrospection=disabled",
+          "-Dorc=disabled", "-Dtools=disabled",
+          # fakevideosink (debugutils): WebKit's player uses it.
+          "-Dvideoparsers=enabled", "-Dopus=enabled", "-Ddebugutils=enabled", "-Dgl=disabled")
+
+
+def build_gst_libav(src, env):
+    meson(src, "gst-libav", env, *GST_COMMON)
+
+
+def build_gst_orange(env):
+    """OrangeOS's GStreamer glue (userland/libs/gst-orange): the static
+    plugin registration and /dev/audio sink, archived together with the
+    GStreamer libraries and plugins as libgstreamer-full-1.0.a, with the
+    pkg-config file WebKit's USE_GSTREAMER_FULL looks for."""
+    build = fresh_build_dir("gst-orange")
+    cflags = subprocess.run(["pkg-config", "--cflags", "gstreamer-audio-1.0"], env=env, check=True,
+                            capture_output=True, text=True).stdout.split()
+    obj = os.path.join(build, "gstorange.o")
+    run([CC, *CFLAGS.split(), *cflags, "-c", os.path.join(ROOT, "userland/libs/gst-orange/gstorange.c"),
+         "-o", obj], build, env)
+    lib = os.path.join(SYSROOT, "lib")
+    archives = sorted(os.path.join(lib, "gstreamer-1.0", n) for n in os.listdir(os.path.join(lib, "gstreamer-1.0"))
+                      if n.endswith(".a"))
+    archives += sorted(os.path.join(lib, n) for n in os.listdir(lib) if n.startswith("libgst") and n.endswith("-1.0.a")
+                       and n != "libgstreamer-full-1.0.a")
+    full = os.path.join(lib, "libgstreamer-full-1.0.a")
+    if os.path.exists(full):
+        os.remove(full)
+    script = "\n".join([f"create {full}", f"addmod {obj}", *(f"addlib {a}" for a in archives), "save", "end", ""])
+    subprocess.run([AR, "-M"], input=script, text=True, env=env, check=True)
+    run([RANLIB, full], ROOT, env)
+    requires = ("gstreamer-1.0 gstreamer-base-1.0 gstreamer-app-1.0 gstreamer-audio-1.0 gstreamer-video-1.0 "
+                "gstreamer-pbutils-1.0 gstreamer-tag-1.0 gstreamer-allocators-1.0 gstreamer-fft-1.0")
+    with open(os.path.join(lib, "pkgconfig", "gstreamer-full-1.0.pc"), "w") as f:
+        f.write(f"prefix={SYSROOT}\nlibdir=${{prefix}}/lib\n\nName: gstreamer-full-1.0\n"
+                "Description: OrangeOS: GStreamer with its plugins linked in (gst-orange)\n"
+                f"Version: 1.28.7\nRequires: {requires}\nLibs: -L${{libdir}} -lgstreamer-full-1.0\n")
+    print(f"gst-orange: {len(archives)} archives in {full}")
+
+
+# Built from this repository rather than a pinned tarball.
+LOCAL_RECIPES = {"gst-orange": build_gst_orange}
+
 RECIPES = {
+    "nasm": build_nasm,
+    "ffmpeg": build_ffmpeg,
+    "opus": build_opus,
+    "gstreamer": build_gstreamer,
+    "gst-plugins-base": build_gst_plugins_base,
+    "gst-plugins-good": build_gst_plugins_good,
+    "gst-plugins-bad": build_gst_plugins_bad,
+    "gst-libav": build_gst_libav,
     "bison": build_bison,
     "zlib": build_zlib,
     "libffi": build_libffi,
@@ -684,6 +818,8 @@ STAGES = {
            "libgcrypt", "libtasn1", "libxkbcommon", "egl-registry", "libepoxy", "woff2"],
     "W4": ["wpewebkit"],
     "W5": ["openssl", "libpsl", "nghttp2", "libsoup", "glib-networking"],
+    "W11": ["nasm", "ffmpeg", "opus", "gstreamer", "gst-plugins-base", "gst-plugins-good",
+            "gst-plugins-bad", "gst-libav", "gst-orange"],
 }
 
 
@@ -692,12 +828,16 @@ def main(argv):
         names = STAGES[argv[1]]
     else:
         names = argv
-    unknown = [n for n in names if n not in RECIPES]
+    unknown = [n for n in names if n not in RECIPES and n not in LOCAL_RECIPES]
     if unknown or not names:
         raise SystemExit(__doc__ + (f"\nno recipe for: {unknown}" if unknown else ""))
     pins = manifest()
     env = environment()
     for name in names:
+        if name in LOCAL_RECIPES:
+            print(f"== {name} (userland)", flush=True)
+            LOCAL_RECIPES[name](env)
+            continue
         pin = pins[ALIASES.get(name, name)]
         print(f"== {name} {pin['version']}", flush=True)
         RECIPES[name](unpack(pin, as_name=name), env)

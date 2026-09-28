@@ -7,6 +7,9 @@ video with no media engine: <video> and <audio> exist and report that
 they cannot play anything (canPlayType answers ""), which is how an
 engine-less media player behaves. Playback needs the GStreamer port.
 
+Since W11 OrangeOS builds with GStreamer, so both conditions hold as
+upstream's do; the patch stays so a build without GStreamer still works.
+
 diff -ru a/Source/WebCore/platform/GStreamer.cmake b/Source/WebCore/platform/GStreamer.cmake
 --- a/Source/WebCore/platform/GStreamer.cmake	2026-09-28 17:29:40
 +++ b/Source/WebCore/platform/GStreamer.cmake	2026-09-28 17:29:40

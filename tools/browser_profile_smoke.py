@@ -38,8 +38,10 @@ def visit(image, expect, label):
         g.key("ret")
         g.until(lambda: 'orange-browser: title "found:' in g.log(), "the cookie page reports", 180)
         assert f'orange-browser: title "{expect}"' in g.log(), g.log()[-2000:]
-        # WebKit writes its databases shortly after; /data saves every 2 s.
-        time.sleep(10)
+        # Cookies reach SQLite at once; WebKit commits local storage from a
+        # timer that runs late under emulation (10 s was not always
+        # enough). /data saves on fsync and every 2 s.
+        time.sleep(float(os.environ.get("PROFILE_WAIT", "45")))
         print(f"PASS {label}", flush=True)
     finally:
         g.close()

@@ -17,6 +17,7 @@ const std = @import("std");
 const block = @import("../../drivers/block/block.zig");
 const citrusfs = @import("../citrusfs/citrusfs.zig");
 const tmpfs = @import("../tmpfs/tmpfs.zig");
+const hda = @import("../../drivers/audio/hda.zig");
 const random = @import("../../lib/random.zig");
 const console = @import("../../console.zig");
 const spinlock = @import("../../sync/spinlock.zig");
@@ -47,6 +48,8 @@ pub const Error = error{
     OutOfMemory,
     MessageTooLong,
     NotPermitted,
+    /// The device file has no hardware behind it (/dev/audio without sound).
+    NoDevice,
 };
 
 pub const MAX_PATH = 256;
@@ -64,8 +67,10 @@ pub const Device = enum {
     zero,
     random,
     urandom,
+    /// Sound output: 48 kHz, 16-bit, stereo PCM (drivers/audio/hda.zig).
+    audio,
 
-    const files = [_]Device{ .null, .zero, .random, .urandom };
+    const files = [_]Device{ .null, .zero, .random, .urandom, .audio };
 };
 
 pub const Node = union(enum) {
@@ -87,7 +92,8 @@ pub const Node = union(enum) {
         return switch (self.*) {
             .citrus => |c| c.inode.size,
             .tmp => |t| tmpfs.size(t),
-            .device => 0,
+            // For /dev/audio: the bytes queued but not yet played.
+            .device => |d| if (d == .audio) hda.queuedBytes() else 0,
         };
     }
 
@@ -277,6 +283,7 @@ fn readDevice(device: Device, buf: []u8) Error!usize {
         .root => return Error.NotFile,
         .null => return 0,
         .zero => @memset(buf, 0),
+        .audio => return Error.InvalidArgument,
         .random => random.fill(buf, .block) catch return Error.Interrupted,
         .urandom => random.fill(buf, .insecure) catch return Error.Interrupted,
     }
@@ -396,6 +403,13 @@ pub fn writeNode(node: *const Node, offset: ?u64, data: []const u8) Error!tmpfs.
         .device => |d| blk: {
             if (d == .root) break :blk Error.IsDirectory;
             if (d == .random or d == .urandom) random.mixUncredited(data);
+            if (d == .audio) {
+                const n = hda.writeStream(data, false) catch |e| break :blk switch (e) {
+                    error.NoDevice => Error.NoDevice,
+                    error.WouldBlock => Error.WouldBlock,
+                };
+                break :blk .{ .count = n, .end = (offset orelse 0) + n };
+            }
             break :blk .{ .count = data.len, .end = (offset orelse 0) + data.len };
         },
     };

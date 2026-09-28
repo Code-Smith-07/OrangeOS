@@ -177,7 +177,9 @@ export fn kmain() callconv(.c) noreturn {
     // needing a userland tool for it.
     _ = sched.spawn("cpu-report", cpuReport, null, .batch) catch {};
     _ = sched.spawn("net-test", netTest, null, .normal) catch {};
-    _ = sched.spawn("audio-test", audioTest, null, .batch) catch {};
+    // An audible tone: only in test builds, not on every boot of a desktop
+    // with a sound card.
+    if (build_options.runtime_test) _ = sched.spawn("audio-test", audioTest, null, .batch) catch {};
     _ = sched.spawn("usb-input", usbInputThread, null, .realtime) catch {};
     if (build_options.late_fault) {
         _ = sched.spawn("late-fault", lateFault, null, .batch) catch {};
