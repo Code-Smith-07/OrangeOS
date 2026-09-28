@@ -11,4 +11,5 @@
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSBluetoothAlwaysUsageDescription</key><string>OrangeOS shows whether this Mac's Bluetooth is on and how many devices are connected. It does not scan, pair, or read device names.</string>
 </dict></plist>

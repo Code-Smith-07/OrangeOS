@@ -50,12 +50,18 @@ public final class HardwareMonitor {
         case .allowedAlways:
             if let controller = IOBluetoothHostController.default() {
                 let state = controller.powerState.rawValue
-                bluetooth = .init(source: "IOBluetooth.powerState", status: state <= 1 ? "available" : "unknown", permission: "allowed",
-                                  power: state <= 1 ? state == 1 : nil, note: "Read-only radio state; discovery and pairing are separate grants")
+                var value = HardwareState(source: "IOBluetooth.powerState", status: state <= 1 ? "available" : "unknown", permission: "allowed",
+                                          power: state <= 1 ? state == 1 : nil, note: "Read-only radio state and connected count; no names, discovery or pairing")
+                if state == 1 {
+                    // Only a count leaves the Mac: no device names or addresses.
+                    let paired = (IOBluetoothDevice.pairedDevices() ?? []).compactMap { $0 as? IOBluetoothDevice }
+                    value.connected = min(99, paired.filter { $0.isConnected() }.count)
+                }
+                bluetooth = value
             } else { bluetooth = .init(source: "IOBluetooth", status: "unavailable", permission: "allowed", note: "No host controller returned") }
         case .denied: bluetooth = .init(source: "CoreBluetooth.authorization", status: "permission_required", permission: "denied", note: "Host permission denied; no controller query")
         case .restricted: bluetooth = .init(source: "CoreBluetooth.authorization", status: "permission_required", permission: "restricted", note: "Restricted by host policy")
-        default: bluetooth = .init(source: "CoreBluetooth.authorization", status: "permission_required", permission: "not_determined", note: "Companion onboarding required; no automatic permission prompt")
+        default: bluetooth = .init(source: "CoreBluetooth.authorization", status: "permission_required", permission: "not_determined", note: "Allow Bluetooth status in the Mac companion menu; no automatic prompt")
         }
         // Prefer the built-in-display adapter, which binds controls to a stable
         // observed CGDisplayID; retain IOKit readback for other configurations.

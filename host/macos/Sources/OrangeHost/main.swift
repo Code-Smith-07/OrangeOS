@@ -3,6 +3,7 @@ import Foundation
 import HostProtocol
 import HostHardware
 import AppKit
+import CoreBluetooth
 
 enum RunError: Error { case arguments, unsafePath, connection, io }
 
@@ -91,12 +92,16 @@ func serve(_ fd: Int32, token: Data, monitor: HardwareMonitor, consent: AudioCon
     }
 }
 
-final class CompanionMenu: NSObject {
+final class CompanionMenu: NSObject, NSMenuDelegate, CBCentralManagerDelegate {
     let consent: AudioConsent
     let brightness: BrightnessConsent
     let item: NSStatusItem
     let grantItem = NSMenuItem(title: "Allow OrangeOS to change Mac volume", action: #selector(toggleAudio), keyEquivalent: "")
     let brightnessItem = NSMenuItem(title: "Allow built-in display brightness control", action: #selector(toggleBrightness), keyEquivalent: "")
+    let bluetoothItem = NSMenuItem(title: "", action: #selector(bluetoothPermission), keyEquivalent: "")
+    /// Created only when the person chooses the Bluetooth item: creating a
+    /// manager is what makes macOS ask. It never scans or connects.
+    var bluetoothManager: CBCentralManager?
     init(consent: AudioConsent, brightness: BrightnessConsent) {
         self.consent = consent
         self.brightness = brightness
@@ -111,12 +116,41 @@ final class CompanionMenu: NSObject {
         menu.addItem(.separator())
         grantItem.target = self; menu.addItem(grantItem)
         brightnessItem.target = self; menu.addItem(brightnessItem)
+        bluetoothItem.target = self; menu.addItem(bluetoothItem)
         let compatibility = NSMenuItem(title: "Display uses a macOS compatibility adapter", action: nil, keyEquivalent: "")
         compatibility.isEnabled = false; menu.addItem(compatibility)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Disconnect and quit", action: #selector(disconnect), keyEquivalent: "")
         quit.target = self; menu.addItem(quit)
+        menu.delegate = self
         item.menu = menu
+        refreshBluetooth()
+    }
+    func menuWillOpen(_ menu: NSMenu) { refreshBluetooth() }
+    func centralManagerDidUpdateState(_ central: CBCentralManager) { refreshBluetooth() }
+    func refreshBluetooth() {
+        switch CBManager.authorization {
+        case .allowedAlways:
+            bluetoothItem.title = "Bluetooth status shared (on/off, connected count)"
+            bluetoothItem.state = .on
+        case .denied, .restricted:
+            bluetoothItem.title = "Bluetooth status: allow in System Settings…"
+            bluetoothItem.state = .off
+        default:
+            bluetoothItem.title = "Show Mac Bluetooth status in OrangeOS…"
+            bluetoothItem.state = .off
+        }
+    }
+    @objc func bluetoothPermission() {
+        switch CBManager.authorization {
+        case .notDetermined:
+            if bluetoothManager == nil { bluetoothManager = CBCentralManager(delegate: self, queue: nil) }
+        default:
+            // Granting after a denial, and revoking, belong to macOS.
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth") {
+                NSWorkspace.shared.open(url)
+            }
+        }
     }
     @objc func toggleAudio() {
         consent.setAllowed(!consent.allowed)
@@ -139,6 +173,35 @@ func runConnections(path: String, token: Data, monitor: HardwareMonitor, consent
         close(fd)
         Thread.sleep(forTimeInterval:0.25)
     }
+}
+
+/// macOS attributes a privacy prompt to the "responsible" process, which for a
+/// program started from a terminal or a script is that terminal, not this
+/// companion. The menu-bar companion therefore runs itself again as its own
+/// responsible process, so the Bluetooth prompt names OrangeOS Companion and
+/// uses its Info.plist purpose string. The first process only waits and
+/// forwards termination. Without the (private, long-stable) spawn attribute
+/// the companion simply runs as before.
+var disclaimedChild: pid_t = 0
+func runDisclaimed(_ args: [String]) -> Int32? {
+    guard getenv("ORANGE_COMPANION_DISCLAIMED") == nil, let executable = Bundle.main.executablePath,
+          let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_spawnattrs_setdisclaim") else { return nil }
+    typealias Disclaim = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32
+    var attributes: posix_spawnattr_t? = nil
+    guard posix_spawnattr_init(&attributes) == 0 else { return nil }
+    defer { posix_spawnattr_destroy(&attributes) }
+    guard unsafeBitCast(symbol, to: Disclaim.self)(&attributes, 1) == 0 else { return nil }
+    setenv("ORANGE_COMPANION_DISCLAIMED", "1", 1)
+    let argv: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) } + [nil]
+    defer { argv.forEach { free($0) } }
+    guard posix_spawn(&disclaimedChild, executable, nil, &attributes, argv, environ) == 0 else {
+        unsetenv("ORANGE_COMPANION_DISCLAIMED")
+        return nil
+    }
+    for sig in [SIGTERM, SIGINT, SIGHUP] { signal(sig) { received in kill(disclaimedChild, received) } }
+    var status: Int32 = 0
+    while waitpid(disclaimedChild, &status, 0) == -1 && errno == EINTR {}
+    return (status & 0x7f) == 0 ? (status >> 8) & 0xff : 128 + (status & 0x7f)
 }
 
 do {
@@ -165,6 +228,7 @@ do {
     guard (args.count == 5 || controls), args[1] == "--socket", args[3] == "--token-file" else { throw RunError.arguments }
     let token = try readToken(args[4])
     _ = try Session(token: token)
+    if controls, let status = runDisclaimed(args) { exit(status) }
     let consent = AudioConsent()
     let brightness = BrightnessConsent()
     let monitor = HardwareMonitor(audioConsent: consent, brightnessConsent: brightness)

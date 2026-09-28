@@ -9,6 +9,8 @@ public struct HardwareState: Codable, Equatable {
     public var control: Bool = false
     public var device: UInt32?
     public var muted: Bool?
+    /// Bluetooth only: how many paired devices are connected. Never names.
+    public var connected: Int?
     public var note: String
     public init(source: String, status: String, permission: String = "not_requested",
                 power: Bool? = nil, level: Double? = nil, note: String) {

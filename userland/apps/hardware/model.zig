@@ -11,7 +11,7 @@ pub const Source = struct {
         return self.bytes[0..self.len];
     }
 };
-pub const Row = struct { reading: Reading = .{ .status = .unavailable }, source: Source = .{}, control: bool = false, device: u32 = 0, power: ?bool = null, muted: ?bool = null };
+pub const Row = struct { reading: Reading = .{ .status = .unavailable }, source: Source = .{}, control: bool = false, device: u32 = 0, power: ?bool = null, muted: ?bool = null, connected: ?u8 = null };
 pub const Model = struct {
     connection: Connection = .disconnected,
     rows: [5]Row = @splat(.{}),
@@ -94,6 +94,11 @@ pub fn parse(bytes: []const u8, scratch: []u8) Model {
             if (field(item, "muted")) |value| {
                 if (value == .bool) row.muted = value.bool;
             }
+            if (i == 1 and row.reading == .on) {
+                if (field(item, "connected")) |value| {
+                    if (value == .integer and value.integer >= 0 and value.integer <= 99) row.connected = @intCast(value.integer);
+                }
+            }
             if ((i == 2 or i == 3) and row.reading == .percent) {
                 if (field(item, "device")) |device| {
                     if (device == .integer and device.integer > 0 and device.integer <= std.math.maxInt(u32)) row.device = @intCast(device.integer);
@@ -174,4 +179,14 @@ test "audio controls require a fresh available reading, route and explicit host 
     try std.testing.expect(!decode(stale ++ wifi ++ bluetooth ++ audio ++ tail).rows[3].control);
     const invalid_route = ",\"audio\":{\"source\":\"CoreAudio\",\"status\":\"available\",\"permission\":\"allowed\",\"device\":-1,\"control\":true,\"level\":0.31}";
     try std.testing.expect(!decode(prefix ++ wifi ++ bluetooth ++ invalid_route ++ tail).rows[3].control);
+}
+
+test "Bluetooth connected count is read only for a radio that is on" {
+    const on = ",\"bluetooth\":{\"source\":\"IOBluetooth.powerState\",\"status\":\"available\",\"permission\":\"allowed\",\"power\":true,\"connected\":2}";
+    const off = ",\"bluetooth\":{\"source\":\"IOBluetooth.powerState\",\"status\":\"available\",\"permission\":\"allowed\",\"power\":false,\"connected\":2}";
+    const bogus = ",\"bluetooth\":{\"source\":\"IOBluetooth.powerState\",\"status\":\"available\",\"permission\":\"allowed\",\"power\":true,\"connected\":500}";
+    try std.testing.expectEqual(@as(?u8, 2), decode(prefix ++ wifi ++ on ++ brightness ++ "0.5}}").rows[1].connected);
+    try std.testing.expectEqual(@as(?u8, null), decode(prefix ++ wifi ++ off ++ brightness ++ "0.5}}").rows[1].connected);
+    try std.testing.expectEqual(@as(?u8, null), decode(prefix ++ wifi ++ bogus ++ brightness ++ "0.5}}").rows[1].connected);
+    try std.testing.expectEqual(@as(?u8, null), decode(prefix ++ wifi ++ bluetooth ++ brightness ++ "0.5}}").rows[1].connected);
 }

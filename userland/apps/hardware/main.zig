@@ -63,7 +63,12 @@ fn paint(win: *const libpeel.Window, state: model.Model, region: ui.Rect) void {
         ui.label(&s, title, 70, y + 2, 1, c.ink);
         var buf: [48]u8 = undefined;
         s.setClip(ui.Rect.intersect(region, .{ .x = 70, .y = y + 20, .w = 136, .h = 18 }));
-        ui.label(&s, reading(state.rows[i], &buf), 70, y + 22, 1, c.muted);
+        const row = state.rows[i];
+        const text = if (row.connected) |n|
+            (if (n == 0) "On, none connected" else std.fmt.bufPrint(&buf, "On, {d} connected", .{n}) catch "On")
+        else
+            reading(row, &buf);
+        ui.label(&s, text, 70, y + 22, 1, c.muted);
         s.setClip(region);
     }
     card(&s, .{ .x = 226, .y = 12, .w = 122, .h = 130 });
@@ -103,7 +108,14 @@ fn paint(win: *const libpeel.Window, state: model.Model, region: ui.Rect) void {
         .invalid => "Mac data unavailable",
         .unavailable => "Connecting to your Mac",
     }, 24, 363, 1, c.ink);
-    ui.label(&s, "Wi-Fi and Bluetooth: status only", 24, 389, 1, c.muted);
+    ui.label(&s, switch (state.rows[1].reading) {
+        .status => |why| switch (why) {
+            .permission_required => "Bluetooth: allow it in the Mac companion menu",
+            .denied, .restricted => "Bluetooth: allow in Mac System Settings",
+            else => "Wi-Fi and Bluetooth: status only",
+        },
+        else => "Wi-Fi and Bluetooth: status only",
+    }, 24, 389, 1, c.muted);
     ui.publishRegion(win, &staging, region);
 }
 export fn _start() callconv(.c) noreturn {
