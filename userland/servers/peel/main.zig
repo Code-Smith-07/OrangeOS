@@ -176,6 +176,8 @@ fn activeWindow() ?usize {
 }
 
 var shell: desktop.State = .{};
+const spotlight = desktop.spotlight;
+const keymap = @import("keymap");
 var wallpapers: [desktop.THEME_NAMES.len]?gfx.Surface = [_]?gfx.Surface{null} ** desktop.THEME_NAMES.len;
 const WALLPAPER_PATHS = [_][]const u8{
     "/share/wallpapers/coastal-glass.bmp",
@@ -322,6 +324,8 @@ fn shellAction(action: u16) void {
     shell.notice = "";
     const old = shell.popup;
     shell.popup = .none;
+    if (old == .spotlight) resetSpotlight();
+    if (old == .switcher) shell.switcher = &.{};
     switch (action) {
         1...4 => launchApp(action - 1, false),
         desktop.Action.files => launchApp(4, false),
@@ -344,12 +348,22 @@ fn shellAction(action: u16) void {
             shell.popup = .calendar;
         },
         desktop.Action.desktop => toggleDesktop(),
+        desktop.Action.spotlight => if (old != .spotlight) openSpotlight(),
+        desktop.Action.result...desktop.Action.result + spotlight.MAX_RESULTS - 1 => {
+            const i = action - desktop.Action.result;
+            if (old == .spotlight and i < shell.results.len) runResult(shell.results[i]);
+        },
+        desktop.Action.switch_item...desktop.Action.switch_item + MAX_WINDOWS - 1 => {
+            const i = action - desktop.Action.switch_item;
+            if (old == .switcher and i < shell.switcher.len) if (findWindowById(shell.switcher[i].id)) |wi| focusWindow(wi);
+        },
         desktop.Action.new_terminal => launchApp(1, true),
         desktop.Action.wallpaper...desktop.Action.wallpaper + 2 => {
             shell.palette = action - desktop.Action.wallpaper;
             for (0..window_count) |i| if (windows[i].panel) sendAppearance(i);
             shell.popup = .settings;
             pulp.print("desktop: theme {d} {s}\n", .{ shell.palette, desktop.THEME_NAMES[shell.palette] });
+            savePreferences();
         },
         desktop.Action.window...desktop.Action.window + MAX_WINDOWS - 1 => {
             const idx = action - desktop.Action.window;
@@ -1110,6 +1124,207 @@ fn handleMouse(e: *const pulp.InputEvent) void {
     }
 }
 
+// ── Spotlight and the app switcher (docs/design/014, M1) ───────────────────
+
+var query_buf: [spotlight.MAX_QUERY]u8 = undefined;
+var query_len: usize = 0;
+var results: [spotlight.MAX_RESULTS]spotlight.Result = undefined;
+var number_buf: [48]u8 = undefined;
+/// What the last painted Spotlight showed; a difference repaints it.
+var shown_rows: usize = 0;
+var shown_key: u64 = 0;
+var shift_held = false;
+var switch_items: [MAX_WINDOWS]desktop.SwitchItem = undefined;
+
+fn openSpotlight() void {
+    query_len = 0;
+    shell.selected = 0;
+    shell.popup = .spotlight;
+    refreshSpotlight();
+    pulp.puts("desktop: spotlight open\n");
+}
+
+/// Search again for the current query and open windows, and repaint
+/// Spotlight only when what it shows has changed.
+fn refreshSpotlight() void {
+    if (shell.popup != .spotlight) return;
+    var open: [MAX_WINDOWS]spotlight.OpenWindow = undefined;
+    var n: usize = 0;
+    var z = window_count;
+    while (z > 0) {
+        z -= 1;
+        const w = &windows[z_order[z]];
+        if (w.panel) continue;
+        open[n] = .{ .id = w.id, .title = w.title(), .glyph = desktop.appGlyph(appIndex(w.title())) };
+        n += 1;
+    }
+    shell.query = query_buf[0..query_len];
+    const count = spotlight.search(shell.query, open[0..n], &results, &number_buf);
+    shell.results = results[0..count];
+    if (shell.selected >= count) shell.selected = if (count == 0) 0 else count - 1;
+    const rows: usize = if (spotlight.trim(shell.query).len == 0) 0 else @max(count, 1);
+    var key: u64 = 0xcbf29ce484222325;
+    for (shell.query) |c| key = (key ^ c) *% 0x100000001b3;
+    for (shell.results) |r| {
+        key = (key ^ @intFromPtr(r.title.ptr)) *% 0x100000001b3;
+        key = (key ^ r.title.len) *% 0x100000001b3;
+        for (r.title) |c| key = (key ^ c) *% 0x100000001b3;
+    }
+    key = (key ^ shell.selected) *% 0x100000001b3;
+    if (rows == shown_rows and key == shown_key) return;
+    addDamage(desktop.popupExtent(&screen, .spotlight));
+    desktop.setSpotlightRows(rows);
+    addDamage(desktop.popupExtent(&screen, .spotlight));
+    shown_rows = rows;
+    shown_key = key;
+}
+
+fn resetSpotlight() void {
+    desktop.setSpotlightRows(0);
+    shown_rows = 0;
+    shown_key = 0;
+}
+
+fn runResult(r: spotlight.Result) void {
+    pulp.print("desktop: spotlight runs \"{s}\"\n", .{r.title});
+    switch (r.target) {
+        .none => shell.popup = .spotlight, // a sum stays on screen
+        .app => |app| launchApp(app, false),
+        .action => |action| shellAction(action),
+        .window => |id| if (findWindowById(id)) |wi| focusWindow(wi),
+    }
+}
+
+/// Keys while Spotlight is open: it owns them all.
+fn spotlightKey(e: *const pulp.InputEvent) void {
+    if (!e.isPress() or isModifier(e.code)) return;
+    switch (e.code) {
+        keymap.ESC => shellAction(desktop.Action.dismiss),
+        keymap.ENTER => if (shell.results.len > 0) shellAction(desktop.Action.result + @as(u16, @intCast(shell.selected))),
+        keymap.BACKSPACE => query_len -|= 1,
+        0x48 => shell.selected -|= 1, // Up
+        0x50, keymap.TAB => if (shell.results.len > 0) {
+            shell.selected = if (e.code == keymap.TAB and shell.selected + 1 == shell.results.len) 0 else @min(shell.selected + 1, shell.results.len - 1);
+        },
+        else => {
+            const c = keymap.translate(e.code, shift_held);
+            if (c >= ' ' and c < 0x7F and query_len < query_buf.len) {
+                // A new query starts at the best match again.
+                query_buf[query_len] = c;
+                query_len += 1;
+                shell.selected = 0;
+            }
+        },
+    }
+    if (e.code == keymap.BACKSPACE) shell.selected = 0;
+    refreshSpotlight();
+    if (shell.popup == .spotlight) {
+        pulp.print("desktop: spotlight \"{s}\" {d} results", .{ shell.query, shell.results.len });
+        if (shell.results.len > 0) pulp.print(", selected \"{s}\"", .{shell.results[shell.selected].title});
+        pulp.puts("\n");
+    }
+}
+
+/// Alt+Tab: open the switcher on the window used before this one; each
+/// further Tab moves on (Shift+Tab back); releasing Alt switches.
+fn switcherStep(backwards: bool) void {
+    if (shell.popup != .switcher) {
+        var n: usize = 0;
+        var z = window_count;
+        while (z > 0) {
+            z -= 1;
+            const w = &windows[z_order[z]];
+            if (w.panel) continue;
+            switch_items[n] = .{ .id = w.id, .app = appIndex(w.title()), .title = w.title(), .hidden = !w.visible };
+            n += 1;
+        }
+        if (n == 0) return;
+        if (shell.popup != .none) shellAction(desktop.Action.dismiss);
+        shell.switcher = switch_items[0..n];
+        desktop.setSwitcherTiles(n);
+        // The front window is first; a visible front window means the
+        // useful choice is the next one.
+        const front_visible = windows[z_order[window_count - 1]].visible and !windows[z_order[window_count - 1]].panel;
+        shell.switch_selected = if (n == 1) 0 else if (backwards) n - 1 else if (front_visible) 1 else 0;
+        shell.popup = .switcher;
+        addDamage(desktop.popupExtent(&screen, .switcher));
+    } else {
+        const n = shell.switcher.len;
+        shell.switch_selected = if (backwards) (shell.switch_selected + n - 1) % n else (shell.switch_selected + 1) % n;
+        addDamage(desktop.popupRect(&screen, .switcher));
+    }
+    pulp.print("desktop: switcher {d} of {d} \"{s}\"\n", .{ shell.switch_selected + 1, shell.switcher.len, shell.switcher[shell.switch_selected].title });
+}
+
+fn switcherFinish() void {
+    if (shell.popup != .switcher) return;
+    addDamage(desktop.popupExtent(&screen, .switcher));
+    shell.popup = .none;
+    const chosen = shell.switcher[shell.switch_selected];
+    shell.switcher = &.{};
+    if (findWindowById(chosen.id)) |wi| {
+        focusWindow(wi);
+        pulp.print("desktop: switched to \"{s}\"\n", .{windows[wi].title()});
+    }
+}
+
+/// Modifier releases always reach the focused window, even when the shell
+/// keeps the key: a lost release leaves it held there (docs/design/012).
+fn isModifier(code: u8) bool {
+    return code == keymap.CTRL or code == keymap.LSHIFT or code == keymap.RSHIFT or code == 0x38 or code == 0x5B or code == 0x5C;
+}
+fn forwardRelease(e: *const pulp.InputEvent) void {
+    if (!e.isPress() and isModifier(e.code)) if (activeWindow()) |idx| sendInput(idx, e.kind, e.code, e.value, 0, 0);
+}
+
+// ── Preferences on /data (docs/design/014, M1) ─────────────────────────────
+
+const PREFS_DIR = "/data/preferences";
+const PREFS_PATH = "/data/preferences/desktop";
+
+fn loadPreferences() void {
+    const fd = pulp.open(PREFS_PATH) catch {
+        // No file yet is normal; no /data at all means nothing can be kept.
+        shell.prefs_kept = if (pulp.open("/data")) |d| blk: {
+            pulp.close(d);
+            break :blk true;
+        } else |_| false;
+        pulp.print("desktop: no saved preferences ({s})\n", .{if (shell.prefs_kept) "first start" else "no data disk"});
+        return;
+    };
+    defer pulp.close(fd);
+    shell.prefs_kept = true;
+    var buf: [256]u8 = undefined;
+    const n = pulp.read(@intCast(fd), &buf) catch 0;
+    var lines = @import("std").mem.splitScalar(u8, buf[0..n], '\n');
+    while (lines.next()) |line| {
+        if (pulp.startsWith(line, "theme=")) {
+            const v = @import("std").fmt.parseInt(usize, line[6..], 10) catch continue;
+            if (v < desktop.THEME_NAMES.len) shell.palette = v;
+        }
+    }
+    pulp.print("desktop: preferences loaded, theme {d} {s}\n", .{ shell.palette, desktop.THEME_NAMES[shell.palette] });
+}
+
+fn savePreferences() void {
+    pulp.mkdir(PREFS_DIR) catch {};
+    const fd = pulp.openWith(PREFS_PATH, pulp.OPEN_WRITE | pulp.OPEN_CREATE | pulp.OPEN_TRUNCATE) catch {
+        shell.prefs_kept = false;
+        pulp.puts("desktop: preferences not saved (no data disk)\n");
+        return;
+    };
+    defer pulp.close(fd);
+    var buf: [64]u8 = undefined;
+    const body = @import("std").fmt.bufPrint(&buf, "# Orange OS desktop preferences\ntheme={d}\n", .{shell.palette}) catch return;
+    _ = pulp.write(@intCast(fd), body) catch {
+        pulp.puts("desktop: preferences not saved (write failed)\n");
+        return;
+    };
+    pulp.fsSync(fd) catch {};
+    shell.prefs_kept = true;
+    pulp.print("desktop: preferences saved, theme {d}\n", .{shell.palette});
+}
+
 fn handleKey(e: *const pulp.InputEvent) void {
     drag_backdrop_valid = false;
     if (e.isPress() and e.code == 0x01 and openPanel() != null) {
@@ -1138,20 +1353,37 @@ fn handleKey(e: *const pulp.InputEvent) void {
     };
     // Alt (either one) is tracked for Alt+Tab; it still reaches the window.
     if (e.code == 0x38) alt_held = e.isPress();
-    if (shell.popup != .none) return;
-    // Alt+Tab cycles focus, as on other desktops; plain Tab belongs to the
-    // window (form fields, completion, Ctrl+Tab between browser tabs).
-    if (alt_held and e.isPress() and e.code == 0x0F and window_count > 1 and openPanel() == null) {
-        for (0..window_count) |i| {
-            const idx = z_order[i];
-            if (windows[idx].visible and !windows[idx].panel) {
-                focusWindow(idx);
-                break;
-            }
-        }
+    if (e.code == keymap.LSHIFT or e.code == keymap.RSHIFT) shift_held = e.isPress();
+    // Releasing Alt picks the highlighted window in the switcher.
+    if (e.code == 0x38 and !e.isPress() and shell.popup == .switcher) {
+        forwardRelease(e);
+        switcherFinish();
         return;
     }
-
+    if (alt_held and e.isPress() and e.code == keymap.TAB and openPanel() == null) {
+        switcherStep(shift_held);
+        return;
+    }
+    if (shell.popup == .switcher) {
+        if (e.isPress() and (e.code == 0x4B or e.code == 0x4D)) switcherStep(e.code == 0x4B);
+        forwardRelease(e);
+        return;
+    }
+    // Alt+Space or the Windows/Command key opens Spotlight (Cmd+Space stays
+    // with the Mac running QEMU).
+    if (e.isPress() and ((alt_held and e.code == 0x39) or ((e.code == 0x5B or e.code == 0x5C) and e.value & 2 != 0))) {
+        if (shell.popup == .spotlight) shellAction(desktop.Action.dismiss) else shellAction(desktop.Action.spotlight);
+        return;
+    }
+    if (shell.popup == .spotlight) {
+        forwardRelease(e);
+        spotlightKey(e);
+        return;
+    }
+    if (shell.popup != .none) {
+        forwardRelease(e);
+        return;
+    }
     // Everything else goes to the focused window - the top of the z-order.
     // Peel does not interpret keys; it routes them.
     if (activeWindow()) |idx| sendInput(idx, e.kind, e.code, e.value, 0, 0);
@@ -1249,6 +1481,8 @@ export fn _start() callconv(.c) noreturn {
         }
     } else |_| {}
 
+    loadPreferences();
+
     // First frame: everything.
     const full = Rect{ .x = 0, .y = 0, .w = screen.width, .h = screen.height };
     composite(full);
@@ -1305,6 +1539,7 @@ export fn _start() callconv(.c) noreturn {
             if (pulp.desktop_profile) pulp.print("perf: pointer {d},{d}\n", .{ cursor_x, cursor_y });
         }
         pumpClients();
+        refreshSpotlight();
 
         // If a base is unavailable (e.g. unusual display bounds), use the
         // ordinary full-glass path. Never restore an uninitialized snapshot.

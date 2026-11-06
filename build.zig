@@ -183,7 +183,8 @@ pub fn build(b: *std.Build) void {
     files_mod.addImport("ui", ui_mod);
     files_mod.addImport("pulp", pulp_mod);
     files_mod.addImport("libpeel", libpeel_mod);
-    files_mod.addImport("keymap", b.createModule(.{ .root_source_file = b.path("userland/apps/squeeze/keymap.zig"), .target = user_target, .optimize = user_optimize }));
+    const keymap_mod = b.createModule(.{ .root_source_file = b.path("userland/apps/squeeze/keymap.zig"), .target = user_target, .optimize = user_optimize });
+    files_mod.addImport("keymap", keymap_mod);
 
     const host_protocol_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/host-services/protocol.zig"), .target = user_target, .optimize = user_optimize });
     const host_model_mod = b.createModule(.{ .root_source_file = b.path("userland/apps/hardware/model.zig"), .target = user_target, .optimize = user_optimize });
@@ -259,6 +260,7 @@ pub fn build(b: *std.Build) void {
         mod.addImport("ui", ui_mod);
         mod.addImport("files_view", files_mod);
         mod.addImport("gfx", gfx_mod);
+        mod.addImport("keymap", keymap_mod);
         if (std.mem.eql(u8, prog.name, "c-abi-probe")) mod.addCSourceFile(.{
             .file = b.path("userland/bin/c-abi-probe/probe.c"),
             .flags = &.{ "-std=c11", "-ffreestanding", "-fno-stack-protector", "-mno-red-zone", "-mno-avx", "-Wall", "-Wextra", "-Werror" },

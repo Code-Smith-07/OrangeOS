@@ -8,6 +8,7 @@ const Surface = gfx.Surface;
 const pulp = @import("pulp");
 const overview = @import("overview.zig");
 const host_model = @import("host_model");
+pub const spotlight = @import("spotlight.zig");
 
 pub const BAR_H = 28;
 pub const DOCK_H = 64;
@@ -33,9 +34,21 @@ pub const Action = struct {
     pub const hardware: u16 = 18;
     pub const browser: u16 = 19;
     pub const wallpaper: u16 = 20;
+    pub const spotlight: u16 = 24;
     pub const window: u16 = 100;
+    /// Spotlight result rows, then app-switcher tiles.
+    pub const result: u16 = 200;
+    pub const switch_item: u16 = 220;
 };
-pub const Popup = enum { none, menu, overview, settings, calendar };
+comptime {
+    const a = spotlight.actions;
+    if (a.overview != Action.overview or a.settings != Action.settings or a.desktop != Action.desktop or
+        a.new_terminal != Action.new_terminal or a.calendar != Action.calendar or a.wallpaper != Action.wallpaper)
+        @compileError("spotlight.actions must mirror desktop.Action");
+}
+pub const Popup = enum { none, menu, overview, settings, calendar, spotlight, switcher };
+/// One tile in the Alt+Tab switcher: a window, most recently used first.
+pub const SwitchItem = struct { id: u32 = 0, app: usize = 0, title: []const u8 = "", hidden: bool = false };
 pub const Item = struct {
     id: u32 = 0,
     revision: u64 = 0,
@@ -59,6 +72,15 @@ pub const State = struct {
     notice: []const u8 = "",
     host: host_model.Model = .{},
     controls_open: bool = false,
+    /// Spotlight: what was typed, what it found, and the highlighted row.
+    query: []const u8 = "",
+    results: []const spotlight.Result = &.{},
+    selected: usize = 0,
+    /// Alt+Tab: the windows on offer and the highlighted one.
+    switcher: []const SwitchItem = &.{},
+    switch_selected: usize = 0,
+    /// Preferences reach the /data disk (false: no data disk attached).
+    prefs_kept: bool = false,
 };
 
 pub const ThemeColors = struct {
@@ -162,7 +184,50 @@ pub fn popupRect(s: *const Surface, popup: Popup) Rect {
         .settings => .{ .x = s.width - 376, .y = 48, .w = 360, .h = 450 },
         .calendar => .{ .x = s.width - 376, .y = 48, .w = 360, .h = 438 },
         .overview => .{ .x = @divTrunc(s.width - 650, 2), .y = 92, .w = 650, .h = 428 },
+        .spotlight => spotlightRect(s, spotlight_rows),
+        .switcher => switcherRect(s, switcher_tiles),
     };
+}
+
+// Spotlight sits in the upper third, as on the Mac: one tall search field,
+// then up to six 44-point result rows under a hairline.
+pub const SPOTLIGHT_W: i32 = 640;
+const FIELD_H: i32 = 56;
+const ROW_H: i32 = 44;
+var spotlight_rows: usize = 0;
+var switcher_tiles: usize = 0;
+/// Rows below the field: results, or one "No results" line. Peel damages
+/// the old and new extents around a change.
+pub fn setSpotlightRows(rows: usize) void {
+    spotlight_rows = rows;
+}
+pub fn setSwitcherTiles(n: usize) void {
+    switcher_tiles = n;
+}
+pub fn spotlightRect(s: *const Surface, rows: usize) Rect {
+    const w = @min(SPOTLIGHT_W, s.width - 32);
+    const list: i32 = if (rows == 0) 0 else 9 + @as(i32, @intCast(rows)) * ROW_H + 8;
+    return .{ .x = @divTrunc(s.width - w, 2), .y = @max(BAR_H + 24, @divTrunc(s.height, 5)), .w = w, .h = FIELD_H + list };
+}
+pub fn spotlightRow(s: *const Surface, i: usize) Rect {
+    const p = spotlightRect(s, spotlight_rows);
+    return .{ .x = p.x + 8, .y = p.y + FIELD_H + 9 + @as(i32, @intCast(i)) * ROW_H, .w = p.w - 16, .h = ROW_H };
+}
+// The switcher: 112-point tiles holding 72-point icons, centred on screen.
+const TILE: i32 = 112;
+pub fn switcherRect(s: *const Surface, n: usize) Rect {
+    const tiles: i32 = @intCast(@max(n, 1));
+    const w = @min(s.width - 32, tiles * TILE + 32);
+    const h: i32 = TILE + 32 + 34;
+    return .{ .x = @divTrunc(s.width - w, 2), .y = @divTrunc(s.height - h, 2), .w = w, .h = h };
+}
+pub fn switcherTile(s: *const Surface, i: usize) Rect {
+    const p = switcherRect(s, switcher_tiles);
+    return .{ .x = p.x + 16 + @as(i32, @intCast(i)) * TILE, .y = p.y + 16, .w = TILE, .h = TILE };
+}
+/// The menu-bar magnifier that opens Spotlight.
+pub fn searchButton(s: *const Surface) Rect {
+    return .{ .x = s.width - 314, .y = 2, .w = 28, .h = 24 };
 }
 pub fn windowCard(s: *const Surface, i: usize) Rect {
     const p = popupRect(s, .overview);
@@ -175,6 +240,7 @@ fn paletteCard(s: *const Surface, i: usize) Rect {
 
 pub fn hit(s: *const Surface, state: *const State, x: i32, y: i32) u16 {
     if (y < BAR_H) {
+        if (searchButton(s).contains(x, y)) return Action.spotlight;
         if (x < 145) return Action.menu;
         if (x >= s.width - 240) return Action.calendar;
         if (x >= s.width - (if (s.width >= 1160) @as(i32, 480) else 300)) return Action.hardware;
@@ -210,6 +276,14 @@ pub fn hit(s: *const Surface, state: *const State, x: i32, y: i32) u16 {
                 for ([_]u16{ Action.previous_month, Action.next_month, Action.today, Action.clock }) |action| {
                     if (calendarButton(s, action).contains(x, y)) return action;
                 }
+                return Action.keep_popup;
+            },
+            .spotlight => {
+                for (0..state.results.len) |i| if (spotlightRow(s, i).contains(x, y)) return Action.result + @as(u16, @intCast(i));
+                return Action.keep_popup;
+            },
+            .switcher => {
+                for (0..state.switcher.len) |i| if (switcherTile(s, i).contains(x, y)) return Action.switch_item + @as(u16, @intCast(i));
                 return Action.keep_popup;
             },
             .none => {},
@@ -307,6 +381,8 @@ pub fn hoverDamage(s: *const Surface, state: *const State, old: u16, new: u16) R
     }
     if (state.popup != .none and state.popup != .overview and (old >= Action.window or new >= Action.window or
         old == Action.desktop or new == Action.desktop or old == Action.hardware or new == Action.hardware or state.popup == .menu))
+        damage = Rect.unionWith(damage, popupRect(s, state.popup));
+    if ((state.popup == .spotlight or state.popup == .switcher) and old != new and (old >= Action.result or new >= Action.result))
         damage = Rect.unionWith(damage, popupRect(s, state.popup));
     return damage;
 }
@@ -467,6 +543,8 @@ pub fn paint(s: *const Surface, state: *const State) void {
         const label = @import("std").fmt.bufPrint(&bar_buf, "{s}  {s}", .{ pulp.calendar.dateText(&date_buf, date), pulp.calendar.clockText(&time_buf, date) }) catch "";
         font.drawMenu(s, label, s.width - font.menuWidth(label, s.scale) - 18, 10, INK);
     } else font.drawMenu(s, "Clock unavailable", s.width - 180, 10, INK);
+    if (state.popup == .spotlight) s.rounded(searchButton(s), 5, INK, 26);
+    ui.iconTint(s, .menu_search, searchButton(s).x + 4, 4, 20, INK);
     if (state.controls_open) s.rounded(.{ .x = s.width - 282, .y = 2, .w = 28, .h = 24 }, 5, INK, 26);
     ui.iconTint(s, .menu_controls, s.width - 278, 4, 20, INK);
     paintHostStatus(s, state);
@@ -561,7 +639,7 @@ pub fn paint(s: *const Surface, state: *const State) void {
             const dimensions = @import("std").fmt.bufPrint(&buffer, "Display  {d} x {d}  /  {d}x UI", .{ s.width * s.scale, s.height * s.scale, s.scale }) catch "Display information unavailable";
             text(s, dimensions, p.x + 20, p.y + 311, MUTED);
             text(s, "Green button: zoom / restore", p.x + 20, p.y + 328, MUTED);
-            text(s, "Theme choice resets on reboot.", p.x + 20, p.y + 358, MUTED);
+            text(s, if (state.prefs_kept) "Your theme is kept after a restart." else "No data disk: the theme resets on restart.", p.x + 20, p.y + 358, MUTED);
             const hardware = hardwareButton(s);
             s.rounded(hardware, 10, if (state.hover == Action.hardware) active_theme.hover else WHITE, 220);
             ui.icon(s, .controls, hardware.x + 10, hardware.y + 8, 24);
@@ -585,7 +663,123 @@ pub fn paint(s: *const Surface, state: *const State) void {
             calendar_key = key;
             if (pulp.desktop_profile) pulp.print("perf: calendar material {d}ms content {d}ms dirty {d}\n", .{ material_finished - material_started, pulp.uptimeMs() - material_finished, calendar_material.last_damage.w * calendar_material.last_damage.h });
         },
+        .spotlight => paintSpotlight(s, state, p),
+        .switcher => paintSwitcher(s, state, p),
         .none => {},
+    }
+}
+
+fn glyphIcon(g: spotlight.Glyph) ui.Icon {
+    return switch (g) {
+        .files => .dock_files,
+        .welcome => .dock_welcome,
+        .terminal => .dock_terminal,
+        .clock, .calendar => .dock_clock,
+        .about => .dock_about,
+        .browser => .dock_browser,
+        .controls => .controls,
+        .trash => .dock_trash,
+        .appearance => .dock_appearance,
+        .windows, .desktop => .dock_windows,
+        .calculator => .dock_calculator,
+    };
+}
+
+/// Spotlight glyph for one of Peel's application indices.
+pub fn appGlyph(app: usize) spotlight.Glyph {
+    return switch (app) {
+        0 => .welcome,
+        1 => .terminal,
+        2 => .clock,
+        3 => .about,
+        4 => .files,
+        5 => .trash,
+        6 => .controls,
+        else => .browser,
+    };
+}
+
+/// Text that fits `width`: whole when it fits, otherwise cut at a character
+/// boundary with "..." (only window titles and long queries reach this).
+fn fitted(buf: *[64]u8, str: []const u8, width: i32, size: i32) []const u8 {
+    if (font.textWidth(str, size) <= width) return str;
+    var n = @min(str.len, buf.len - 3);
+    while (n > 0) : (n -= 1) {
+        @memcpy(buf[0..n], str[0..n]);
+        @memcpy(buf[n .. n + 3], "...");
+        if (font.textWidth(buf[0 .. n + 3], size) <= width) return buf[0 .. n + 3];
+    }
+    return "";
+}
+
+fn paintSpotlight(s: *const Surface, state: *const State, p: Rect) void {
+    // The field: magnifier, then the query (or a quiet placeholder) and a caret.
+    ui.iconTint(s, .search, p.x + 18, p.y + 16, 24, MUTED);
+    const text_x = p.x + 54;
+    const room = p.w - 54 - 20;
+    var buf: [64]u8 = undefined;
+    if (state.query.len == 0) {
+        font.drawText(s, "Spotlight Search", text_x, p.y + 18, 2, MUTED);
+        s.rounded(.{ .x = text_x - 1, .y = p.y + 15, .w = 2, .h = 26 }, 1, ACCENT, 255);
+    } else {
+        // Keep the end of a long query (where the caret is) in view.
+        var shown = state.query;
+        while (shown.len > 1 and font.textWidth(shown, 2) > room - 6) shown = shown[1..];
+        font.drawText(s, shown, text_x, p.y + 18, 2, INK);
+        s.rounded(.{ .x = text_x + font.textWidth(shown, 2) + 2, .y = p.y + 15, .w = 2, .h = 26 }, 1, ACCENT, 255);
+    }
+    if (spotlight_rows == 0) return;
+    s.rounded(.{ .x = p.x, .y = p.y + FIELD_H, .w = p.w, .h = 1 }, 0, active_theme.muted, 70);
+    if (state.results.len == 0) {
+        const r = spotlightRow(s, 0);
+        text(s, "No results", r.x + 14, r.y + 18, MUTED);
+        return;
+    }
+    for (state.results, 0..) |result, i| {
+        const r = spotlightRow(s, i);
+        const chosen = i == state.selected;
+        const hovered = state.hover == Action.result + i;
+        if (chosen) s.rounded(r, 8, ACCENT, 255) else if (hovered) s.rounded(r, 8, active_theme.hover, 200);
+        ui.icon(s, glyphIcon(result.glyph), r.x + 10, r.y + 7, 30);
+        const title_color: u32 = if (chosen) 0xFFFFFF else INK;
+        const sub_color: u32 = if (chosen) 0xE6F0FF else MUTED;
+        const hint: []const u8 = switch (result.kind) {
+            .calculation => "",
+            .window => "Switch",
+            else => "Open",
+        };
+        const hint_w = if (chosen and hint.len > 0) font.textWidth(hint, 1) + 16 else 0;
+        const width = r.w - 52 - 12 - hint_w;
+        text(s, fitted(&buf, result.title, width, 1), r.x + 52, r.y + 9, title_color);
+        var sub_buf: [64]u8 = undefined;
+        text(s, fitted(&sub_buf, result.subtitle, width, 1), r.x + 52, r.y + 26, sub_color);
+        if (hint_w > 0) text(s, hint, r.right() - hint_w + 4, r.y + 18, sub_color);
+    }
+}
+
+fn switcherIcon(app: usize) ui.Icon {
+    return switch (app) {
+        0 => .welcome,
+        1 => .terminal,
+        2 => .clock,
+        3 => .about,
+        4 => .files,
+        5 => .trash,
+        else => .app_browser,
+    };
+}
+
+fn paintSwitcher(s: *const Surface, state: *const State, p: Rect) void {
+    for (state.switcher, 0..) |item, i| {
+        const r = switcherTile(s, i);
+        if (i == state.switch_selected) s.rounded(.{ .x = r.x + 4, .y = r.y + 4, .w = r.w - 8, .h = r.h - 8 }, 18, INK, 34);
+        ui.icon(s, switcherIcon(item.app), r.x + 20, r.y + 20, 72);
+        if (item.hidden) s.circle(r.x + @divTrunc(r.w, 2), r.bottom() - 9, 2, MUTED);
+    }
+    if (state.switch_selected < state.switcher.len) {
+        var buf: [64]u8 = undefined;
+        const title = fitted(&buf, state.switcher[state.switch_selected].title, p.w - 32, 1);
+        centered(s, title, .{ .x = p.x, .y = p.bottom() - 36, .w = p.w, .h = 20 }, INK);
     }
 }
 

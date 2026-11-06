@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🍊 Orange OS
+# Orange OS
 
 **A modern operating system, written from scratch.**
 
@@ -11,7 +11,7 @@
 [![Language](https://img.shields.io/badge/language-Zig-orange.svg)](https://ziglang.org)
 [![Status](https://img.shields.io/badge/status-Phase%209-orange.svg)](ARCHITECTURE.md#16-development-roadmap)
 
-**[📐 Read the Architecture](ARCHITECTURE.md)**
+**[Read the Architecture](ARCHITECTURE.md)**
 
 ![Orange OS Coastal Glass theme](docs/screenshots/theme-coastal.png)
 
@@ -223,32 +223,32 @@ remain checked end to end.
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
-| 0 | Boot, serial, framebuffer | ✅ **Done** |
-| 1 | GDT, IDT, exception handling | ✅ **Done** |
-| 2 | Memory management | ✅ **Done** |
-| 3 | Interrupts and time | ✅ **Done** |
-| 4 | Processes and scheduling | ✅ **Done** |
-| 5 | Storage and filesystems | ✅ **Done** |
-| 6 | Userland, IPC, and Seed | ✅ **Done** |
-| 7a | PS/2 input, framebuffer handoff, and the Peel compositor | ✅ **Done** |
-| 7b | Peel display protocol | ✅ **Done** |
-| 7c | Pseudo-terminals and the Squeeze terminal emulator | ✅ **Done** |
-| 7d | Segment widget toolkit and the Grove launcher | ✅ **Done** |
-| 8a | SMP: every processor boots | ✅ **Done** |
-| 8b | Cross-CPU scheduling | ✅ **Done** |
-| 8c | Networking: e1000, ARP, IPv4, and ICMP | ✅ **Done** |
-| 8d | UDP sockets, DHCP, and DNS | ✅ **Done** |
-| 8e | TCP: fetching a page over a real handshake | ✅ **Done** |
-| 8f | Intel HD Audio | ✅ **Done** |
-| 8g-a | xHCI controller bring-up and device enumeration | ✅ **Done** |
-| 8g-b | USB control transfers and device enumeration | ✅ **Done** |
-| 8g-c | USB HID input | ✅ **Done** |
-| 9a | UEFI boot from a single USB image | ✅ **Done** |
-| 9b | NVMe storage | ✅ **Done** |
-| 9c | Panic replay after compositor takeover | ✅ **Done** |
-| 9d | Enforced resource-budget harness | ✅ **Done** |
-| 9e | Blocking waits and <1% desktop idle CPU | ✅ **Done** |
-| 9f | Booting physical hardware | 🔨 Next |
+| 0 | Boot, serial, framebuffer | **Done** |
+| 1 | GDT, IDT, exception handling | **Done** |
+| 2 | Memory management | **Done** |
+| 3 | Interrupts and time | **Done** |
+| 4 | Processes and scheduling | **Done** |
+| 5 | Storage and filesystems | **Done** |
+| 6 | Userland, IPC, and Seed | **Done** |
+| 7a | PS/2 input, framebuffer handoff, and the Peel compositor | **Done** |
+| 7b | Peel display protocol | **Done** |
+| 7c | Pseudo-terminals and the Squeeze terminal emulator | **Done** |
+| 7d | Segment widget toolkit and the Grove launcher | **Done** |
+| 8a | SMP: every processor boots | **Done** |
+| 8b | Cross-CPU scheduling | **Done** |
+| 8c | Networking: e1000, ARP, IPv4, and ICMP | **Done** |
+| 8d | UDP sockets, DHCP, and DNS | **Done** |
+| 8e | TCP: fetching a page over a real handshake | **Done** |
+| 8f | Intel HD Audio | **Done** |
+| 8g-a | xHCI controller bring-up and device enumeration | **Done** |
+| 8g-b | USB control transfers and device enumeration | **Done** |
+| 8g-c | USB HID input | **Done** |
+| 9a | UEFI boot from a single USB image | **Done** |
+| 9b | NVMe storage | **Done** |
+| 9c | Panic replay after compositor takeover | **Done** |
+| 9d | Enforced resource-budget harness | **Done** |
+| 9e | Blocking waits and <1% desktop idle CPU | **Done** |
+| 9f | Booting physical hardware | Next |
 
 See the [full roadmap](ARCHITECTURE.md#16-development-roadmap) for what each
 phase contains and honest time estimates.
@@ -317,9 +317,17 @@ Then fetch the bootloader, create a disk, and build:
 
 For the new desktop, run `zig build && ./scripts/mkdisk.sh`, then
 `./scripts/run-desktop.sh`. Click an app in the dock to launch, focus, or
-restore it. The Orange OS menu also opens a **new** terminal. **F3** shows
-all windows, **F4** opens Appearance, **F11** reveals/restores the desktop,
-and **Escape** dismisses a panel. On a Mac, function keys may require `Fn`.
+restore it. The Orange OS menu also opens a **new** terminal. **Option+Space**
+(or the magnifier in the menu bar) opens **Spotlight**: type to find an app, an
+open window, a setting or a theme, or to work out a sum, then Return.
+**Option+Tab** shows the app switcher; keep Option held, Tab to move, release
+to switch. **F3** shows all windows, **F4** opens Appearance, **F11**
+reveals/restores the desktop, and **Escape** dismisses a panel. The chosen
+theme is kept on the `/data` disk across restarts. On a Mac, function keys
+may require `Fn`; Command shortcuts stay with the Mac, so OrangeOS uses Option.
+The plan to bring the whole system to a macOS level of finish, with sizes
+measured from macOS itself and the path to UTM, VirtualBox and VMware, is
+[014](docs/design/014-macos-class-experience.md).
 
 Userland defaults to `ReleaseSafe` when the kernel is built in Debug mode,
 so software graphics remain responsive while retaining bounds checks. Use
@@ -405,11 +413,10 @@ LLVM-exception), from the same toolchain; their licenses are installed in
 **Developed by Vishwateja S B**
 *Software Developer and AI Data Analyst*
 
-Copyright © 2026 Official Vishwateja
+© 2026 Official Vishwateja. All Rights Reserved.
 
 ---
 
-🍊
 
 *Written from scratch. Every layer. On purpose.*
 

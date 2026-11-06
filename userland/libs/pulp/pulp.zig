@@ -37,6 +37,8 @@ pub const NR = struct {
     pub const gettid: u64 = 45;
     pub const sleep_ms: u64 = 61;
     pub const open: u64 = 20;
+    pub const mkdir: u64 = 30;
+    pub const fs_sync: u64 = 164;
     pub const close: u64 = 21;
     pub const read: u64 = 22;
     pub const readdir: u64 = 34;
@@ -267,6 +269,31 @@ pub fn open(path: []const u8) Error!i64 {
     const r = syscall3(NR.open, @intFromPtr(path.ptr), path.len, 0);
     if (r < 0) return errno(r);
     return r;
+}
+
+/// Flags for `openWith`, as the kernel's VFS defines them.
+pub const OPEN_READ: u64 = 1;
+pub const OPEN_WRITE: u64 = 2;
+pub const OPEN_CREATE: u64 = 4;
+pub const OPEN_TRUNCATE: u64 = 16;
+
+pub fn openWith(path: []const u8, flags: u64) Error!i64 {
+    const r = syscall3(NR.open, @intFromPtr(path.ptr), path.len, flags);
+    if (r < 0) return errno(r);
+    return r;
+}
+
+/// Create a directory; an existing one is not an error.
+pub fn mkdir(path: []const u8) Error!void {
+    const r = syscall2(NR.mkdir, @intFromPtr(path.ptr), path.len);
+    if (r < 0 and r != -17) return errno(r);
+}
+
+/// Make what was written to `fd` durable (the /data volume saves to disk;
+/// memory and read-only files have nothing to save).
+pub fn fsSync(fd: i64) Error!void {
+    const r = syscall1(NR.fs_sync, @bitCast(fd));
+    if (r < 0) return errno(r);
 }
 
 pub fn close(fd: i64) void {

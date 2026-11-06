@@ -22,7 +22,8 @@ NAMES = ("welcome", "terminal", "clock", "about", "windows", "appearance",
          "menu_battery", "menu_battery_plain", "menu_brand",
          "dock_welcome", "dock_terminal", "dock_clock", "dock_about",
          "dock_windows", "dock_appearance", "dock_files", "dock_trash",
-         "dock_browser")
+         "dock_browser", "menu_search", "search", "dock_calculator",
+         "app_browser")
 
 def main():
     header = bytearray()
@@ -35,7 +36,9 @@ def main():
             size = 46 if name.startswith("menu_battery") else 40
         if name.startswith("dock_"):
             size = 88  # 44-point icons, prefiltered rather than undersampled.
-        source = name.removeprefix("dock_")
+        if name.startswith("app_"):
+            size = 192  # large switcher art for an app first drawn for the dock
+        source = name.removeprefix("dock_").removeprefix("app_")
         svg = ROOT / "assets/icons" / (source + ".svg")
         png = cairosvg.svg2png(url=str(svg), output_width=size * 2, output_height=size * 2)
         rgba = Image.open(io.BytesIO(png)).convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
