@@ -316,7 +316,11 @@ Then fetch the bootloader, create a disk, and build:
 | `zig build -Dfs-test run` | Run filesystem tests |
 
 For the new desktop, run `zig build && ./scripts/mkdisk.sh`, then
-`./scripts/run-desktop.sh`. Click an app in the dock to launch, focus, or
+`./scripts/run-desktop.sh`. On a Mac it also starts the **OrangeOS
+Companion**, so the menu bar and Control Center show the Mac's real Wi-Fi,
+battery, brightness and sound (Bluetooth after you allow it once from the
+companion's menu-bar item); `ORANGE_BRIDGE=0` runs without it, and the
+indicators then show "?". Click an app in the dock to launch, focus, or
 restore it. The Orange OS menu also opens a **new** terminal. **Option+Space**
 (or the magnifier in the menu bar) opens **Spotlight**: type to find an app, an
 open window, a setting or a theme, or to work out a sum, then Return.
