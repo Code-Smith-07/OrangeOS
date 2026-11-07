@@ -9,7 +9,8 @@ pub const Preview = struct {
     builds: usize = 0,
     const Key = struct { id: u32, revision: u64, width: i32, height: i32, scale: i32 };
 
-    pub fn paint(self: *Preview, s: *const gfx.Surface, source: [*]const u32, id: u32, revision: u64, width: i32, height: i32, x: i32, y: i32) void {
+    pub fn paint(self: *Preview, s: *const gfx.Surface, source: [*]const u32, id: u32, revision: u64, width: i32, height: i32, stride_in: i32, x: i32, y: i32) void {
+        const stride = if (stride_in > 0) stride_in else width;
         const r = gfx.Rect{ .x = x, .y = y, .w = 72, .h = 37 };
         const area = gfx.Rect.intersect(gfx.Rect.intersect(r, s.clip), .{ .x = 0, .y = 0, .w = s.width, .h = s.height });
         if (area.isEmpty() or width <= 0 or height <= 0 or s.scale < 1 or s.scale > 2) return;
@@ -27,8 +28,8 @@ pub const Preview = struct {
                     const sx = @min(width - 1, fx >> 8);
                     const sy1 = @min(height - 1, sy + 1);
                     const sx1 = @min(width - 1, sx + 1);
-                    const top = gfx.lerp(source[@intCast(sy * width + sx)], source[@intCast(sy * width + sx1)], @intCast(fx & 255));
-                    const bottom = gfx.lerp(source[@intCast(sy1 * width + sx)], source[@intCast(sy1 * width + sx1)], @intCast(fx & 255));
+                    const top = gfx.lerp(source[@intCast(sy * stride + sx)], source[@intCast(sy * stride + sx1)], @intCast(fx & 255));
+                    const bottom = gfx.lerp(source[@intCast(sy1 * stride + sx)], source[@intCast(sy1 * stride + sx1)], @intCast(fx & 255));
                     self.pixels[@intCast(yy * tw + xx)] = gfx.lerp(top, bottom, @intCast(fy & 255));
                 }
             }
@@ -105,19 +106,19 @@ test "previews reuse unchanged revisions, invalidate identity and obey clips" {
     var source = [_]u32{0x123456} ** 64;
     var pixels = [_]u32{0} ** (160 * 90);
     var s = gfx.Surface{ .pixels = &pixels, .width = 80, .height = 45, .stride = 160, .scale = 2 };
-    preview.paint(&s, &source, 1, 0, 8, 8, 2, 2);
+    preview.paint(&s, &source, 1, 0, 8, 8, 0, 2, 2);
     try std.testing.expectEqual(@as(usize, 1), preview.builds);
-    preview.paint(&s, &source, 1, 0, 8, 8, 2, 2);
+    preview.paint(&s, &source, 1, 0, 8, 8, 0, 2, 2);
     try std.testing.expectEqual(@as(usize, 1), preview.builds);
     @memset(&source, 0xABCDEF);
     s.setClip(.{ .x = 4, .y = 4, .w = 2, .h = 2 });
-    preview.paint(&s, &source, 1, 1, 8, 8, 2, 2);
+    preview.paint(&s, &source, 1, 1, 8, 8, 0, 2, 2);
     try std.testing.expectEqual(@as(u32, 0xABCDEF), s.getPhysical(8, 8));
     try std.testing.expectEqual(@as(u32, 0x123456), s.getPhysical(6, 6));
-    preview.paint(&s, &source, 2, 1, 8, 8, 2, 2);
+    preview.paint(&s, &source, 2, 1, 8, 8, 0, 2, 2);
     try std.testing.expectEqual(@as(usize, 3), preview.builds);
     s.setClip(.{ .x = 78, .y = 42, .w = 2, .h = 2 });
-    preview.paint(&s, &source, 2, 2, 8, 8, 2, 2);
+    preview.paint(&s, &source, 2, 2, 8, 8, 0, 2, 2);
     try std.testing.expectEqual(@as(usize, 3), preview.builds);
 }
 
@@ -152,7 +153,7 @@ test "cached previews retain the original bilinear sampling at both scales" {
     for ([_]i32{ 1, 2 }) |scale| {
         var preview: Preview = .{};
         const s = gfx.Surface{ .pixels = &pixels, .width = 72, .height = 37, .stride = 72 * scale, .scale = scale };
-        preview.paint(&s, &source, 1, 0, 13, 11, 0, 0);
+        preview.paint(&s, &source, 1, 0, 13, 11, 0, 0, 0);
         var y: i32 = 0;
         while (y < 37 * scale) : (y += 1) {
             var x: i32 = 0;

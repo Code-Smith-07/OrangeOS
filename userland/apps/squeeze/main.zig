@@ -12,15 +12,27 @@ const libpeel = @import("libpeel");
 const proto = libpeel.proto;
 const typography = @import("typography");
 const keymap = @import("keymap.zig");
+const std = @import("std");
 
 const CELL_W: i32 = 8;
 const CELL_H: i32 = 14;
-const COLS: i32 = 76;
-const ROWS: i32 = 26;
 const PAD: i32 = 6;
 
-const WIN_W: i32 = COLS * CELL_W + PAD * 2;
-const WIN_H: i32 = ROWS * CELL_H + PAD * 2;
+// The window opens at 76 x 26 and can be resized (docs/design/014, M2):
+// the grid is allocated for the largest window and `cols` x `rows` of it
+// are shown. Text is kept, not rewrapped, when the window narrows.
+const START_COLS: i32 = 76;
+const START_ROWS: i32 = 26;
+const MIN_COLS: i32 = 40;
+const MIN_ROWS: i32 = 10;
+const MAX_COLS: i32 = 160;
+const MAX_ROWS: i32 = 60;
+var COLS: i32 = START_COLS;
+var ROWS: i32 = START_ROWS;
+
+fn windowFor(cols: i32, rows: i32) [2]i32 {
+    return .{ cols * CELL_W + PAD * 2, rows * CELL_H + PAD * 2 };
+}
 
 const BG: u32 = 0x182332;
 const FG: u32 = 0xE3EBF5;
@@ -32,8 +44,8 @@ const Cell = struct {
     color: u32 = FG,
 };
 
-var grid: [ROWS][COLS]Cell = undefined;
-var dirty: [ROWS]bool = undefined;
+var grid: [MAX_ROWS][MAX_COLS]Cell = undefined;
+var dirty: [MAX_ROWS]bool = undefined;
 
 var cx: i32 = 0;
 var cy: i32 = 0;
@@ -45,9 +57,9 @@ var shift_down: bool = false;
 
 fn clearGrid() void {
     var y: i32 = 0;
-    while (y < ROWS) : (y += 1) {
+    while (y < MAX_ROWS) : (y += 1) {
         var x: i32 = 0;
-        while (x < COLS) : (x += 1) grid[@intCast(y)][@intCast(x)] = .{};
+        while (x < MAX_COLS) : (x += 1) grid[@intCast(y)][@intCast(x)] = .{};
         dirty[@intCast(y)] = true;
     }
     cx = 0;
@@ -61,9 +73,28 @@ fn scroll() void {
         dirty[@intCast(y)] = true;
     }
     var x: i32 = 0;
-    while (x < COLS) : (x += 1) grid[@intCast(ROWS - 1)][@intCast(x)] = .{};
+    while (x < MAX_COLS) : (x += 1) grid[@intCast(ROWS - 1)][@intCast(x)] = .{};
     dirty[@intCast(ROWS - 1)] = true;
     cy = ROWS - 1;
+}
+
+/// A new window size: show more or fewer cells. If the cursor would fall
+/// below the last row, the text moves up with it, like a shell scrolling.
+fn resizeGrid(width: i32, height: i32) void {
+    const cols = std.math.clamp(@divTrunc(width - PAD * 2, CELL_W), MIN_COLS, MAX_COLS);
+    const rows = std.math.clamp(@divTrunc(height - PAD * 2, CELL_H), MIN_ROWS, MAX_ROWS);
+    if (cy >= rows) {
+        const shift = cy - rows + 1;
+        var y: i32 = 0;
+        while (y < MAX_ROWS) : (y += 1) {
+            grid[@intCast(y)] = if (y + shift < MAX_ROWS) grid[@intCast(y + shift)] else [_]Cell{.{}} ** MAX_COLS;
+        }
+        cy -= shift;
+    }
+    COLS = cols;
+    ROWS = rows;
+    cx = @min(cx, COLS);
+    for (&dirty) |*d| d.* = true;
 }
 
 fn newline() void {
@@ -248,7 +279,18 @@ fn paint() void {
 export fn _start() callconv(.c) noreturn {
     clearGrid();
 
-    win = libpeel.createWindow("Squeeze - juice", WIN_W, WIN_H, 70, 112) catch {
+    const start = windowFor(START_COLS, START_ROWS);
+    const smallest = windowFor(MIN_COLS, MIN_ROWS);
+    win = libpeel.open(.{
+        .title = "Squeeze - juice",
+        .width = start[0],
+        .height = start[1],
+        .x = 70,
+        .y = 112,
+        .flags = proto.WindowFlags.closable | proto.WindowFlags.resizable,
+        .min_w = smallest[0],
+        .min_h = smallest[1],
+    }) catch {
         pulp.puts("squeeze: no display server\n");
         pulp.exit(1);
     };
@@ -291,6 +333,17 @@ export fn _start() callconv(.c) noreturn {
                 win.destroy();
                 pulp.puts("squeeze: closed\n");
                 pulp.exit(0);
+            }
+            if (m.opcode == proto.Op.configure) {
+                if (win.configure(msg[0..m.len])) {
+                    resizeGrid(win.width, win.height);
+                    win.clear(BG);
+                    paint();
+                    win.ackResize();
+                    win.commitAll();
+                    pulp.print("squeeze: {d} x {d} cells\n", .{ COLS, ROWS });
+                }
+                continue;
             }
             if (m.opcode != proto.Op.input) continue;
             if (m.len < @sizeOf(proto.Input)) continue;

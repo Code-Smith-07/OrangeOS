@@ -15,8 +15,141 @@ pub const Color = struct {
 };
 const font = @import("typography");
 pub const textWidth = font.textWidth;
-pub const Icon = enum { welcome, terminal, clock, about, windows, appearance, files, trash, chevron_left, chevron_right, chevron_up, document, brand, controls, close, minimize, maximize, pointer, folder_orange, folder_green, folder_purple, folder_pink, folder_gold, wifi, bluetooth, speaker, sun, battery, battery_plain, sidebar_home, sidebar_apps, sidebar_system, sidebar_trash, menu_wifi, menu_bluetooth, menu_speaker, menu_controls, menu_battery, menu_battery_plain, menu_brand, dock_welcome, dock_terminal, dock_clock, dock_about, dock_windows, dock_appearance, dock_files, dock_trash, dock_browser, menu_search, search, dock_calculator, app_browser };
+pub const Icon = enum { welcome, terminal, clock, about, windows, appearance, files, trash, chevron_left, chevron_right, chevron_up, document, brand, controls, close, minimize, maximize, pointer, folder_orange, folder_green, folder_purple, folder_pink, folder_gold, wifi, bluetooth, speaker, sun, battery, battery_plain, sidebar_home, sidebar_apps, sidebar_system, sidebar_trash, menu_wifi, menu_bluetooth, menu_speaker, menu_controls, menu_battery, menu_battery_plain, menu_brand, dock_welcome, dock_terminal, dock_clock, dock_about, dock_windows, dock_appearance, dock_files, dock_trash, dock_browser, menu_search, search, dock_calculator, app_browser, cursor_resize_h, cursor_resize_v, cursor_resize_nwse, cursor_resize_nesw };
 pub const Button = struct { id: u32, rect: Rect };
+
+/// The shared toolkit (docs/design/014, M2): one set of measured sizes and
+/// one way to draw each control, so every app looks like it belongs to the
+/// same system. Sizes are macOS 15's, measured from AppKit.
+pub const Metrics = struct {
+    /// A toolbar window's top bar, which holds the window buttons.
+    pub const toolbar_h: i32 = 52;
+    /// Room the window buttons need at the left of a toolbar (19 + 54 + gap).
+    pub const buttons_w: i32 = 84;
+    /// Toolbar items: 28-point square buttons and 28-point segmented controls.
+    pub const toolbar_item: i32 = 28;
+    /// Push buttons: regular, small, large.
+    pub const push_h: i32 = 32;
+    pub const push_small_h: i32 = 27;
+    pub const push_large_h: i32 = 40;
+    /// Text and search fields.
+    pub const field_h: i32 = 21;
+    pub const search_h: i32 = 22;
+    /// Switch, slider, pop-up button.
+    pub const switch_w: i32 = 42;
+    pub const switch_h: i32 = 25;
+    pub const slider_h: i32 = 28;
+    pub const popup_h: i32 = 25;
+    /// Table and sidebar rows.
+    pub const row_h: i32 = 24;
+    /// Corner radii: controls, fields, selection.
+    pub const control_radius: i32 = 6;
+    pub const field_radius: i32 = 6;
+    /// Gaps: between toolbar items, and inside content.
+    pub const gap: i32 = 8;
+    pub const margin: i32 = 16;
+};
+
+/// What a control looks like right now.
+pub const ControlState = struct {
+    hover: bool = false,
+    pressed: bool = false,
+    selected: bool = false,
+    enabled: bool = true,
+
+    /// From the shared pointer tracker, for the control with this id.
+    pub fn of(p: Pointer, id: u32) ControlState {
+        return .{ .hover = p.hover == id, .pressed = p.pressed == id and p.hover == id };
+    }
+};
+
+/// Light toolkit colours; one hue (the accent) for selection and focus.
+pub const Tone = struct {
+    pub const toolbar: u32 = 0xF6F6F8;
+    pub const sidebar: u32 = 0xEEEEF1;
+    pub const hairline: u32 = 0xDCDDE1;
+    pub const hover: u32 = 0xE6E7EA;
+    pub const pressed: u32 = 0xD9DADE;
+    pub const field: u32 = 0xFFFFFF;
+    pub const field_rim: u32 = 0xD5D7DC;
+    pub const placeholder: u32 = 0x8D9097;
+    pub const text: u32 = 0x2B2E34;
+    pub const secondary: u32 = 0x6E727A;
+    pub const symbol: u32 = 0x5C6067;
+    pub const disabled: u32 = 0xBABDC2;
+    pub const accent: u32 = 0x0A7AFF;
+    pub const accent_soft: u32 = 0xD9E8FD;
+};
+
+/// A borderless toolbar button: a symbol on nothing until hovered, like the
+/// Finder's back and forward buttons.
+pub fn toolbarButton(s: *const Surface, r: Rect, symbol: Icon, st: ControlState) void {
+    const fill: ?u32 = if (!st.enabled) null else if (st.pressed) Tone.pressed else if (st.hover or st.selected) Tone.hover else null;
+    if (fill) |c| s.rounded(r, Metrics.control_radius, c, 255);
+    const size: i32 = 18;
+    iconTint(s, symbol, r.x + @divTrunc(r.w - size, 2), r.y + @divTrunc(r.h - size, 2), size, if (st.enabled) Tone.symbol else Tone.disabled);
+}
+
+/// A rounded push button with a centred label; `default` is the accent one.
+pub fn pushButton(s: *const Surface, r: Rect, text: []const u8, default: bool, st: ControlState) void {
+    if (default) {
+        s.rounded(r, Metrics.control_radius, if (st.pressed) gfx.lerp(Tone.accent, 0x000000, 40) else Tone.accent, 255);
+        // A faint reflection along the top: light on a glossy surface.
+        s.rounded(.{ .x = r.x + 1, .y = r.y + 1, .w = r.w - 2, .h = @divTrunc(r.h, 2) }, Metrics.control_radius - 1, 0xFFFFFF, 26);
+    } else {
+        s.rounded(r, Metrics.control_radius, Tone.field_rim, 255);
+        s.rounded(.{ .x = r.x + 1, .y = r.y + 1, .w = r.w - 2, .h = r.h - 2 }, Metrics.control_radius - 1, if (st.pressed) Tone.pressed else if (st.hover) 0xF7F7F9 else 0xFFFFFF, 255);
+    }
+    const w = textWidth(text, 1);
+    label(s, text, r.x + @divTrunc(r.w - w, 2), r.y + @divTrunc(r.h, 2) - 4, 1, if (!st.enabled) Tone.disabled else if (default) 0xFFFFFF else Tone.text);
+}
+
+/// A search field: magnifier, text or placeholder, accent rim when focused.
+/// Text that does not fit is cut at the field's edge (never drawn outside).
+pub fn searchField(s: *Surface, r: Rect, text: []const u8, placeholder: []const u8, focused: bool) void {
+    if (focused) s.rounded(.{ .x = r.x - 2, .y = r.y - 2, .w = r.w + 4, .h = r.h + 4 }, Metrics.field_radius + 2, Tone.accent_soft, 255);
+    s.rounded(r, Metrics.field_radius, if (focused) Tone.accent else Tone.field_rim, 255);
+    s.rounded(.{ .x = r.x + 1, .y = r.y + 1, .w = r.w - 2, .h = r.h - 2 }, Metrics.field_radius - 1, Tone.field, 255);
+    iconTint(s, .search, r.x + 6, r.y + @divTrunc(r.h - 14, 2), 14, Tone.secondary);
+    const clip = s.clip;
+    defer s.setClip(clip);
+    s.setClip(Rect.intersect(clip, .{ .x = r.x + 24, .y = r.y, .w = r.w - 30, .h = r.h }));
+    const shown = if (text.len > 0) text else placeholder;
+    label(s, shown, r.x + 25, r.y + @divTrunc(r.h, 2) - 4, 1, if (text.len > 0) Tone.text else Tone.placeholder);
+    if (focused) {
+        const caret = r.x + 25 + (if (text.len > 0) textWidth(text, 1) else 0) + 1;
+        s.fill(.{ .x = caret, .y = r.y + 4, .w = 1, .h = r.h - 8 }, Tone.accent);
+    }
+}
+
+/// A segmented control of `count` equal segments; `selected` is drawn
+/// raised, like the Mac's view switcher.
+pub fn segmented(s: *const Surface, r: Rect, count: usize, selected: usize, hover: ?usize) void {
+    s.rounded(r, Metrics.control_radius, Tone.hover, 255);
+    const w = @divTrunc(r.w, @as(i32, @intCast(@max(1, count))));
+    for (0..count) |i| {
+        const seg = Rect{ .x = r.x + @as(i32, @intCast(i)) * w, .y = r.y, .w = w, .h = r.h };
+        if (i == selected) {
+            s.rounded(.{ .x = seg.x + 2, .y = seg.y + 3, .w = seg.w - 4, .h = seg.h - 4 }, Metrics.control_radius - 1, 0x000000, 18);
+            s.rounded(.{ .x = seg.x + 2, .y = seg.y + 2, .w = seg.w - 4, .h = seg.h - 4 }, Metrics.control_radius - 1, 0xFFFFFF, 255);
+        } else if (hover == i) {
+            s.rounded(.{ .x = seg.x + 2, .y = seg.y + 2, .w = seg.w - 4, .h = seg.h - 4 }, Metrics.control_radius - 1, Tone.pressed, 255);
+        }
+    }
+}
+
+/// The part of a segmented control a segment covers, for hit testing.
+pub fn segment(r: Rect, count: usize, i: usize) Rect {
+    const w = @divTrunc(r.w, @as(i32, @intCast(@max(1, count))));
+    return .{ .x = r.x + @as(i32, @intCast(i)) * w, .y = r.y, .w = w, .h = r.h };
+}
+
+/// The longest prefix of `text` that fits in `width` at text scale 1.
+pub fn fitting(text: []const u8, width: i32) []const u8 {
+    var n = text.len;
+    while (n > 0 and textWidth(text[0..n], 1) > width) n -= 1;
+    return text[0..n];
+}
 /// Capture starts on press; moving onto a button while held cannot activate it.
 pub const Pointer = struct {
     hover: u32 = 0,
@@ -201,6 +334,27 @@ test "every SVG sprite renders at 1x and 2x with clipped alpha edges" {
             try std.testing.expect(changed > 0);
         }
     }
+}
+
+test "toolkit controls stay inside their rectangles" {
+    const std = @import("std");
+    var pixels: [120 * 60 * 4]u32 = undefined;
+    for ([_]i32{ 1, 2 }) |scale| {
+        @memset(&pixels, 0x123456);
+        var s = Surface{ .pixels = &pixels, .width = 120, .height = 60, .stride = 120 * scale, .scale = scale };
+        const r = Rect{ .x = 10, .y = 10, .w = 90, .h = Metrics.search_h };
+        // A long query is cut at the field's edge, never drawn past it.
+        searchField(&s, r, "a very long search that will not fit here", "Search", false);
+        pushButton(&s, .{ .x = 10, .y = 34, .w = 60, .h = Metrics.push_small_h - 2 }, "OK", true, .{});
+        for (0..@intCast(60 * scale)) |y| for (0..@intCast(120 * scale)) |x| {
+            const lx = @divTrunc(@as(i32, @intCast(x)), scale);
+            const ly = @divTrunc(@as(i32, @intCast(y)), scale);
+            const inside = (lx >= 10 and lx < 100 and ly >= 10 and ly < 10 + Metrics.search_h) or (lx >= 10 and lx < 70 and ly >= 34 and ly < 59);
+            if (!inside) try std.testing.expectEqual(@as(u32, 0x123456), pixels[y * @as(usize, @intCast(s.stride)) + x]);
+        };
+    }
+    try std.testing.expectEqualStrings("Doc", fitting("Documents", textWidth("Doc", 1)));
+    try std.testing.expectEqual(@as(usize, 0), fitting("Documents", 0).len);
 }
 
 test "pointer only activates the originally pressed target" {

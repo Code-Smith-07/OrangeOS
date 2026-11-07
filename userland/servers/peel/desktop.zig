@@ -35,6 +35,8 @@ pub const Action = struct {
     pub const browser: u16 = 19;
     pub const wallpaper: u16 = 20;
     pub const spotlight: u16 = 24;
+    /// Appearance: the Reduce Motion switch.
+    pub const reduce_motion: u16 = 25;
     pub const window: u16 = 100;
     /// Spotlight result rows, then app-switcher tiles.
     pub const result: u16 = 200;
@@ -58,6 +60,8 @@ pub const Item = struct {
     pixels: ?[*]const u32 = null,
     width: i32 = 0,
     height: i32 = 0,
+    /// Buffer pixels per row (a resizable window's buffer is wider).
+    stride: i32 = 0,
 };
 pub const State = struct {
     popup: Popup = .none,
@@ -81,6 +85,8 @@ pub const State = struct {
     switch_selected: usize = 0,
     /// Preferences reach the /data disk (false: no data disk attached).
     prefs_kept: bool = false,
+    /// No open or minimise motion.
+    reduce_motion: bool = false,
 };
 
 pub const ThemeColors = struct {
@@ -173,6 +179,18 @@ fn bitmapPixel(x: i32, y: i32, width: i32, height: i32, bmp: []const u8) u32 {
 pub fn dockRect(s: *const Surface) Rect {
     return .{ .x = @divTrunc(s.width - 740, 2), .y = s.height - DOCK_H - 14, .w = 740, .h = DOCK_H };
 }
+/// The dock slot showing an application (Peel's app index); Control
+/// Center, which has no tile, uses Appearance's.
+pub fn dockSlot(app: usize) usize {
+    return ([_]usize{ 1, 2, 3, 4, 0, 8, 7, 5 })[@min(app, 7)];
+}
+
+/// The Reduce Motion switch: the measured macOS switch, 42 x 25 points.
+pub fn motionSwitch(s: *const Surface) Rect {
+    const p = popupRect(s, .settings);
+    return .{ .x = p.right() - 20 - 42, .y = p.y + 320, .w = 42, .h = 25 };
+}
+
 pub fn dockItem(s: *const Surface, index: usize) Rect {
     const d = dockRect(s);
     return .{ .x = d.x + 16 + @as(i32, @intCast(index)) * 76 + (if (index >= 6) @as(i32, 12) else 0) + (if (index == 8) @as(i32, 12) else 0), .y = d.y + 8, .w = 72, .h = 54 };
@@ -270,6 +288,7 @@ pub fn hit(s: *const Surface, state: *const State, x: i32, y: i32) u16 {
                 for (0..3) |i| if (paletteCard(s, i).contains(x, y)) return Action.wallpaper + @as(u16, @intCast(i));
                 if ((Rect{ .x = p.x + 20, .y = p.y + 210, .w = 320, .h = 40 }).contains(x, y)) return Action.desktop;
                 if (hardwareButton(s).contains(x, y)) return Action.hardware;
+                if ((Rect{ .x = p.x + 20, .y = p.y + 316, .w = 320, .h = 33 }).contains(x, y)) return Action.reduce_motion;
                 return Action.keep_popup;
             },
             .calendar => {
@@ -519,7 +538,7 @@ fn paintOverviewCards(s: *const Surface, state: *const State) void {
         const item = state.items[i];
         s.rounded(r, 12, if (state.hover == Action.window + i) active_theme.hover else WHITE, 195);
         s.rounded(.{ .x = r.x + 10, .y = r.y + 9, .w = 76, .h = 46 }, 5, COLORS[item.app % 6], 255);
-        if (item.pixels) |pixels| previews[i].paint(s, pixels, item.id, item.revision, item.width, item.height, r.x + 12, r.y + 15);
+        if (item.pixels) |pixels| previews[i].paint(s, pixels, item.id, item.revision, item.width, item.height, item.stride, r.x + 12, r.y + 15);
         text(s, item.title[0..@min(26, item.title.len)], r.x + 98, r.y + 17, INK);
         text(s, if (item.hidden) "Minimized" else "Open window", r.x + 98, r.y + 40, MUTED);
     }
@@ -638,8 +657,16 @@ pub fn paint(s: *const Surface, state: *const State) void {
             var buffer: [64]u8 = undefined;
             const dimensions = @import("std").fmt.bufPrint(&buffer, "Display  {d} x {d}  /  {d}x UI", .{ s.width * s.scale, s.height * s.scale, s.scale }) catch "Display information unavailable";
             text(s, dimensions, p.x + 20, p.y + 311, MUTED);
-            text(s, "Green button: zoom / restore", p.x + 20, p.y + 328, MUTED);
-            text(s, if (state.prefs_kept) "Your theme is kept after a restart." else "No data disk: the theme resets on restart.", p.x + 20, p.y + 358, MUTED);
+            text(s, "Reduce motion", p.x + 20, p.y + 337, INK);
+            const sw = motionSwitch(s);
+            const on = state.reduce_motion;
+            // Track: one solid colour, a glossy knob with a soft shadow.
+            s.rounded(sw, 12, if (on) ACCENT else gfx.lerp(active_theme.muted, WHITE, 120), 255);
+            s.rounded(.{ .x = sw.x + 1, .y = sw.y + 1, .w = sw.w - 2, .h = 6 }, 5, WHITE, if (on) 40 else 70);
+            const knob_x = if (on) sw.right() - 23 else sw.x + 2;
+            s.rounded(.{ .x = knob_x, .y = sw.y + 3, .w = 21, .h = 21 }, 10, 0x000000, 30);
+            s.rounded(.{ .x = knob_x, .y = sw.y + 2, .w = 21, .h = 21 }, 10, WHITE, 255);
+            text(s, if (state.prefs_kept) "Your choices are kept after a restart." else "No data disk: choices reset on restart.", p.x + 20, p.y + 361, MUTED);
             const hardware = hardwareButton(s);
             s.rounded(hardware, 10, if (state.hover == Action.hardware) active_theme.hover else WHITE, 220);
             ui.icon(s, .controls, hardware.x + 10, hardware.y + 8, 24);

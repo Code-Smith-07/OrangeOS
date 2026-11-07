@@ -143,6 +143,9 @@ pub const Nr = enum(u64) {
     port_recv = 53,
     shm_create = 54,
     shm_open = 57,
+    /// Bytes in a shared buffer, so a reader can check a peer's buffer is
+    /// as large as it claims before mapping and reading it.
+    shm_size = 58,
     pty_create = 80,
     pty_read = 81,
     pty_write = 82,
@@ -302,6 +305,7 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) u64 {
         .port_recv => sysPortRecv(frame.rdi, frame.rsi, frame.rdx, frame.r10),
         .shm_create => sysShmCreate(frame.rdi, frame.rsi, frame.rdx),
         .shm_open => sysShmOpen(frame.rdi, frame.rsi),
+        .shm_size => sysShmSize(frame.rdi),
         .pty_create => sysPtyCreate(),
         .pty_read => sysPtyRead(frame.rdi, frame.rsi, frame.rdx),
         .pty_write => sysPtyWrite(frame.rdi, frame.rsi, frame.rdx),
@@ -2273,6 +2277,11 @@ fn sysShmOpen(name_ptr: u64, name_len: u64) i64 {
     var buf: [32]u8 = undefined;
     const name = copyName(name_ptr, name_len, &buf) orelse return EFAULT;
     return ipc.shmOpen(name) catch |e| ipcErrno(e);
+}
+
+fn sysShmSize(h: u64) i64 {
+    const size = ipc.shmSize(@bitCast(h)) catch |e| return ipcErrno(e);
+    return @intCast(size);
 }
 
 fn sysShmMap(h: u64, writable: u64) i64 {

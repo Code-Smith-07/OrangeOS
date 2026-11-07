@@ -14,6 +14,8 @@ pub const Error = error{
 
 pub const Window = struct {
     id: u32,
+    /// The content size being drawn now. A resizable window changes it when
+    /// Peel configures a new size; the buffer and stride stay the same.
     width: i32,
     height: i32,
     scale: i32,
@@ -21,6 +23,42 @@ pub const Window = struct {
     pixels: [*]u32,
     server: i64,
     reply: i64,
+    /// The largest content the buffer holds (== width/height when fixed).
+    capacity_w: i32 = 0,
+    capacity_h: i32 = 0,
+    min_w: i32 = 0,
+    min_h: i32 = 0,
+
+    /// Take a configure message: true when the size changed and the client
+    /// must re-lay out, redraw everything, and then call ackResize().
+    pub fn configure(self: *Window, payload: []const u8) bool {
+        if (payload.len < @sizeOf(proto.Configure)) return false;
+        const c: *align(1) const proto.Configure = @ptrCast(payload.ptr);
+        if (c.window_id != self.id) return false;
+        const w = @import("std").math.clamp(@as(i32, @intCast(@min(c.width, 4096))), @max(1, self.min_w), @max(1, self.capacity_w));
+        const h = @import("std").math.clamp(@as(i32, @intCast(@min(c.height, 4096))), @max(1, self.min_h), @max(1, self.capacity_h));
+        if (w == self.width and h == self.height) {
+            // Still answer, so Peel does not wait for a frame that will not come.
+            self.ackResize();
+            return false;
+        }
+        self.width = w;
+        self.height = h;
+        return true;
+    }
+
+    /// Tell Peel the buffer now shows the current size (after redrawing).
+    pub fn ackResize(self: *const Window) void {
+        const msg = proto.Configure{ .window_id = self.id, .width = @intCast(self.width), .height = @intCast(self.height) };
+        _ = pulp.portSend(self.server, proto.Op.resized, @import("std").mem.asBytes(&msg)) catch {};
+    }
+
+    /// The user pressed the client's own toolbar background (full-size
+    /// content windows): let Peel move the window with the pointer.
+    pub fn requestMove(self: *const Window) void {
+        const msg = proto.Destroy{ .window_id = self.id };
+        _ = pulp.portSend(self.server, proto.Op.move_request, @import("std").mem.asBytes(&msg)) catch {};
+    }
 
     /// Direct access to the window's pixels. Writing here is not visible until
     /// commit() tells Peel which part changed.
@@ -106,6 +144,33 @@ pub fn createWindow(title: []const u8, w: i32, h: i32, x: i32, y: i32) Error!Win
 }
 
 pub fn createWindowWithFlags(title: []const u8, w: i32, h: i32, x: i32, y: i32, flags: u32) Error!Window {
+    return open(.{ .title = title, .width = w, .height = h, .x = x, .y = y, .flags = flags });
+}
+
+pub const Options = struct {
+    title: []const u8,
+    width: i32,
+    height: i32,
+    x: i32 = -1,
+    y: i32 = -1,
+    flags: u32 = proto.WindowFlags.closable,
+    /// Resizable windows: the smallest content size.
+    min_w: i32 = 0,
+    min_h: i32 = 0,
+    /// Full-size content windows: the client's top bar height.
+    bar_height: i32 = 0,
+};
+
+/// Connect to Peel and ask for a window. A resizable window's buffer is
+/// allocated once at the largest content the screen allows, so a resize
+/// never reallocates or remaps memory.
+pub fn open(o: Options) Error!Window {
+    const title = o.title;
+    var w = o.width;
+    var h = o.height;
+    const x = o.x;
+    const y = o.y;
+    const flags = o.flags;
     // Seed starts services concurrently. Give the compositor time to publish
     // its port, without an unbounded wait when the display server is absent.
     const server = connect: {
@@ -124,18 +189,30 @@ pub fn createWindowWithFlags(title: []const u8, w: i32, h: i32, x: i32, y: i32, 
     const reply = pulp.portCreate(reply_name) catch return Error.NoDisplayServer;
 
     _ = pulp.portSend(server, proto.Op.display_info, @import("std").mem.asBytes(&pid)) catch return Error.Rejected;
-    var display: [8]u8 = undefined;
+    var display: [16]u8 = undefined;
     const dn = pulp.portRecv(reply, &display, true) catch return Error.Rejected;
-    if (dn != 4) return Error.Rejected;
-    const scale: i32 = @intCast(@as(*align(1) const u32, @ptrCast(&display)).*);
+    if (dn < @sizeOf(proto.DisplayInfo)) return Error.Rejected;
+    const info: *align(1) const proto.DisplayInfo = @ptrCast(&display);
+    const scale: i32 = @intCast(info.scale);
     if (scale < 1 or scale > 2 or w <= 0 or h <= 0 or w > 2000 or h > 2000) return Error.Rejected;
+    const resizable = flags & proto.WindowFlags.resizable != 0;
+    var cap_w = w;
+    var cap_h = h;
+    if (resizable) {
+        cap_w = @max(w, @as(i32, @intCast(@min(info.max_width, 2000))));
+        cap_h = @max(h, @as(i32, @intCast(@min(info.max_height, 2000))));
+        // The kernel caps one shared buffer at 16 MiB.
+        while (@as(i64, cap_w) * cap_h * 4 * scale * scale > 16 * 1024 * 1024) cap_h -= 8;
+        w = @min(w, cap_w);
+        h = @min(h, cap_h);
+    }
 
     // The buffer is created before the request, so Peel can map it by name the
     // moment it handles the message.
     var shm_name_buf: [32]u8 = undefined;
     const shm_name = proto.shmName(&shm_name_buf, pid);
 
-    const size: usize = @intCast(w * h * 4 * scale * scale);
+    const size: usize = @intCast(cap_w * cap_h * 4 * scale * scale);
     const shm = pulp.shmCreate(shm_name, size) catch return Error.NoBuffer;
     const pixels = pulp.shmMap(shm, true) catch return Error.NoBuffer;
 
@@ -149,6 +226,11 @@ pub fn createWindowWithFlags(title: []const u8, w: i32, h: i32, x: i32, y: i32, 
         .shm_name_len = @intCast(shm_name.len),
         .flags = flags,
         .scale = @intCast(scale),
+        .capacity_w = if (resizable) @intCast(cap_w) else 0,
+        .capacity_h = if (resizable) @intCast(cap_h) else 0,
+        .min_w = @intCast(@max(0, @min(o.min_w, w))),
+        .min_h = @intCast(@max(0, @min(o.min_h, h))),
+        .bar_height = @intCast(@max(0, o.bar_height)),
         .title = undefined,
         .shm_name = undefined,
     };
@@ -172,9 +254,13 @@ pub fn createWindowWithFlags(title: []const u8, w: i32, h: i32, x: i32, y: i32, 
         .width = w,
         .height = h,
         .scale = scale,
-        .stride = w * scale,
+        .stride = cap_w * scale,
         .pixels = @ptrCast(@alignCast(pixels)),
         .server = server,
         .reply = reply,
+        .capacity_w = cap_w,
+        .capacity_h = cap_h,
+        .min_w = if (resizable) @max(1, @min(o.min_w, w)) else w,
+        .min_h = if (resizable) @max(1, @min(o.min_h, h)) else h,
     };
 }

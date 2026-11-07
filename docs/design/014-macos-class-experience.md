@@ -1,6 +1,6 @@
 # 014: A macOS-class experience
 
-Status: programme plan, with M1 done. Created 6 Nov 2026.
+Status: programme plan, with M1 and M2 done. Created 6 Nov 2026; M2 7 Nov 2026.
 
 The aim: OrangeOS should feel as finished as macOS: the shell, the
 everyday apps, how they connect to the hardware, and that it runs in the
@@ -25,25 +25,26 @@ small Swift program that asks the system for its own sizes:
 |---|---|---|---|
 | Menu bar | 24 pt; 37 pt on notched MacBooks (screen 956, visible top 918) | 28 pt | Keep 28 until M2, then 24 |
 | Menu bar and menu font | 13 pt | Inter, about 13 pt | Keep |
-| Title bar (title only) | 28 pt | 38 pt | M2: 28 pt plain, 52 pt with toolbar |
-| Title bar with toolbar | 52 pt | n/a | M2 |
-| Window buttons | 12 pt circles in 14x16 frames, 20 pt apart, first at x 7 (title bar) or 19 (toolbar) | similar | M2: match exactly |
+| Title bar (title only) | 28 pt | **28 pt (M2)** | Done |
+| Title bar with toolbar | 52 pt | **52 pt toolbar windows (Files)** | Done |
+| Window buttons | 12 pt circles in 14x16 frames, 20 pt apart, first at x 7 (title bar) or 19 (toolbar) | **exact (M2)**, symbols on group hover | Done |
 | Body text | 13 pt; small 11 pt; labels 10 pt | 13 pt | Keep |
-| Push button | 32 pt tall regular, 27 small, 40 large | per app | M2 toolkit |
-| Text field / search field | 21 / 22 pt regular | per app | M2 toolkit |
+| Push button | 32 pt tall regular, 27 small, 40 large | **toolkit `ui.pushButton`** | Done |
+| Text field / search field | 21 / 22 pt regular | **toolkit `ui.searchField` (Files)** | Done |
 | Switch | 42 x 25 pt | n/a | M5 Settings |
 | Slider | 28 pt tall | Control Center | M5 |
 | Pop-up button | 25 pt | n/a | M5 |
 | Table and source-list rows | 24 pt | Files 32 pt | M3 |
 | Dock tile | 48 pt default (this Mac: 32) | 44 pt icons | Keep; magnification later |
 | Accent | #007AFF (system blue) | theme accent | Keep per theme |
-| Window corner radius | about 10 pt (title bar) to 16+ pt (toolbar windows); larger in macOS 26 | 16 pt | M2: 10 plain, 16 toolbar |
+| Window corner radius | about 10 pt (title bar) to 16+ pt (toolbar windows); larger in macOS 26 | **10 plain, 13 toolbar (M2)** | 13, not 16: the shadow's corner masks are cut for 13 |
 | Sidebar width | 225–275 pt min, 350–400 max (Apple guidance via the Macintosh checklist) | Files 180 pt | M3 |
-| App window minimum | 480–600 x 320–400 pt | fixed sizes | M2 resize |
+| App window minimum | 480–600 x 320–400 pt | **Files 560 x 360, browser 560 x 380, terminal 40 x 10 cells** | Done |
 
 Typography ramp used by macOS (body 13, headline 13 bold, callout 12,
 subheadline 11, footnote 10, title 3 15, title 2 17, title 1 22, large title
-26) becomes OrangeOS's named text styles in M2.
+26). OrangeOS's Inter atlas has 13 and 26 point sizes today (body and large
+title); the in-between styles need new atlas sizes and are left for M5.
 
 ## 2. What makes macOS feel finished, and what we adopt
 
@@ -52,8 +53,8 @@ subheadline 11, footnote 10, title 3 15, title 2 17, title 1 22, large title
 | Spotlight finds anything with one shortcut | Spotlight: apps, windows, actions, sums; later files and settings | **M1 done**, files in M3 |
 | Cmd+Tab app switcher | Alt+Tab switcher HUD | **M1 done** |
 | Settings remembered everywhere | Preferences on the /data disk | **M1 done** (theme) |
-| Windows resize, tile and animate | Live resize, edge tiling, short open/minimise motion | M2 |
-| One toolkit: same buttons, fields, lists in every app | Shared native toolkit with the measured sizes above | M2 |
+| Windows resize, tile and animate | Live resize, edge tiling, short open/minimise motion | **M2 done** |
+| One toolkit: same buttons, fields, lists in every app | Shared native toolkit with the measured sizes above | **M2 done** (Files first; more apps in M3 to M5) |
 | Finder | Files with writable /data, sidebar, Trash and restore, Quick Look | M3 |
 | TextEdit, Preview, Calculator | Text editor with safe save, image viewer, calculator | M4 |
 | System Settings | Settings app with a sidebar and real panes | M5 |
@@ -109,10 +110,12 @@ the real desktop, screenshots kept as evidence, a commit, and a push.
   `/data/preferences/desktop`. Test: `tools/spotlight_smoke.py` (typing,
   Return, sums, Backspace, menu-bar button, theme by keyword, switcher
   order, theme kept across a reboot).
-- **M2 Windows and toolkit.** Protocol op for a new window size; apps
-  re-lay out; drag edges and corners; double-click title to zoom; tile to
-  half screen at the edges; 150 ms open and minimise motion (none with
-  Reduce Motion); measured title bar, buttons and radii; shared controls.
+- **M2 Windows and toolkit (done 7 Nov 2026).** See section 6.
+  Test: `tools/windows_smoke.py` (corner and edge resize, the minimum size,
+  double-click zoom and restore, tiling at the left edge and pulling the
+  window back out, Files' toolbar move and zoom with its grid reflowing,
+  minimise and restore motion, Reduce Motion saved and obeyed; `--browser`
+  zooms the browser from its tab strip).
 - **M3 Files.** Writable `/data/Documents`, new folder, rename, move to
   Trash and restore, sidebar, list and icon views, Quick Look on Space,
   Spotlight finds files.
@@ -154,3 +157,60 @@ Plan:
   loader, e1000/e1000e network, AHCI, HDA; add e1000e if needed.
 - **V4 Real check.** VirtualBox and VMware on an x86 PC (needs the user or a
   borrowed PC; this Mac cannot run them for x86 guests).
+
+## 6. How M2 works
+
+**Resizing without reallocating.** A window that sets the `resizable` flag
+allocates its shared buffer once, at the largest content the screen allows
+(Peel says how large in its `display_info` reply; the kernel's 16 MiB cap
+per buffer is respected). Rows are always that wide (`stride`), so a new
+size never maps new memory. Peel checks the buffer really is that big
+(`shm_size`, a new system call) before reading it.
+
+**One configure at a time.** While the user drags an edge, Peel works out
+the frame they want (`frame.resized`, with the minimum and the buffer's
+capacity) and sends the client a `configure` with that content size. The
+client lays itself out, draws everything, and answers `resized`. Only then
+does Peel change the frame, against the edges that are held still. A new
+configure is sent only after the last one was answered (or after a second
+without an answer), so a fast drag never queues work a slow client cannot
+keep up with, and a window is never shown stretched or half drawn.
+
+**Toolbar windows.** With `full_size_content` the client draws under the
+title area, the way Finder does: Peel draws only the window buttons, at the
+measured toolbar position (first button at 19 points, centred in the
+client's bar), and rounds all four corners of the client's pixels. Pressing
+the client's empty toolbar sends `move_request`; Peel honours it only for
+the press it has just delivered to that client, then moves the window or,
+on the second click of a double click, zooms it.
+
+**Zoom and tiling.** A double click on a title zooms a resizable window to
+the work area (below the menu bar, above the dock, with an 8-point gap)
+and back. Dragging a window's title to the left or right screen edge shows
+a translucent preview of that half, and releasing tiles it; the menu bar
+edge offers the whole work area. Pulling a tiled window away gives it back
+its own size, with the pointer keeping its place along the title. Fixed
+windows (About, Clock, Welcome) still zoom by scaling, as before.
+
+**Motion.** Windows open by growing from 92 percent and fading in;
+minimise shrinks into the app's dock tile and fades out; the dock brings a
+window back the same way. 150 ms, eased out (`frame.easeOut`), drawn by
+blending the moving window with a copy of what is under it. Appearance has
+a **Reduce Motion** switch (the measured 42 x 25 point switch), saved in
+`/data/preferences/desktop`; with it on, nothing moves.
+
+**Toolkit.** `ui.Metrics` holds the measured sizes (toolbar 52, toolbar
+items 28, push buttons 32/27/40, fields 21/22, switch 42 x 25, rows 24,
+radius 6), and `ui.toolbarButton`, `ui.pushButton`, `ui.searchField`,
+`ui.segmented` draw the controls the same way in every app. Files uses
+them now; the other apps move over as they are rebuilt (M3 to M5).
+
+**Resize pointers.** Hovering a resizable window's edge shows a two-headed
+arrow (horizontal, vertical, or diagonal at the corners), original SVG
+artwork in the icon atlas.
+
+What M2 does not do yet: live resize of the browser's web page during the
+drag happens at the client's pace (WebKit draws the new size a moment
+later, white until then); window snapping to other windows; keyboard
+shortcuts for tiling (Command combinations stay with the Mac under QEMU).
+

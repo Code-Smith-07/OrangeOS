@@ -50,21 +50,28 @@ test "panel has four symmetric transparent corners and respects damage" {
     }
 }
 
-pub fn paint(s: *const gfx.Surface, frame: Rect, content: Rect, src: [*]const u32, source_w: i32, source_h: i32) void {
-    paintImpl(s, frame, content, src, source_w, source_h, true);
+/// `stride` is the source's physical pixels per row (0: source_w * scale; a
+/// resizable client's buffer is wider than what it shows). `round_top` also
+/// rounds the top corners, for full-size content that reaches the top edge.
+pub fn paint(s: *const gfx.Surface, frame: Rect, content: Rect, src: [*]const u32, source_w: i32, source_h: i32, stride: i32, corner: i32, round_top: bool) void {
+    paintImpl(s, frame, content, src, source_w, source_h, stride, corner, round_top, true);
 }
 
-fn paintImpl(s: *const gfx.Surface, frame: Rect, content: Rect, src: [*]const u32, source_w: i32, source_h: i32, fast: bool) void {
+fn paintImpl(s: *const gfx.Surface, frame: Rect, content: Rect, src: [*]const u32, source_w: i32, source_h: i32, stride_in: i32, corner: i32, round_top: bool, fast: bool) void {
     if (source_w <= 0 or source_h <= 0 or content.w <= 0 or content.h <= 0) return;
     const body = Rect{ .x = frame.x, .y = content.y, .w = frame.w, .h = frame.bottom() - content.y };
     const area = Rect.intersect(Rect.intersect(body, s.clip), .{ .x = 0, .y = 0, .w = s.width, .h = s.height });
     if (area.isEmpty()) return;
     const sc = s.scale;
-    const radius = @min(13, @divTrunc(@min(frame.w, frame.h), 2)) * sc;
+    const stride = if (stride_in > 0) stride_in else source_w * sc;
+    const radius = @min(corner, @divTrunc(@min(frame.w, frame.h), 2)) * sc;
     var y = area.y * sc;
     while (y < area.bottom() * sc) : (y += 1) {
         const sy = @max(0, @min(source_h * sc - 1, @divTrunc((y - content.y * sc) * source_h, content.h)));
-        const bottom_corner = y >= frame.bottom() * sc - radius;
+        const top_corner = round_top and y < frame.y * sc + radius;
+        // Top corners are the bottom ones mirrored.
+        const cy = if (top_corner) (frame.y + frame.bottom()) * sc - 1 - y else y;
+        const bottom_corner = cy >= frame.bottom() * sc - radius;
         const copy_left = @max(content.x * sc, if (bottom_corner) frame.x * sc + radius else content.x * sc);
         const copy_right = @min(content.right() * sc, if (bottom_corner) frame.right() * sc - radius else content.right() * sc);
         // Preserve the bulk-copy interior. Only edges and corner pixels need
@@ -75,17 +82,17 @@ fn paintImpl(s: *const gfx.Surface, frame: Rect, content: Rect, src: [*]const u3
         while (x < area.right() * sc) {
             if (fast and source_w == content.w and source_h == content.h and x >= copy_left and x < copy_right) {
                 const end = @min(area.right() * sc, copy_right);
-                const from: usize = @intCast(sy * source_w * sc + x - content.x * sc);
+                const from: usize = @intCast(sy * stride + x - content.x * sc);
                 const to: usize = @intCast(y * s.stride + x);
                 const len: usize = @intCast(end - x);
                 @memcpy(s.pixels[to..][0..len], src[from..][0..len]);
                 x = end;
                 continue;
             }
-            const alpha = bottomCoverage(frame, sc, radius, x, y);
+            const alpha = bottomCoverage(frame, sc, radius, x, cy);
             if (alpha != 0) {
                 const sx = @max(0, @min(source_w * sc - 1, @divTrunc((x - content.x * sc) * source_w, content.w)));
-                const pixel = src[@intCast(sy * source_w * sc + sx)];
+                const pixel = src[@intCast(sy * stride + sx)];
                 const to: usize = @intCast(y * s.stride + x);
                 s.pixels[to] = if (alpha == 255) pixel else gfx.lerp(s.pixels[to], pixel, alpha);
             }
@@ -108,10 +115,10 @@ test "bottom interior copies match scalar body mapping on changing patterned cli
         if (iteration % 3 == 1) s.setClip(.{ .x = 9, .y = 84, .w = 89, .h = 13 });
         const source_w: i32 = if (iteration % 3 == 2) 50 else 100;
         const source_h: i32 = if (iteration % 3 == 2) 45 else 90;
-        paintImpl(&s, frame, content, &source, source_w, source_h, false);
+        paintImpl(&s, frame, content, &source, source_w, source_h, 0, 13, false, false);
         const expected = pixels;
         pixels = original;
-        paint(&s, frame, content, &source, source_w, source_h);
+        paint(&s, frame, content, &source, source_w, source_h, 0, 13, false);
         try std.testing.expectEqualSlices(u32, &expected, &pixels);
     };
 }
@@ -142,7 +149,7 @@ test "body corners blend only app and backdrop, symmetric at 1x and 2x" {
         var s = gfx.Surface{ .pixels = &pixels, .width = 50, .height = 50, .stride = 50 * scale, .scale = scale };
         const frame = Rect{ .x = 5, .y = 5, .w = 40, .h = 40 };
         const content = Rect{ .x = 6, .y = 11, .w = 38, .h = 33 };
-        paint(&s, frame, content, &source, 38, 33);
+        paint(&s, frame, content, &source, 38, 33, 0, 13, false);
         try std.testing.expectEqual(@as(u32, 0xEE8844), s.getPhysical(5 * scale, 44 * scale));
         try std.testing.expectEqual(@as(u32, 0x202338), s.getPhysical(25 * scale, 44 * scale));
         var blended: usize = 0;
@@ -160,7 +167,7 @@ test "body corners blend only app and backdrop, symmetric at 1x and 2x" {
         const expected = pixels;
         @memset(&pixels, 0xEE8844);
         s.setClip(.{ .x = 5, .y = 32, .w = 13, .h = 13 });
-        paint(&s, frame, content, &source, 38, 33);
+        paint(&s, frame, content, &source, 38, 33, 0, 13, false);
         for (0..@intCast(50 * scale)) |yy| for (0..@intCast(50 * scale)) |xx| {
             const in_clip = xx >= 5 * scale and xx < 18 * scale and yy >= 32 * scale and yy < 45 * scale;
             const i = yy * @as(usize, @intCast(50 * scale)) + xx;
@@ -168,7 +175,7 @@ test "body corners blend only app and backdrop, symmetric at 1x and 2x" {
         };
         s.resetClip();
         @memset(&pixels, 0xEE8844);
-        paint(&s, frame, content, &source, 19, 16); // zoom path
+        paint(&s, frame, content, &source, 19, 16, 0, 13, false); // zoom path
         try std.testing.expectEqualSlices(u32, &expected, &pixels);
     }
 }
@@ -181,9 +188,28 @@ test "offscreen body keeps source alignment and repeats edge colour into rim" {
     const s = gfx.Surface{ .pixels = &pixels, .width = 30, .height = 40, .stride = 30 };
     const frame = Rect{ .x = -4, .y = 1, .w = 22, .h = 27 };
     const content = Rect{ .x = -3, .y = 7, .w = 20, .h = 20 };
-    paint(&s, frame, content, &source, 20, 20);
+    paint(&s, frame, content, &source, 20, 20, 0, 13, false);
     try std.testing.expectEqual(source[3], s.getPhysical(0, 7));
     try std.testing.expectEqual(source[19], s.getPhysical(17, 7));
     try std.testing.expectEqual(source[19 * 20 + 10], s.getPhysical(7, 27));
     try std.testing.expectEqual(@as(u32, 0xEE8844), s.getPhysical(18, 7));
+}
+
+test "a wide buffer shows only its content, with four round corners when full size" {
+    const std = @import("std");
+    // 30 x 20 content inside a 50-pixel-wide buffer (a resizable client).
+    var source: [50 * 20]u32 = undefined;
+    for (&source, 0..) |*p, i| p.* = if (i % 50 < 30) 0x204060 else 0xFF0000;
+    var pixels = [_]u32{0xEEEEEE} ** (40 * 30);
+    const s = gfx.Surface{ .pixels = &pixels, .width = 40, .height = 30, .stride = 40 };
+    const frame = Rect{ .x = 4, .y = 4, .w = 32, .h = 21 };
+    const content = Rect{ .x = 5, .y = 4, .w = 30, .h = 20 };
+    paint(&s, frame, content, &source, 30, 20, 50, 6, true);
+    for (pixels) |p| try std.testing.expect(p != 0xFF0000);
+    // Rounded at the top as well as the bottom, symmetrically.
+    try std.testing.expectEqual(@as(u32, 0xEEEEEE), s.getPhysical(4, 4));
+    try std.testing.expectEqual(@as(u32, 0xEEEEEE), s.getPhysical(35, 4));
+    try std.testing.expectEqual(@as(u32, 0xEEEEEE), s.getPhysical(4, 24));
+    try std.testing.expectEqual(@as(u32, 0x204060), s.getPhysical(20, 4));
+    try std.testing.expectEqual(@as(u32, 0x204060), s.getPhysical(20, 14));
 }

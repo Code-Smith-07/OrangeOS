@@ -19,6 +19,7 @@ const font = @import("font.zig");
 const desktop = @import("desktop.zig");
 const pointer = @import("pointer.zig");
 const window_body = @import("window_body.zig");
+const frame = @import("frame.zig");
 const host_model = @import("host_model");
 var host_json: [4096]u8 = undefined;
 var host_scratch: [32768]u8 = undefined;
@@ -30,8 +31,8 @@ const Color = gfx.Color;
 
 const ORANGE: Color = 0xFF8C1A;
 
-const TITLE_H: i32 = 38;
-const BORDER_W: i32 = 1;
+// The measured macOS title bar (docs/design/014); see frame.zig.
+const TITLE_H: i32 = frame.TITLE_H;
 const SHADOW: i32 = 16;
 
 // ── Windows ─────────────────────────────────────────────────────────────────
@@ -46,6 +47,26 @@ const Window = struct {
     visible: bool = true,
     zoomed: bool = false,
     restore_rect: Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    /// Title bar, or full-size content with the buttons in the client's bar.
+    style: frame.Style = .{},
+    /// Resizable windows (docs/design/014, M2): the size limits, the frame
+    /// the user asked for, and the configure Peel is waiting on. The frame
+    /// changes only once the client has drawn the new size, so a window is
+    /// never shown stretched or half drawn.
+    resizable: bool = false,
+    min_w: i32 = 0,
+    min_h: i32 = 0,
+    cap_w: i32 = 0,
+    cap_h: i32 = 0,
+    want: ?Rect = null,
+    want_edges: frame.Edges = .{},
+    configure_sent: ?[2]i32 = null,
+    configure_at: u64 = 0,
+    /// Tiled to half the screen (restore_rect keeps the size from before).
+    tiled: frame.Tile = .none,
+    /// Open, minimise and restore motion: the frame drawn, from and to, and
+    /// the opacity range.
+    anim: ?Anim = null,
 
     /// A client-backed window owns a shared buffer the client renders into.
     /// Peel only ever reads it. A window with no buffer is drawn by Peel
@@ -54,6 +75,8 @@ const Window = struct {
     pixels: ?[*]const u32 = null,
     client_w: i32 = 0,
     client_h: i32 = 0,
+    /// Buffer pixels per row: capacity_w * scale for resizable windows.
+    stride: i32 = 0,
     reply_port: i64 = -1,
     buffer_handle: i64 = -1,
     owner_pid: i64 = -1,
@@ -82,38 +105,118 @@ const Window = struct {
     /// Where the client's content sits inside the frame.
     fn contentRect(self: *const Window) Rect {
         if (self.panel) return self.rect;
-        return .{
-            .x = self.rect.x + BORDER_W,
-            .y = self.rect.y + TITLE_H,
-            .w = self.rect.w - BORDER_W * 2,
-            .h = self.rect.h - TITLE_H - BORDER_W,
-        };
+        return self.style.content(self.rect);
     }
 
+    /// Peel's own title bar; for full-size content, the client's top bar,
+    /// which only Peel's window buttons share.
     fn titleBar(self: *const Window) Rect {
         if (self.panel) return .{ .x = self.rect.x, .y = self.rect.y, .w = 0, .h = 0 };
-        return .{ .x = self.rect.x, .y = self.rect.y, .w = self.rect.w, .h = TITLE_H };
-    }
-
-    fn closeButton(self: *const Window) Rect {
-        return self.control(0);
+        return .{ .x = self.rect.x, .y = self.rect.y, .w = self.rect.w, .h = if (self.style.full_size) 0 else TITLE_H };
     }
 
     fn control(self: *const Window, index: i32) Rect {
-        return .{ .x = self.rect.x + 10 + index * 22, .y = self.rect.y + 7, .w = 22, .h = 24 };
+        return self.style.button(self.rect, index);
+    }
+
+    /// Fixed-size windows can still zoom by scaling (the older behaviour).
+    fn zoomable(self: *const Window) bool {
+        return !self.panel;
+    }
+
+    fn limits(self: *const Window) frame.Limits {
+        const min = self.style.frameSize(self.min_w, self.min_h);
+        const max = self.style.frameSize(self.cap_w, self.cap_h);
+        return .{ .min_w = min[0], .min_h = min[1], .max_w = max[0], .max_h = max[1] };
     }
 
     /// The area the compositor must repaint for this window: its frame plus
-    /// the shadow that falls outside it.
+    /// the shadow that falls outside it (and, while it moves, its path).
     fn damageRect(self: *const Window) Rect {
-        return .{
+        const r = Rect{
             .x = self.rect.x - SHADOW,
             .y = self.rect.y - SHADOW,
             .w = self.rect.w + SHADOW * 2,
             .h = self.rect.h + SHADOW * 2 + 8,
         };
+        const a = self.anim orelse return r;
+        var u = r;
+        for ([_]Rect{ a.from, a.to }) |m| u = Rect.unionWith(u, .{ .x = m.x - SHADOW, .y = m.y - SHADOW, .w = m.w + SHADOW * 2, .h = m.h + SHADOW * 2 + 8 });
+        return u;
     }
 };
+
+const Anim = struct {
+    from: Rect,
+    to: Rect,
+    alpha_from: u8,
+    alpha_to: u8,
+    start: u64,
+    /// Hide the window when the motion ends (minimise).
+    hide: bool = false,
+
+    fn progress(self: Anim, now: u64) i32 {
+        return frame.easeOut(@intCast(@min(1000, (now -| self.start) * 1000 / frame.MOTION_MS)));
+    }
+    fn rect(self: Anim, now: u64) Rect {
+        return frame.lerpRect(self.from, self.to, self.progress(now));
+    }
+    fn alpha(self: Anim, now: u64) u8 {
+        const t = self.progress(now);
+        return @intCast(@as(i32, self.alpha_from) + @divTrunc((@as(i32, self.alpha_to) - self.alpha_from) * t, 1000));
+    }
+    fn done(self: Anim, now: u64) bool {
+        return now -| self.start >= frame.MOTION_MS;
+    }
+};
+
+/// Reduce Motion (Appearance): no open or minimise motion.
+var reduce_motion = false;
+/// One clock reading per frame, so every damaged rectangle of a moving
+/// window is drawn at the same point of its motion.
+var frame_now: u64 = 0;
+
+fn startAnim(idx: usize, from: Rect, to: Rect, alpha_from: u8, alpha_to: u8, hide: bool) void {
+    const w = &windows[idx];
+    if (reduce_motion or anim_scratch == null) {
+        if (hide) w.visible = false;
+        return;
+    }
+    addDamage(w.damageRect());
+    w.anim = .{ .from = from, .to = to, .alpha_from = alpha_from, .alpha_to = alpha_to, .start = pulp.uptimeMs(), .hide = hide };
+    addDamage(w.damageRect());
+}
+
+/// Advance every moving window; true while any is still moving.
+fn tickAnimations() bool {
+    var moving = false;
+    for (windows[0..window_count]) |*w| {
+        const a = w.anim orelse continue;
+        addDamage(w.damageRect());
+        if (!a.done(frame_now)) {
+            moving = true;
+            continue;
+        }
+        w.anim = null;
+        if (a.hide) {
+            w.visible = false;
+            if (activeWindow()) |active| addDamage(windows[active].damageRect());
+            chromeDamage();
+        }
+        if (pulp.desktop_profile) pulp.print("desktop: motion done {d}\n", .{w.id});
+    }
+    return moving;
+}
+
+/// The dock tile an application's window minimises into.
+fn dockTileFor(w: *const Window) Rect {
+    return desktop.dockItem(&screen, desktop.dockSlot(appIndex(w.title())));
+}
+/// The work area: below the menu bar, down to the bottom of the screen
+/// (windows may sit behind the dock, as on the Mac).
+fn workArea() Rect {
+    return .{ .x = 0, .y = desktop.BAR_H, .w = screen.width, .h = screen.height - desktop.BAR_H - desktop.DOCK_H - 14 };
+}
 
 var windows: [MAX_WINDOWS]Window = undefined;
 var window_count: usize = 0;
@@ -159,7 +262,13 @@ fn raise(index: usize) void {
 fn focusWindow(index: usize) void {
     if (windows[index].visible and activeWindow() == index) return;
     if (activeWindow()) |previous| addDamage(windows[previous].damageRect());
+    // Coming back from the dock: rise out of its tile.
+    const minimized = !windows[index].visible and !windows[index].panel and desktop_hidden_count == 0;
+    if (windows[index].anim) |a| if (a.hide) {
+        windows[index].anim = null; // restored while still minimising
+    };
     windows[index].visible = true;
+    if (minimized) startAnim(index, dockTileFor(&windows[index]), windows[index].rect, 0, 255, false);
     raise(index);
     addDamage(windows[index].damageRect());
     chromeDamage();
@@ -222,6 +331,7 @@ fn syncShell() void {
     shell.running = [_]bool{false} ** 8;
     shell.count = 0;
     shell.controls_open = false;
+    shell.reduce_motion = reduce_motion;
     for (0..window_count) |i| {
         if (windows[i].panel) {
             shell.controls_open = shell.controls_open or windows[i].visible;
@@ -229,7 +339,7 @@ fn syncShell() void {
         }
         const app = appIndex(windows[i].title());
         shell.running[app] = true;
-        shell.items[shell.count] = .{ .id = windows[i].id, .revision = windows[i].revision, .title = windows[i].title(), .hidden = !windows[i].visible, .app = app, .pixels = windows[i].pixels, .width = windows[i].client_w * screen.scale, .height = windows[i].client_h * screen.scale };
+        shell.items[shell.count] = .{ .id = windows[i].id, .revision = windows[i].revision, .title = windows[i].title(), .hidden = !windows[i].visible, .app = app, .pixels = windows[i].pixels, .width = windows[i].client_w * screen.scale, .height = windows[i].client_h * screen.scale, .stride = windows[i].stride };
         shell.count += 1;
     }
 }
@@ -304,16 +414,97 @@ fn toggleDesktop() void {
 
 fn zoomWindow(idx: usize) void {
     const w = &windows[idx];
+    if (w.resizable) {
+        // A real zoom: the client lays itself out at the new size.
+        if (w.zoomed or w.tiled != .none) untileWindow(idx) else tileWindow(idx, .fill);
+        pulp.print("desktop: zoom window {d} = {d}\n", .{ w.id, @intFromBool(w.zoomed) });
+        return;
+    }
     addDamage(w.damageRect());
     if (w.zoomed) {
         w.rect = w.restore_rect;
     } else {
         w.restore_rect = w.rect;
-        w.rect = .{ .x = 12, .y = desktop.BAR_H + 12, .w = screen.width - 24, .h = screen.height - desktop.BAR_H - desktop.DOCK_H - 42 };
+        w.rect = frame.tileRect(workArea(), .fill);
     }
     w.zoomed = !w.zoomed;
     addDamage(w.damageRect());
     pulp.print("desktop: zoom window {d} = {d}\n", .{ w.id, @intFromBool(w.zoomed) });
+}
+
+/// Fill the left or right half, or the whole work area (zoom).
+fn tileWindow(idx: usize, tile: frame.Tile) void {
+    const w = &windows[idx];
+    if (!w.resizable or tile == .none) return;
+    if (w.tiled == .none and !w.zoomed) w.restore_rect = w.rect;
+    w.tiled = tile;
+    w.zoomed = tile == .fill;
+    requestSize(idx, frame.tileRect(workArea(), tile), .{});
+    pulp.print("desktop: tiled window {d} {s}\n", .{ w.id, @tagName(tile) });
+}
+
+fn untileWindow(idx: usize) void {
+    const w = &windows[idx];
+    if (w.tiled == .none and !w.zoomed) return;
+    w.tiled = .none;
+    w.zoomed = false;
+    requestSize(idx, w.restore_rect, .{});
+    pulp.print("desktop: untiled window {d}\n", .{w.id});
+}
+
+/// A press on a title bar (or a full-size client's toolbar): the second
+/// press of a double click zooms, anything else starts a move.
+fn titlePress(idx: usize) void {
+    titleClick(idx);
+    if (last_title_ms == null) return; // that was a double click: zoomed
+    if (windows[idx].zoomed and !windows[idx].resizable) return;
+    dragging = windows[idx].id;
+    drag_backdrop_valid = false;
+    drag_restore = windows[idx].resizable and (windows[idx].tiled != .none or windows[idx].zoomed);
+    drag_start_x = cursor_x;
+    drag_start_y = cursor_y;
+    drag_dx = cursor_x - windows[idx].rect.x;
+    drag_dy = cursor_y - windows[idx].rect.y;
+}
+
+/// The window whose frame, or the grab band just outside it, is topmost
+/// under the pointer, and the edges a press there would take.
+fn edgeTarget(x: i32, y: i32) ?struct { idx: usize, edges: frame.Edges } {
+    var i: usize = window_count;
+    while (i > 0) {
+        i -= 1;
+        const idx = z_order[i];
+        const w = &windows[idx];
+        if (!w.visible) continue;
+        const r = w.rect;
+        const outer = Rect{ .x = r.x - frame.GRAB_OUT, .y = r.y - frame.GRAB_OUT, .w = r.w + frame.GRAB_OUT * 2, .h = r.h + frame.GRAB_OUT * 2 };
+        if (!outer.contains(x, y)) continue;
+        if (!w.resizable or w.panel) return null;
+        // The window buttons always win over the top-left corner.
+        if (w.style.buttonGroup(r).contains(x, y)) return null;
+        const e = frame.edgeAt(r, x, y);
+        if (!e.any()) return null;
+        return .{ .idx = idx, .edges = e };
+    }
+    return null;
+}
+
+fn shapeFor(e: frame.Edges) CursorShape {
+    if ((e.left and e.top) or (e.right and e.bottom)) return .nwse;
+    if ((e.right and e.top) or (e.left and e.bottom)) return .nesw;
+    if (e.left or e.right) return .horizontal;
+    if (e.top or e.bottom) return .vertical;
+    return .arrow;
+}
+
+fn setCursorShape(shape: CursorShape) void {
+    if (shape == cursor_shape) return;
+    cursor_shape = shape;
+    cursor_dirty = true;
+}
+
+fn tilePreviewRect(tile: frame.Tile) Rect {
+    return frame.tileRect(workArea(), tile);
 }
 
 fn shellAction(action: u16) void {
@@ -358,6 +549,12 @@ fn shellAction(action: u16) void {
             if (old == .switcher and i < shell.switcher.len) if (findWindowById(shell.switcher[i].id)) |wi| focusWindow(wi);
         },
         desktop.Action.new_terminal => launchApp(1, true),
+        desktop.Action.reduce_motion => {
+            reduce_motion = !reduce_motion;
+            shell.popup = .settings;
+            pulp.print("desktop: reduce motion {s}\n", .{if (reduce_motion) "on" else "off"});
+            savePreferences();
+        },
         desktop.Action.wallpaper...desktop.Action.wallpaper + 2 => {
             shell.palette = action - desktop.Action.wallpaper;
             for (0..window_count) |i| if (windows[i].panel) sendAppearance(i);
@@ -446,11 +643,18 @@ var presented_cursor_y: i32 = 0;
 var cursor_dirty = false;
 
 fn cursorRect(x: i32, y: i32) Rect {
-    return .{ .x = x, .y = y, .w = CURSOR_W, .h = CURSOR_H };
+    // The arrow's tip is at (x, y); resize pointers are centred on it.
+    return .{ .x = x - 12, .y = y - 12, .w = CURSOR_W + 12, .h = CURSOR_H + 12 };
 }
 
 fn drawCursor(s: *const gfx.Surface, x: i32, y: i32) void {
-    ui.icon(s, .pointer, x, y, 20);
+    switch (cursor_shape) {
+        .arrow => ui.icon(s, .pointer, x, y, 20),
+        .horizontal => ui.icon(s, .cursor_resize_h, x - 11, y - 11, 22),
+        .vertical => ui.icon(s, .cursor_resize_v, x - 11, y - 11, 22),
+        .nwse => ui.icon(s, .cursor_resize_nwse, x - 11, y - 11, 22),
+        .nesw => ui.icon(s, .cursor_resize_nesw, x - 11, y - 11, 22),
+    }
 }
 
 // ── Painting ────────────────────────────────────────────────────────────────
@@ -523,10 +727,56 @@ fn paintWallpaper(clip: Rect) void {
     }
 }
 
+/// The backdrop under a fading window, so it can be blended back in.
+var anim_scratch: ?gfx.Surface = null;
+
 fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
     if (!w.visible) return;
     if (!Rect.overlaps(w.damageRect(), clip)) return;
+    if (w.anim) |a| {
+        // Draw the window at its in-between frame, then mix it with what was
+        // underneath. Content is scaled to the smaller frame for these few
+        // frames; the client is never asked to redraw for motion.
+        const now = frame_now;
+        var moving = w.*;
+        moving.anim = null;
+        moving.rect = a.rect(now);
+        const alpha = a.alpha(now);
+        const area = Rect.intersect(clip, moving.damageRect());
+        if (area.isEmpty() or alpha == 0) return;
+        if (anim_scratch) |scratch| {
+            copyRegion(&scratch, &screen, area);
+            paintWindowNow(&moving, active, clip);
+            screen.setClip(clip);
+            if (alpha != 255) blendRegion(&screen, &scratch, area, alpha);
+        } else paintWindowNow(&moving, active, clip);
+        return;
+    }
+    paintWindowNow(w, active, clip);
+}
 
+fn copyRegion(to: *const gfx.Surface, from: *const gfx.Surface, area: Rect) void {
+    var y = area.y * from.scale;
+    while (y < area.bottom() * from.scale) : (y += 1) {
+        const start: usize = @intCast(y * from.stride + area.x * from.scale);
+        const len: usize = @intCast(area.w * from.scale);
+        @memcpy(to.pixels[start..][0..len], from.pixels[start..][0..len]);
+    }
+}
+
+/// screen = under + (screen - under) * alpha, over `area`.
+fn blendRegion(s: *const gfx.Surface, under: *const gfx.Surface, area: Rect, alpha: u8) void {
+    var y = area.y * s.scale;
+    while (y < area.bottom() * s.scale) : (y += 1) {
+        var x = area.x * s.scale;
+        while (x < area.right() * s.scale) : (x += 1) {
+            const i: usize = @intCast(y * s.stride + x);
+            s.pixels[i] = gfx.lerp(under.pixels[i], s.pixels[i], alpha);
+        }
+    }
+}
+
+fn paintWindowNow(w: *const Window, active: bool, clip: Rect) void {
     screen.setClip(clip);
     gfx.windowShadow(&screen, w.rect, active);
     if (w.panel) {
@@ -534,36 +784,53 @@ fn paintWindow(w: *const Window, active: bool, clip: Rect) void {
         if (w.pixels) |src| window_body.paintPanel(&screen, w.rect, src);
         return;
     }
-    // Diffuse the actual underlying desktop before painting opaque content.
-    // Limit title writes to the title while rounding the full frame's top edge.
-    screen.setClip(Rect.intersect(clip, w.titleBar()));
     const theme = desktop.themeColors(shell.palette);
-    screen.frostTop(w.titleBar(), 13, if (active) theme.frame else theme.frame_inactive, if (active) 238 else 221);
-    if (w.pixels == null) {
-        screen.setClip(Rect.intersect(clip, .{ .x = w.rect.x, .y = w.rect.y + TITLE_H, .w = w.rect.w, .h = w.rect.h - TITLE_H }));
-        screen.rounded(w.rect, 13, theme.surface, 255);
-    }
-    screen.setClip(clip);
-    if (theme.edge_highlights) screen.rounded(.{ .x = w.rect.x + 14, .y = w.rect.y, .w = w.rect.w - 28, .h = 1 }, 0, theme.rim, 120);
-    screen.rounded(.{ .x = w.rect.x + 1, .y = w.rect.y + TITLE_H - 1, .w = w.rect.w - 2, .h = 1 }, 0, theme.muted, 38);
-    const title = w.title()[0..@min(w.title_len, @as(usize, @intCast(@max(1, @divTrunc(w.rect.w - 200, 8)))))];
-    font.drawText(&screen, title, w.rect.x + @divTrunc(w.rect.w - font.textWidth(title, 1), 2), w.rect.y + 16, 1, if (active) theme.frame_text else theme.muted);
-    const colors = [_]u32{ 0xFF615B, 0xF6BC42, 0x30C85A };
-    for (0..3) |i| {
-        if (i == 0 and !w.closable) continue;
-        const c = w.control(@intCast(i));
-        screen.circle(c.x + 11, c.y + 12, 6, if (active) colors[i] else gfx.lerp(theme.frame_inactive, theme.muted, 65));
-        if (dragging == null and c.contains(cursor_x, cursor_y)) {
-            ui.icon(&screen, ([_]ui.Icon{ .close, .minimize, .maximize })[i], c.x + 3, c.y + 4, 16);
+    const radius = w.style.radius();
+    if (!w.style.full_size) {
+        // Diffuse the actual underlying desktop before painting opaque content.
+        // Limit title writes to the title while rounding the full frame's top edge.
+        screen.setClip(Rect.intersect(clip, w.titleBar()));
+        screen.frostTop(w.titleBar(), radius, if (active) theme.frame else theme.frame_inactive, if (active) 238 else 221);
+        if (w.pixels == null) {
+            screen.setClip(Rect.intersect(clip, .{ .x = w.rect.x, .y = w.rect.y + TITLE_H, .w = w.rect.w, .h = w.rect.h - TITLE_H }));
+            screen.rounded(w.rect, radius, theme.surface, 255);
         }
+        screen.setClip(clip);
+        if (theme.edge_highlights) screen.rounded(.{ .x = w.rect.x + radius + 1, .y = w.rect.y, .w = w.rect.w - radius * 2 - 2, .h = 1 }, 0, theme.rim, 120);
+        screen.rounded(.{ .x = w.rect.x + 1, .y = w.rect.y + TITLE_H - 1, .w = w.rect.w - 2, .h = 1 }, 0, theme.muted, 38);
+        // The title, centred; cut to fit between the buttons and the edge.
+        const room = w.rect.w - 2 * (frame.BUTTON_X_TITLE + frame.BUTTON_PITCH * 3 + 8);
+        var len = w.title_len;
+        while (len > 0 and font.textWidth(w.title()[0..len], 1) > room) len -= 1;
+        const title = w.title()[0..len];
+        font.drawText(&screen, title, w.rect.x + @divTrunc(w.rect.w - font.textWidth(title, 1), 2), w.rect.y + 10, 1, if (active) theme.frame_text else theme.muted);
     }
 
     // Client content: copy the client's buffer into place. Peel never draws
     // inside a client window, and the client never touches the screen.
+    screen.setClip(clip);
     if (w.pixels) |src| {
-        window_body.paint(&screen, w.rect, w.contentRect(), src, w.client_w, w.client_h);
+        window_body.paint(&screen, w.rect, w.contentRect(), src, w.client_w, w.client_h, w.stride, radius, w.style.full_size);
     } else {
         font.drawText(&screen, "waiting for a client...", w.rect.x + 12, w.rect.y + TITLE_H + 14, 1, theme.muted);
+    }
+
+    // Window buttons last: in a full-size window they sit on the client's bar.
+    const colors = [_]u32{ 0xFF5F57, 0xFEBC2E, 0x28C840 };
+    const group_hot = dragging == null and resizing == null and w.style.buttonGroup(w.rect).contains(cursor_x, cursor_y);
+    for (0..3) |i| {
+        if (i == 0 and !w.closable) continue;
+        if (i == 2 and !w.zoomable()) continue;
+        const c = w.control(@intCast(i));
+        const cx = c.x + @divTrunc(frame.BUTTON_FRAME, 2);
+        const cy = c.y + 8;
+        const fill = if (active or group_hot) colors[i] else gfx.lerp(theme.frame_inactive, theme.muted, 65);
+        // A darker rim of the same colour, like the Mac's, keeps the circle
+        // crisp on a light bar.
+        screen.circle(cx, cy, @divTrunc(frame.BUTTON_D, 2), gfx.lerp(fill, 0x000000, 28));
+        screen.circle(cx, cy, @divTrunc(frame.BUTTON_D, 2) - 1, fill);
+        // Hovering the group shows all three symbols, as on the Mac.
+        if (group_hot) ui.iconTint(&screen, ([_]ui.Icon{ .close, .minimize, .maximize })[i], cx - 5, cy - 5, 10, gfx.lerp(fill, 0x000000, 150));
     }
 }
 
@@ -624,11 +891,16 @@ fn composite(clip: Rect) void {
             const len: usize = @intCast(clip.w * screen.scale);
             @memcpy(screen.pixels[start..][0..len], drag_backdrop.?.pixels[start..][0..len]);
         }
+        paintTilePreview(clip);
         paintWindow(&windows[moving.?], true, clip);
     } else {
         drag_backdrop_valid = false;
         paintWallpaper(clip);
-        for (z_order[0..window_count]) |idx| paintWindow(&windows[idx], activeWindow() == idx, clip);
+        const top = activeWindow();
+        for (z_order[0..window_count]) |idx| {
+            if (idx == top and moving == top) paintTilePreview(clip);
+            paintWindow(&windows[idx], top == idx, clip);
+        }
     }
 
     syncShell();
@@ -638,6 +910,19 @@ fn composite(clip: Rect) void {
     if (calendar_opening or calendar_rebuilding) shell.popup = .none;
     desktop.paint(&screen, &shell);
     shell.popup = popup;
+}
+
+/// Where a dragged window will tile: a soft accent-tinted area with a
+/// bright edge, under the window being dragged.
+fn paintTilePreview(clip: Rect) void {
+    if (tile_preview == .none) return;
+    const r = tilePreviewRect(tile_preview);
+    if (!Rect.overlaps(r, clip)) return;
+    const theme = desktop.themeColors(shell.palette);
+    screen.setClip(clip);
+    screen.rounded(r, 12, gfx.lerp(theme.accent, 0xFFFFFF, 40), 110);
+    screen.rounded(.{ .x = r.x + 1, .y = r.y + 1, .w = r.w - 2, .h = r.h - 2 }, 11, gfx.lerp(theme.accent, 0xFFFFFF, 120), 70);
+    screen.rounded(.{ .x = r.x + 2, .y = r.y + 2, .w = r.w - 4, .h = r.h - 4 }, 10, gfx.lerp(theme.accent, 0xFFFFFF, 40), 110);
 }
 
 /// Publish an already-composited rectangle to the visible framebuffer.
@@ -698,6 +983,11 @@ fn handleCreateWindow(payload: []const u8) void {
 
     const title_len = @min(req.title_len, 48);
     const name_len = @min(req.shm_name_len, 32);
+    const resizable = !is_panel and req.flags & proto.WindowFlags.resizable != 0 and
+        req.capacity_w >= req.width and req.capacity_h >= req.height and req.capacity_w <= 4096 and req.capacity_h <= 4096;
+    const full_size = !is_panel and req.flags & proto.WindowFlags.full_size_content != 0;
+    const cap_w: i32 = if (resizable) @intCast(req.capacity_w) else w;
+    const cap_h: i32 = if (resizable) @intCast(req.capacity_h) else h;
 
     // Map the client's buffer. Peel takes it read-only in spirit: it copies
     // out of it and never writes back, so a misbehaving client can corrupt
@@ -708,6 +998,16 @@ fn handleCreateWindow(payload: []const u8) void {
         pulp.handleClose(reply);
         return;
     };
+    // The buffer must hold everything the client says it does, or reading
+    // it would fault the compositor.
+    const needed: usize = @intCast(@as(i64, cap_w) * cap_h * 4 * screen.scale * screen.scale);
+    if ((pulp.shmSize(shm) catch 0) < needed) {
+        pulp.puts("peel: client buffer smaller than the window\n");
+        sendCreated(reply, 0, req.width, req.height);
+        pulp.handleClose(shm);
+        pulp.handleClose(reply);
+        return;
+    }
     const pixels = pulp.shmMap(shm, false) catch {
         pulp.puts("peel: cannot map client buffer\n");
         sendCreated(reply, 0, req.width, req.height);
@@ -716,8 +1016,10 @@ fn handleCreateWindow(payload: []const u8) void {
         return;
     };
 
-    const frame_w = w + (if (is_panel) @as(i32, 0) else BORDER_W * 2);
-    const frame_h = h + (if (is_panel) @as(i32, 0) else TITLE_H + BORDER_W);
+    const style = frame.Style{ .full_size = full_size, .bar_h = if (full_size) @intCast(@min(@max(req.bar_height, 24), 80)) else TITLE_H };
+    const size = style.frameSize(w, h);
+    const frame_w = if (is_panel) w else size[0];
+    const frame_h = if (is_panel) h else size[1];
     const idx = addWindow(
         .{ .x = if (is_panel) screen.width - w - 12 else @max(0, @min(req.x, screen.width - frame_w)), .y = if (is_panel) desktop.BAR_H + 8 else @max(desktop.BAR_H + 10, @min(req.y, screen.height - desktop.DOCK_H - 30 - frame_h)), .w = frame_w, .h = frame_h },
         req.title[0..title_len],
@@ -733,6 +1035,13 @@ fn handleCreateWindow(payload: []const u8) void {
     windows[idx].pixels = @ptrCast(@alignCast(pixels));
     windows[idx].client_w = w;
     windows[idx].client_h = h;
+    windows[idx].stride = cap_w * screen.scale;
+    windows[idx].style = if (is_panel) .{} else style;
+    windows[idx].resizable = resizable;
+    windows[idx].cap_w = cap_w;
+    windows[idx].cap_h = cap_h;
+    windows[idx].min_w = if (resizable) @max(160, @min(@as(i32, @intCast(req.min_w)), w)) else w;
+    windows[idx].min_h = if (resizable) @max(100, @min(@as(i32, @intCast(req.min_h)), h)) else h;
     windows[idx].reply_port = reply;
     windows[idx].buffer_handle = shm;
     windows[idx].owner_pid = req.pid;
@@ -751,7 +1060,10 @@ fn handleCreateWindow(payload: []const u8) void {
     pulp.print("peel: window {d} \"{s}\" {d}x{d} for pid {d}\n", .{
         windows[idx].id, windows[idx].title(), w, h, req.pid,
     });
+    logFrame(idx, "opened");
 
+    // A window opens by growing from 92% and fading in (not panels).
+    if (!is_panel) startAnim(idx, frame.openFrom(windows[idx].rect), windows[idx].rect, 0, 255, false);
     addDamage(windows[idx].damageRect());
 }
 
@@ -795,6 +1107,125 @@ fn handleDestroy(payload: []const u8) void {
     removeWindow(idx);
 }
 
+/// Where a window and its content are, for tests and for reading logs.
+fn logFrame(idx: usize, what: []const u8) void {
+    const w = &windows[idx];
+    const c = w.contentRect();
+    pulp.print("peel: frame {d} {s} {d},{d} {d}x{d} content {d},{d} {d}x{d}{s}\n", .{
+        w.id,  what, w.rect.x, w.rect.y, w.rect.w, w.rect.h, c.x, c.y, c.w, c.h,
+        if (w.resizable) " resizable" else "",
+    });
+}
+
+/// Ask a resizable client to draw at the size of `want`, unless it is
+/// still drawing the last size asked for (one configure at a time, so a
+/// fast drag never queues work the client can not keep up with).
+fn requestSize(idx: usize, want: Rect, edges: frame.Edges) void {
+    const w = &windows[idx];
+    w.want = want;
+    w.want_edges = edges;
+    if (w.configure_sent != null and pulp.uptimeMs() -| w.configure_at < 1000) return;
+    sendConfigure(idx);
+}
+
+fn sendConfigure(idx: usize) void {
+    const w = &windows[idx];
+    const want = w.want orelse return;
+    const c = w.style.content(want);
+    const cw = @import("std").math.clamp(c.w, w.min_w, w.cap_w);
+    const ch = @import("std").math.clamp(c.h, w.min_h, w.cap_h);
+    if (cw == w.client_w and ch == w.client_h) {
+        // Same size: only the position changes, which needs no redraw.
+        placeWindow(idx, frame.anchored(want, w.want_edges, w.rect.w, w.rect.h));
+        w.want = null;
+        w.configure_sent = null;
+        return;
+    }
+    const msg = proto.Configure{ .window_id = w.id, .width = @intCast(cw), .height = @intCast(ch) };
+    _ = pulp.portSend(w.reply_port, proto.Op.configure, @import("std").mem.asBytes(&msg)) catch return;
+    w.configure_sent = .{ cw, ch };
+    w.configure_at = pulp.uptimeMs();
+}
+
+fn placeWindow(idx: usize, r: Rect) void {
+    const w = &windows[idx];
+    if (w.rect.x == r.x and w.rect.y == r.y and w.rect.w == r.w and w.rect.h == r.h) return;
+    addDamage(w.damageRect());
+    w.rect = r;
+    addDamage(w.damageRect());
+    drag_backdrop_valid = false;
+}
+
+/// The client has drawn a new size: show it, against the edges being held.
+fn handleResized(payload: []const u8) void {
+    if (payload.len < @sizeOf(proto.Configure)) return;
+    const c: *align(1) const proto.Configure = @ptrCast(payload.ptr);
+    const idx = findWindowById(c.window_id) orelse return;
+    const w = &windows[idx];
+    if (!w.resizable) return;
+    const cw = @import("std").math.clamp(@as(i32, @intCast(@min(c.width, 4096))), w.min_w, w.cap_w);
+    const ch = @import("std").math.clamp(@as(i32, @intCast(@min(c.height, 4096))), w.min_h, w.cap_h);
+    w.client_w = cw;
+    w.client_h = ch;
+    w.revision +%= 1;
+    const size = w.style.frameSize(cw, ch);
+    // While the window is being moved, it stays under the pointer.
+    const want = if (dragging == w.id) w.rect else w.want orelse w.rect;
+    placeWindow(idx, frame.anchored(want, if (dragging == w.id) .{} else w.want_edges, size[0], size[1]));
+    addDamage(w.damageRect());
+    w.configure_sent = null;
+    if (pulp.desktop_profile) pulp.print("peel: resized {d} to {d}x{d}\n", .{ w.id, cw, ch });
+    // The user kept dragging while the client drew: ask for the latest size.
+    if (w.want) |next| {
+        const nc = w.style.content(next);
+        if (@import("std").math.clamp(nc.w, w.min_w, w.cap_w) != cw or @import("std").math.clamp(nc.h, w.min_h, w.cap_h) != ch) {
+            sendConfigure(idx);
+        } else {
+            w.want = null;
+            logFrame(idx, "resized");
+        }
+    }
+}
+
+/// A full-size client's own toolbar was pressed: move the window with the
+/// pointer, as if its title bar had been (double press: zoom).
+fn handleMoveRequest(payload: []const u8) void {
+    if (payload.len < @sizeOf(proto.Destroy)) return;
+    const d: *align(1) const proto.Destroy = @ptrCast(payload.ptr);
+    const idx = findWindowById(d.window_id) orelse return;
+    if (!windows[idx].visible or windows[idx].panel) return;
+    // Only for the press the client was just sent, so a stale or unasked
+    // request cannot take the window later.
+    if (last_client_press != d.window_id or pulp.uptimeMs() -| last_client_press_ms > 1000) return;
+    last_client_press = null;
+    if (pointer_capture == d.window_id and buttons & 1 != 0) {
+        // Release the client's press so it does not stay pressed.
+        sendInput(idx, pulp.EV_MOUSE, 0, 0, -10000, -10000);
+        pointer_capture = null;
+        hover_window = null;
+        titlePress(idx);
+    } else {
+        // The button was already up (a quick click): it still counts
+        // towards a double click, but there is nothing to drag.
+        titleClick(idx);
+    }
+}
+
+/// A click on a title area with no drag: the second of two zooms.
+fn titleClick(idx: usize) void {
+    const now = pulp.uptimeMs();
+    const id = windows[idx].id;
+    if (last_title_id == id and frame.isDoubleClick(last_title_ms, last_title_x, last_title_y, now, cursor_x, cursor_y)) {
+        last_title_ms = null;
+        zoomWindow(idx);
+        return;
+    }
+    last_title_ms = now;
+    last_title_x = cursor_x;
+    last_title_y = cursor_y;
+    last_title_id = id;
+}
+
 fn handleCommit(payload: []const u8) void {
     if (payload.len < @sizeOf(proto.Commit)) return;
     const c: *align(1) const proto.Commit = @ptrCast(payload.ptr);
@@ -816,9 +1247,10 @@ fn handleCommit(payload: []const u8) void {
             return;
         }
         if (!windows[i].visible) return;
-        if (windows[i].zoomed) {
-            const r = windows[i].rect;
-            addDamage(.{ .x = r.x, .y = r.y + TITLE_H, .w = r.w, .h = r.h - TITLE_H });
+        if (windows[i].anim != null) return; // repainted every frame anyway
+        if (windows[i].zoomed and !windows[i].resizable) {
+            // A fixed-size window zoomed by scaling: any change moves pixels.
+            addDamage(windows[i].contentRect());
             return;
         }
         const content = windows[i].contentRect();
@@ -860,13 +1292,17 @@ fn pumpClients() void {
                 const pid = @as(*align(1) const i64, @ptrCast(&buf)).*;
                 var name_buf: [32]u8 = undefined;
                 const reply = pulp.portConnect(proto.replyPortName(&name_buf, pid)) catch continue;
-                const scale: u32 = @intCast(screen.scale);
-                _ = pulp.portSend(reply, proto.Op.display_info_reply, @import("std").mem.asBytes(&scale)) catch {};
+                // A window can be dragged as large as the area below the menu
+                // bar, so that is what a resizable client allocates.
+                const info = proto.DisplayInfo{ .scale = @intCast(screen.scale), .max_width = @intCast(screen.width - frame.BORDER * 2), .max_height = @intCast(screen.height - desktop.BAR_H - frame.BORDER) };
+                _ = pulp.portSend(reply, proto.Op.display_info_reply, @import("std").mem.asBytes(&info)) catch {};
                 pulp.handleClose(reply);
             },
             proto.Op.create_window => handleCreateWindow(buf[0..m.len]),
             proto.Op.commit => handleCommit(buf[0..m.len]),
             proto.Op.destroy => handleDestroy(buf[0..m.len]),
+            proto.Op.resized => handleResized(buf[0..m.len]),
+            proto.Op.move_request => handleMoveRequest(buf[0..m.len]),
             proto.Op.launch_app => {
                 if (m.len >= 4) {
                     const app: *align(1) const u32 = @ptrCast(&buf);
@@ -891,6 +1327,25 @@ fn pumpClients() void {
 }
 
 var dragging: ?u32 = null;
+/// An edge or corner being dragged: which, and the frame and pointer when
+/// the press began.
+var resizing: ?struct { id: u32, edges: frame.Edges, start: Rect, px: i32, py: i32 } = null;
+/// Dragging a tiled or zoomed window first gives it back its own size.
+var drag_restore: bool = false;
+var drag_start_x: i32 = 0;
+var drag_start_y: i32 = 0;
+/// The tile a drag to the screen edge offers, drawn as a translucent area.
+var tile_preview: frame.Tile = .none;
+var last_title_ms: ?u64 = null;
+var last_title_x: i32 = 0;
+var last_title_y: i32 = 0;
+var last_title_id: u32 = 0;
+/// The window that last received a button press, and when: the only one
+/// whose move request is honoured.
+var last_client_press: ?u32 = null;
+var last_client_press_ms: u64 = 0;
+const CursorShape = enum { arrow, horizontal, vertical, nwse, nesw };
+var cursor_shape: CursorShape = .arrow;
 var pointer_capture: ?u32 = null;
 var hover_window: ?u32 = null;
 var drag_dx: i32 = 0;
@@ -990,18 +1445,14 @@ fn handleMouse(e: *const pulp.InputEvent) void {
             return;
         }
     };
-    if (shell.popup == .none) if (windowAt(prev_cursor_x, prev_cursor_y)) |idx| {
-        for (0..if (windows[idx].panel) @as(usize, 0) else 3) |i| {
-            const c = windows[idx].control(@intCast(i));
-            if (c.contains(prev_cursor_x, prev_cursor_y) and !c.contains(cursor_x, cursor_y)) addDamage(c);
-        }
-    };
-    if (shell.popup == .none) if (windowAt(cursor_x, cursor_y)) |idx| {
-        for (0..if (windows[idx].panel) @as(usize, 0) else 3) |i| {
-            const c = windows[idx].control(@intCast(i));
-            if (c.contains(cursor_x, cursor_y) and !c.contains(prev_cursor_x, prev_cursor_y)) addDamage(c);
-        }
-    };
+    // Entering or leaving a window's button group shows or hides the symbols.
+    for ([_][2]i32{ .{ prev_cursor_x, prev_cursor_y }, .{ cursor_x, cursor_y } }) |at| {
+        if (shell.popup != .none) break;
+        const idx = windowAt(at[0], at[1]) orelse continue;
+        if (windows[idx].panel) continue;
+        const g = windows[idx].style.buttonGroup(windows[idx].rect);
+        if (g.contains(prev_cursor_x, prev_cursor_y) != g.contains(cursor_x, cursor_y)) addDamage(g);
+    }
     syncShell();
     const hit = desktop.hit(&screen, &shell, cursor_x, cursor_y);
     if (hit != shell.hover) {
@@ -1022,7 +1473,8 @@ fn handleMouse(e: *const pulp.InputEvent) void {
 
     // Desktop chrome captures a complete press/release pair, including a
     // release outside the target. Never leak that release into a client.
-    if (dragging == null and control_pressed == null and pointer_capture == null and (hit != 0 or shell_pressed != null)) {
+    if (dragging == null and resizing == null and control_pressed == null and pointer_capture == null and (hit != 0 or shell_pressed != null)) {
+        setCursorShape(.arrow);
         if (hover_window) |old| sendInputById(old, pulp.EV_MOUSE, 0, 0, -10000, -10000);
         hover_window = null;
         if (is_down and !was_down) shell_pressed = hit;
@@ -1035,29 +1487,62 @@ fn handleMouse(e: *const pulp.InputEvent) void {
         return;
     }
 
-    if (is_down and !was_down) {
+    // Hovering an edge shows the resize pointer.
+    if (!is_down and resizing == null and dragging == null) {
+        setCursorShape(if (pointer_capture == null) if (edgeTarget(cursor_x, cursor_y)) |t| shapeFor(t.edges) else .arrow else .arrow);
+    }
+
+    if (is_down and !was_down and pointer_capture == null) {
+        if (edgeTarget(cursor_x, cursor_y)) |t| {
+            focusWindow(t.idx);
+            const w = &windows[t.idx];
+            // Resizing a tiled window keeps its new size as its own.
+            w.tiled = .none;
+            w.zoomed = false;
+            resizing = .{ .id = w.id, .edges = t.edges, .start = w.rect, .px = cursor_x, .py = cursor_y };
+            setCursorShape(shapeFor(t.edges));
+            if (hover_window) |old| sendInputById(old, pulp.EV_MOUSE, 0, 0, -10000, -10000);
+            hover_window = null;
+            pulp.print("desktop: resize window {d} from {d}x{d}\n", .{ w.id, w.rect.w, w.rect.h });
+            return;
+        }
         if (windowAt(cursor_x, cursor_y)) |idx| {
             focusWindow(idx);
             const id = windows[idx].id;
-            if (windows[idx].titleBar().contains(cursor_x, cursor_y)) {
-                var control: i32 = 0;
-                while (control < 3) : (control += 1) {
-                    if (control == 0 and !windows[idx].closable) continue;
-                    if (windows[idx].control(control).contains(cursor_x, cursor_y)) {
-                        control_pressed = .{ .id = id, .control = control };
-                        break;
-                    }
+            var control: i32 = 0;
+            while (control < 3 and !windows[idx].panel) : (control += 1) {
+                if (control == 0 and !windows[idx].closable) continue;
+                if (windows[idx].control(control).contains(cursor_x, cursor_y)) {
+                    control_pressed = .{ .id = id, .control = control };
+                    break;
                 }
-                if (control_pressed == null and !windows[idx].zoomed) {
-                    dragging = id;
-                    drag_backdrop_valid = false;
-                    drag_dx = cursor_x - windows[idx].rect.x;
-                    drag_dy = cursor_y - windows[idx].rect.y;
-                }
+            }
+            if (control_pressed != null) {
+                // handled on release
+            } else if (windows[idx].titleBar().contains(cursor_x, cursor_y)) {
+                titlePress(idx);
             } else {
                 pointer_capture = id;
+                last_client_press = id;
+                last_client_press_ms = pulp.uptimeMs();
             }
         }
+    }
+
+    if (resizing) |r| {
+        const idx = findWindowById(r.id) orelse {
+            resizing = null;
+            return;
+        };
+        if (is_down) {
+            const want = frame.resized(r.start, r.edges, cursor_x - r.px, cursor_y - r.py, windows[idx].limits());
+            requestSize(idx, want, r.edges);
+            return;
+        }
+        resizing = null;
+        setCursorShape(.arrow);
+        if (windows[idx].want == null) logFrame(idx, "resized");
+        return;
     }
 
     if (dragging) |id| if (is_down) {
@@ -1065,14 +1550,35 @@ fn handleMouse(e: *const pulp.InputEvent) void {
             dragging = null;
             return;
         };
+        const w = &windows[idx];
+        if (drag_restore and (@abs(cursor_x - drag_start_x) > 3 or @abs(cursor_y - drag_start_y) > 3)) {
+            // Pulling a tiled window away gives it back its own size, with
+            // the pointer keeping its place along the title.
+            drag_restore = false;
+            const old = w.restore_rect;
+            drag_dx = @divTrunc(drag_dx * old.w, @max(1, w.rect.w));
+            w.tiled = .none;
+            w.zoomed = false;
+            requestSize(idx, .{ .x = cursor_x - drag_dx, .y = cursor_y - drag_dy, .w = old.w, .h = old.h }, .{});
+        }
         // Damage both where the window was and where it is going, or the old
         // position is left painted on screen.
-        addDamage(windows[idx].damageRect());
-        const min_x = -windows[idx].rect.w + 40;
+        addDamage(w.damageRect());
+        const min_x = -w.rect.w + 40;
         const max_x = screen.width - 40;
-        windows[idx].rect.x = @max(min_x, @min(cursor_x - drag_dx, max_x));
-        windows[idx].rect.y = @max(desktop.BAR_H, @min(cursor_y - drag_dy, screen.height - desktop.DOCK_H - TITLE_H - 22));
-        addDamage(windows[idx].damageRect());
+        w.rect.x = @max(min_x, @min(cursor_x - drag_dx, max_x));
+        w.rect.y = @max(desktop.BAR_H, @min(cursor_y - drag_dy, screen.height - desktop.DOCK_H - TITLE_H - 22));
+        addDamage(w.damageRect());
+        // Offer a tile at the screen edges (resizable windows only).
+        const tile = if (w.resizable) frame.tileAt(screen.width, desktop.BAR_H, cursor_x, cursor_y) else frame.Tile.none;
+        if (tile != tile_preview) {
+            if (tile_preview != .none) addDamage(tilePreviewRect(tile_preview));
+            tile_preview = tile;
+            if (tile != .none) {
+                addDamage(tilePreviewRect(tile));
+                pulp.print("desktop: tile preview {s}\n", .{@tagName(tile)});
+            }
+        }
     };
 
     if (!is_down and was_down) {
@@ -1082,7 +1588,8 @@ fn handleMouse(e: *const pulp.InputEvent) void {
                     switch (pressed.control) {
                         0 => requestClose(pressed.id),
                         1 => {
-                            windows[idx].visible = false;
+                            // Shrink into the app's dock tile and fade out.
+                            startAnim(idx, windows[idx].rect, dockTileFor(&windows[idx]), 255, 0, true);
                             addDamage(windows[idx].damageRect());
                             if (activeWindow()) |active| addDamage(windows[active].damageRect());
                             chromeDamage();
@@ -1096,6 +1603,15 @@ fn handleMouse(e: *const pulp.InputEvent) void {
             control_pressed = null;
             return;
         }
+        if (dragging) |id| if (findWindowById(id)) |idx| {
+            if (tile_preview != .none) {
+                addDamage(tilePreviewRect(tile_preview));
+                const tile = tile_preview;
+                tile_preview = .none;
+                tileWindow(idx, tile);
+            } else logFrame(idx, "moved");
+        };
+        tile_preview = .none;
         dragging = null;
     }
 
@@ -1302,8 +1818,9 @@ fn loadPreferences() void {
             const v = @import("std").fmt.parseInt(usize, line[6..], 10) catch continue;
             if (v < desktop.THEME_NAMES.len) shell.palette = v;
         }
+        if (pulp.startsWith(line, "reduce_motion=")) reduce_motion = pulp.startsWith(line[14..], "1");
     }
-    pulp.print("desktop: preferences loaded, theme {d} {s}\n", .{ shell.palette, desktop.THEME_NAMES[shell.palette] });
+    pulp.print("desktop: preferences loaded, theme {d} {s}, reduce motion {s}\n", .{ shell.palette, desktop.THEME_NAMES[shell.palette], if (reduce_motion) "on" else "off" });
 }
 
 fn savePreferences() void {
@@ -1314,15 +1831,15 @@ fn savePreferences() void {
         return;
     };
     defer pulp.close(fd);
-    var buf: [64]u8 = undefined;
-    const body = @import("std").fmt.bufPrint(&buf, "# Orange OS desktop preferences\ntheme={d}\n", .{shell.palette}) catch return;
+    var buf: [96]u8 = undefined;
+    const body = @import("std").fmt.bufPrint(&buf, "# Orange OS desktop preferences\ntheme={d}\nreduce_motion={d}\n", .{ shell.palette, @intFromBool(reduce_motion) }) catch return;
     _ = pulp.write(@intCast(fd), body) catch {
         pulp.puts("desktop: preferences not saved (write failed)\n");
         return;
     };
     pulp.fsSync(fd) catch {};
     shell.prefs_kept = true;
-    pulp.print("desktop: preferences saved, theme {d}\n", .{shell.palette});
+    pulp.print("desktop: preferences saved, theme {d}, reduce motion {d}\n", .{ shell.palette, @intFromBool(reduce_motion) });
 }
 
 fn handleKey(e: *const pulp.InputEvent) void {
@@ -1481,6 +1998,12 @@ export fn _start() callconv(.c) noreturn {
         }
     } else |_| {}
 
+    if (pulp.shmCreate("", back_bytes)) |h| {
+        if (pulp.shmMap(h, true)) |pixels| {
+            anim_scratch = .{ .pixels = @ptrCast(@alignCast(pixels)), .width = screen.width, .height = screen.height, .stride = screen.stride, .scale = screen.scale };
+        } else |_| pulp.handleClose(h);
+    } else |_| {}
+
     loadPreferences();
 
     // First frame: everything.
@@ -1515,6 +2038,7 @@ export fn _start() callconv(.c) noreturn {
             addDamage(.{ .x = screen.width - 330, .y = 0, .w = 330, .h = desktop.BAR_H });
         }
 
+        frame_now = pulp.uptimeMs();
         const n = pulp.inputRead(&events);
 
         var i: usize = 0;
@@ -1540,6 +2064,7 @@ export fn _start() callconv(.c) noreturn {
         }
         pumpClients();
         refreshSpotlight();
+        const animating = tickAnimations();
 
         // If a base is unavailable (e.g. unusual display bounds), use the
         // ordinary full-glass path. Never restore an uninitialized snapshot.
@@ -1656,6 +2181,6 @@ export fn _start() callconv(.c) noreturn {
             flushInput(w);
             backlogged = backlogged or w.backlog_len > 0;
         }
-        pulp.waitInput(if (backlogged) 5 else 1000 - pulp.uptimeMs() % 1000);
+        pulp.waitInput(if (animating) 12 else if (backlogged) 5 else 1000 - pulp.uptimeMs() % 1000);
     }
 }

@@ -163,6 +163,23 @@ class Guest:
                 self.process.wait(timeout=5)
 
 
+FRAME = re.compile(r"peel: frame (\d+) \w+ (-?\d+),(-?\d+) (\d+)x(\d+) content (-?\d+),(-?\d+)")
+
+
+def frame_of(g, wid):
+    """The window's latest frame (x, y, w, h) and content origin, from Peel."""
+    found = [m for m in FRAME.finditer(g.log()) if int(m[1]) == wid]
+    return tuple(int(v) for v in found[-1].groups()[1:]) if found else None
+
+
+def button(g, wid, index):
+    """Centre of a window button (0 close, 1 minimise, 2 zoom): the measured
+    macOS positions, 14 points in and 20 apart (26 in a toolbar window)."""
+    x, y, w, h, cx, cy = frame_of(g, wid)
+    first = 26 if cy == y else 14
+    return x + first + 20 * index, y + first
+
+
 def main():
     g = Guest()
     print(f"Evidence: {g.output}", flush=True)
@@ -180,8 +197,10 @@ def main():
         # Dark Terminal corners must not expose the old near-white frame
         # undercoat. The Coastal backdrop itself has a high blue channel, so
         # test neutral-white wedges rather than an individual RGB channel.
-        for x in (70, 678):
-            corner = g.region(x,514,14,13)
+        term = int(re.search(r'peel: window (\d+) "Squeeze', g.log())[1])
+        tx, ty, tw, th, *_ = frame_of(g, term)
+        for x in (tx, tx + tw - 14):
+            corner = g.region(x, ty + th - 25, 14, 13)
             assert not any(all(c > 235 for c in corner[i:i+3]) for i in range(0,len(corner),3)), "pale frame wedge at Terminal lower corner"
         print("PASS rounded Terminal corners have no pale undercoat", flush=True)
         if "--panic" not in sys.argv:
@@ -219,16 +238,19 @@ def main():
         g.screenshot("12-frosted-panel")
         g.key("esc")
         base = g.pixel(200, 250)
-        g.click(113, 131)
+        g.click(*button(g, terminal_id, 1))
         g.until(lambda: f"minimized window {terminal_id}" in g.log(), "yellow button minimizes terminal")
         g.until(lambda: g.pixel(200, 250) != base, "minimize repaint")
         g.click(479, 732)
         g.until(lambda: g.pixel(200, 250) == base, "dock restore repaint")
         print("PASS dock restores existing terminal", flush=True)
-        g.click(135, 131)
+        g.click(*button(g, terminal_id, 2))
         g.until(lambda: f"zoom window {terminal_id} = 1" in g.log(), "green button zooms terminal")
+        # The terminal is resizable: it is redrawn at the zoomed size.
+        g.until(lambda: re.search(rf"peel: frame {terminal_id} resized 8,36 ", g.log()), "terminal redrawn zoomed")
+        time.sleep(.5)
         g.screenshot("02-zoom")
-        g.click(77, 67)
+        g.click(*button(g, terminal_id, 2))
         g.until(lambda: f"zoom window {terminal_id} = 0" in g.log(), "green button restores geometry")
         g.click(560, 732)
         g.until(lambda: '"clock"' in g.log(), "dock launches Clock")
@@ -237,16 +259,20 @@ def main():
         assert len(re.findall(r'peel: window \d+ "clock"', g.log())) == 1
         print("PASS repeated dock clicks keep one Clock", flush=True)
         g.screenshot("03-clock")
-        g.click(481, 409)
+        clock_id = int(re.findall(r'peel: window (\d+) "clock"', g.log())[-1])
+        g.click(*button(g, clock_id, 0))
         g.until(lambda: "clock: closed" in g.log(), "Clock close control")
         g.click(641, 732)
         g.until(lambda: '"About Orange OS"' in g.log(), "dock launches About")
         about_id = int(re.search(r'peel: window (\d+) "About', g.log())[1])
         # Zoom About and exercise a client button in transformed coordinates.
-        g.click(505, 239)
+        time.sleep(.5)
+        g.click(*button(g, about_id, 2))
         g.until(lambda: f"zoom window {about_id} = 1" in g.log(), "About zoom")
-        # Original Done centre=(336,300); client area after zoom=(13,86,1254,591).
-        g.click(1016, 611)
+        # A fixed-size window zooms by scaling: Done (336,300 of 420x338)
+        # lands in the zoomed content area (the work area less the frame).
+        zx, zy, zw, zh = 8, 36 + 28, 1264 - 2, 678 - 28 - 1
+        g.click(zx + 1 + 336 * zw // 420, zy + 300 * zh // 338)
         g.until(lambda: f'closed window {about_id} "About Orange OS"' in g.log(), "scaled About Done hit testing")
         g.key("f11")
         g.until(lambda: g.pixel(200,250) != base, "show desktop repaint")
@@ -292,7 +318,7 @@ def main():
         g.key("esc")
         g.screenshot("07-final")
         # Minimized apps remain selectable from window overview.
-        g.click(113, 131)
+        g.click(*button(g, terminal_id, 1))
         g.until(lambda: g.pixel(200, 250) != base, "minimized for overview")
         g.key("f3")
         startup_windows = re.findall(r'peel: window \d+ "([^"]+)"', g.log())[:2]
@@ -301,14 +327,14 @@ def main():
         g.until(lambda: g.pixel(200, 250) == base, "overview restores minimized window")
         # Closing Welcome must not immediately respawn it; its dock icon does.
         welcome_id = int(re.search(r'peel: window (\d+) "Welcome"', g.log())[1])
-        g.click(775, 131)
+        g.click(*button(g, welcome_id, 0))
         g.until(lambda: f'closed window {welcome_id} "Welcome"' in g.log(), "Welcome closes")
         time.sleep(1)
         assert len(re.findall(r'peel: window \d+ "Welcome"', g.log())) == 1
         g.click(398, 732)
         g.until(lambda: len(re.findall(r'peel: window \d+ "Welcome"', g.log())) == 2, "Welcome relaunches from dock")
         # A close press followed by dragging off the control cancels the close.
-        g.move(91, 131)
+        g.move(*button(g, terminal_id, 0))
         g.monitor("mouse_button 1")
         time.sleep(.15)
         g.move(250, 250)
@@ -343,17 +369,20 @@ def main():
         g.move(360,131)
         g.monitor("mouse_button 0")
         g.until(lambda: g.pixel(200,250) == base, "drag-cache release restores content")
+        clock_id = int(re.findall(r'peel: window (\d+) "clock"', g.log())[-1])
         g.click(800,409)
-        g.click(481,409)
+        g.click(*button(g, clock_id, 0))
         # Files reads the real guest VFS; Trash is an honest read-only folder.
         g.click(322,732)
         g.until(lambda: '"Files"' in g.log() and 'files: listed /:' in g.log(),"Files launches and lists root")
         files_id=int(re.search(r'peel: window (\d+) "Files"',g.log())[1])
         g.screenshot("09-files-grid")
-        g.click(816,238)
+        fx, fy = frame_of(g, files_id)[4:6]
+        # The view switcher's two 32-point segments end 16 points from the right.
+        g.click(fx + 680 - 16 - 16, fy + 26)
         g.until(lambda: 'files: view list' in g.log(), "Files switches to list view")
         g.screenshot("09-files-list")
-        g.click(785,238)
+        g.click(fx + 680 - 16 - 48, fy + 26)
         g.until(lambda: 'files: view grid' in g.log(), "Files switches back to grid view")
         g.click(330,300)
         g.until(lambda: 'files: listed /etc:' in g.log(),"Files browses System")
@@ -365,11 +394,12 @@ def main():
         time.sleep(1)
         g.screenshot("09-files-preview")
         # Back closes preview first; each further Back returns one folder.
-        g.click(460,238)
-        g.click(460,238)
-        g.click(460,238)
+        back = (fx + 180 + 16 + 16, fy + 26)
+        g.click(*back)
+        g.click(*back)
+        g.click(*back)
         g.until(lambda: g.log().count('files: listed /:')==2,"Files Back returns to root")
-        g.click(281,189)
+        g.click(*button(g, files_id, 0))
         g.until(lambda: f'closed window {files_id} "Files"' in g.log(),"Files closes")
         g.click(954,732)
         g.until(lambda: '"Trash"' in g.log() and 'files: listed /Trash: 0 entries' in g.log(),"Trash opens its actual empty folder")
@@ -378,10 +408,10 @@ def main():
         time.sleep(1)
         g.screenshot("10-trash")
         trash_id=int(re.search(r'peel: window (\d+) "Trash"',g.log())[1])
-        g.click(281,189)
+        g.click(*button(g, trash_id, 0))
         g.until(lambda: f'closed window {trash_id} "Trash"' in g.log(),"Trash closes")
         # Welcome uses the shared icon system and opens real Appearance.
-        g.click(1000,487)
+        g.click(1000,477)
         g.until(lambda: 'desktop: requested panel 6' in g.log(),"Welcome opens Appearance")
         time.sleep(1)
         g.screenshot("11-welcome-appearance")

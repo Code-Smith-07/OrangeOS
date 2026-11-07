@@ -41,6 +41,9 @@ G_DECLARE_FINAL_TYPE(OrangeKeymap, orange_keymap, ORANGE, KEYMAP, WPEKeymap)
  * calling `commit` for the changed logical rectangle. */
 WPEDisplay *orange_display_new(const OrangeSurface *surface, void (*commit)(int x, int y, int width, int height));
 
+/* The window was resized: the content area is now width x height. */
+void orange_display_set_size(WPEDisplay *display, int width, int height);
+
 /* Tabs: only the active view is drawn into the window. Each view keeps its
  * last frame, so making a view active shows it at once. */
 void orange_view_set_active(WPEView *view, gboolean active);

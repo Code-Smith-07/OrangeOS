@@ -51,6 +51,7 @@ pub const NR = struct {
     pub const shm_map: u64 = 55;
     pub const handle_close: u64 = 56;
     pub const shm_open: u64 = 57;
+    pub const shm_size: u64 = 58;
     pub const pty_create: u64 = 80;
     pub const pty_read: u64 = 81;
     pub const pty_write: u64 = 82;
@@ -408,6 +409,13 @@ pub fn shmOpen(name: []const u8) Error!i64 {
     const r = syscall2(NR.shm_open, @intFromPtr(name.ptr), name.len);
     if (r < 0) return errno(r);
     return r;
+}
+
+/// Bytes in a shared buffer (page-rounded).
+pub fn shmSize(h: i64) Error!usize {
+    const r = syscall1(NR.shm_size, @bitCast(h));
+    if (r < 0) return errno(r);
+    return @intCast(r);
 }
 
 /// Map shared memory into this process. Returns the address.

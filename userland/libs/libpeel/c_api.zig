@@ -25,7 +25,8 @@ pub const Info = extern struct {
 };
 
 pub const Event = extern struct {
-    /// 1 key, 2 mouse, 3 the user asked to close the window, 4 wheel.
+    /// 1 key, 2 mouse, 3 the user asked to close the window, 4 wheel,
+    /// 5 resize: draw at x by y, then call orange_peel_ack_resize.
     kind: u32,
     /// key: set-1 scancode. mouse: buttons held (1 left, 2 right, 4 middle).
     /// wheel: steps as a signed byte, positive towards the user.
@@ -47,6 +48,31 @@ export fn orange_peel_open(title: [*:0]const u8, width: i32, height: i32, info: 
     return 0;
 }
 
+/// A resizable window with full-size content (docs/design/014, M2): the
+/// program draws its own top bar, `bar_height` tall, under the window
+/// buttons, and the buffer holds the largest size the screen allows
+/// (`info.stride` is that width, not `info.width`).
+export fn orange_peel_open_resizable(title: [*:0]const u8, width: i32, height: i32, min_width: i32, min_height: i32, bar_height: i32, info: *Info) c_int {
+    if (window != null) return -1;
+    const flags = libpeel.proto.WindowFlags.closable | libpeel.proto.WindowFlags.resizable | libpeel.proto.WindowFlags.full_size_content;
+    const w = libpeel.open(.{ .title = std.mem.span(title), .width = width, .height = height, .flags = flags, .min_w = min_width, .min_h = min_height, .bar_height = bar_height }) catch return -1;
+    window = w;
+    info.* = .{ .width = w.width, .height = w.height, .scale = w.scale, .stride = w.stride, .pixels = w.pixels };
+    return 0;
+}
+
+/// The buffer now shows a frame of width by height.
+export fn orange_peel_ack_resize(width: i32, height: i32) void {
+    const w = &(window orelse return);
+    const msg = libpeel.proto.Configure{ .window_id = w.id, .width = @intCast(@max(0, width)), .height = @intCast(@max(0, height)) };
+    _ = pulp.portSend(w.server, libpeel.proto.Op.resized, std.mem.asBytes(&msg)) catch {};
+}
+
+/// The user pressed the program's own top bar: move the window.
+export fn orange_peel_move_request() void {
+    if (window) |*w| w.requestMove();
+}
+
 export fn orange_peel_commit(x: i32, y: i32, width: i32, height: i32) void {
     if (window) |*w| w.commit(x, y, width, height);
 }
@@ -63,6 +89,14 @@ export fn orange_peel_next_event(event: *Event, blocking: c_int) c_int {
         };
         if (m.opcode == libpeel.proto.Op.close_requested) {
             event.* = .{ .kind = 3, .code = 0, .value = 0, .x = 0, .y = 0 };
+            return 1;
+        }
+        if (m.opcode == libpeel.proto.Op.configure and m.len >= @sizeOf(libpeel.proto.Configure)) {
+            const c: *align(1) const libpeel.proto.Configure = @ptrCast(&buf);
+            if (c.window_id != w.id) continue;
+            const cw = std.math.clamp(@as(i32, @intCast(@min(c.width, 4096))), @max(1, w.min_w), @max(1, w.capacity_w));
+            const ch = std.math.clamp(@as(i32, @intCast(@min(c.height, 4096))), @max(1, w.min_h), @max(1, w.capacity_h));
+            event.* = .{ .kind = 5, .code = 0, .value = 0, .x = cw, .y = ch };
             return 1;
         }
         if (m.opcode != libpeel.proto.Op.input or m.len < @sizeOf(libpeel.proto.Input)) continue;

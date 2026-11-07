@@ -255,6 +255,13 @@ WPEDisplay *orange_display_new(const OrangeSurface *surface, void (*commit)(int 
 	return WPE_DISPLAY(display);
 }
 
+void orange_display_set_size(WPEDisplay *display, int width, int height)
+{
+	OrangeDisplay *self = ORANGE_DISPLAY(display);
+	self->surface.width = width;
+	self->surface.height = height;
+}
+
 /* ── Toplevel ────────────────────────────────────────────────────────────── */
 
 struct _OrangeToplevel {
@@ -268,7 +275,8 @@ static void toplevel_constructed(GObject *object)
 	G_OBJECT_CLASS(orange_toplevel_parent_class)->constructed(object);
 	WPEToplevel *toplevel = WPE_TOPLEVEL(object);
 	OrangeDisplay *display = ORANGE_DISPLAY(wpe_toplevel_get_display(toplevel));
-	/* Peel windows keep their size; the content area is the toplevel. */
+	/* The content area is the toplevel; orange_display_set_size and the
+	 * browser keep it in step when the Peel window is resized. */
 	wpe_toplevel_resized(toplevel, display->surface.width, display->surface.height);
 	wpe_toplevel_scale_changed(toplevel, display->surface.scale);
 	wpe_toplevel_state_changed(toplevel, WPE_TOPLEVEL_STATE_ACTIVE);

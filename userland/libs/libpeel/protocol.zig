@@ -15,6 +15,15 @@ pub const WindowFlags = struct {
     /// Top-right transient surface: no frame, dragging, dock or overview entry.
     /// Presentation only; grants no host-control authority.
     pub const panel: u32 = 1 << 1;
+    /// The user may resize the window (docs/design/014, M2). The client
+    /// allocates its buffer at the capacity in CreateWindow and redraws at
+    /// each size Peel configures.
+    pub const resizable: u32 = 1 << 2;
+    /// The client draws under the title area (a toolbar window, like Finder):
+    /// Peel draws no title bar, only the window buttons, centred in the
+    /// client's `bar_height`. The client asks Peel to move the window when
+    /// its own empty toolbar is dragged (Op.move_request).
+    pub const full_size_content: u32 = 1 << 3;
 };
 
 pub const Op = struct {
@@ -31,6 +40,12 @@ pub const Op = struct {
     pub const display_info_reply: u32 = 131;
     /// Request a public desktop panel (u32 action: overview or appearance).
     pub const desktop_panel: u32 = 6;
+    /// Client -> Peel: my buffer now holds a frame of this size (Resized),
+    /// in answer to a configure.
+    pub const resized: u32 = 7;
+    /// Client -> Peel: the user pressed my toolbar background; move the
+    /// window with the pointer (Destroy payload: just the window id).
+    pub const move_request: u32 = 8;
     /// Peel -> client: your window was created.
     pub const created: u32 = 128;
     /// Peel -> client: an input event landed on you.
@@ -39,6 +54,17 @@ pub const Op = struct {
     pub const close_requested: u32 = 130;
     /// Peel -> panel: current desktop palette (u32), on creation and changes.
     pub const appearance: u32 = 132;
+    /// Peel -> client: please draw at this size (Configure).
+    pub const configure: u32 = 133;
+};
+
+/// Peel's answer to display_info: the backing scale, and the largest
+/// content a window can have on this screen (logical points), which is
+/// what a resizable client allocates.
+pub const DisplayInfo = extern struct {
+    scale: u32,
+    max_width: u32,
+    max_height: u32,
 };
 
 /// Request to create a window. `shm_name` names a buffer the client has
@@ -56,6 +82,16 @@ pub const CreateWindow = extern struct {
     flags: u32,
     /// Logical dimensions above; buffer is width*scale by height*scale.
     scale: u32,
+    /// Resizable windows: the buffer is capacity_w by capacity_h logical
+    /// pixels (rows are capacity_w * scale apart), and the content may be
+    /// resized between the minimum and the capacity. Others: 0.
+    capacity_w: u32 = 0,
+    capacity_h: u32 = 0,
+    min_w: u32 = 0,
+    min_h: u32 = 0,
+    /// Full-size content: the height of the client's top bar, in which Peel
+    /// centres the window buttons.
+    bar_height: u32 = 0,
     title: [48]u8,
     shm_name: [32]u8,
 };
@@ -67,6 +103,14 @@ pub const Commit = extern struct {
     y: i32,
     w: i32,
     h: i32,
+};
+
+/// Peel asks a resizable client to draw at a new content size, and the
+/// client answers with the same struct once its buffer shows that size.
+pub const Configure = extern struct {
+    window_id: u32,
+    width: u32,
+    height: u32,
 };
 
 /// Either side identifies the window whose lifetime is ending.

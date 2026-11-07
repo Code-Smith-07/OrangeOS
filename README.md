@@ -322,8 +322,12 @@ restore it. The Orange OS menu also opens a **new** terminal. **Option+Space**
 open window, a setting or a theme, or to work out a sum, then Return.
 **Option+Tab** shows the app switcher; keep Option held, Tab to move, release
 to switch. **F3** shows all windows, **F4** opens Appearance, **F11**
-reveals/restores the desktop, and **Escape** dismisses a panel. The chosen
-theme is kept on the `/data` disk across restarts. On a Mac, function keys
+reveals/restores the desktop, and **Escape** dismisses a panel. Windows
+**resize** from any edge or corner, a **double click** on the title (or on
+Files' and the browser's own toolbar) zooms and restores, and dragging a
+window to the **left or right screen edge** tiles it to that half. Open and
+minimise are animated; Appearance has a **Reduce motion** switch. The chosen
+theme and Reduce motion are kept on the `/data` disk across restarts. On a Mac, function keys
 may require `Fn`; Command shortcuts stay with the Mac, so OrangeOS uses Option.
 The plan to bring the whole system to a macOS level of finish, with sizes
 measured from macOS itself and the path to UTM, VirtualBox and VMware, is

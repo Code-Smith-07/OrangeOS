@@ -9,16 +9,16 @@ print(f"Evidence: {g.output}", flush=True)
 try:
     g.until(lambda: 'grove: painted' in g.log() and 'squeeze: window' in g.log(), 'Welcome ready', 45)
     g.scale = 2
-    g.click(820, 320)
+    g.click(820, 310)
     g.until(lambda: 'desktop: requested panel 5' in g.log(), 'Welcome opens Windows')
     g.key('esc')
-    g.click(950, 320)
+    g.click(950, 310)
     g.until(lambda: 'files: listed /Trash: 0 entries' in g.log(), 'Welcome opens real Trash folder')
-    g.click(281, 189)
+    g.click(286, 196)  # Trash: toolbar window close button
     g.until(lambda: re.search(r'closed window \d+ "Trash"', g.log()), 'Trash closed')
-    g.click(1100, 320)
+    g.click(1100, 310)
     g.until(lambda: '"About Orange OS"' in g.log(), 'Welcome opens About')
-    g.click(461, 239)
+    g.click(454, 234)  # About: title-bar close button
     g.until(lambda: re.search(r'closed window \d+ "About Orange OS"', g.log()), 'About closed')
     g.click(1180, 18)
     g.until(lambda: 'desktop: calendar offset 0' in g.log(), 'Date opens current calendar')

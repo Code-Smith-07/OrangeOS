@@ -35,7 +35,13 @@
 
 #define WINDOW_WIDTH 960
 #define WINDOW_HEIGHT 640
+/* Resizable down to this (docs/design/014, M2). */
+#define MIN_WIDTH 560
+#define MIN_HEIGHT 380
 #define TABBAR 36
+/* The tab strip is the window's top bar: Peel draws the window buttons at
+ * its left, so the tabs start after them. */
+#define TAB_LEFT 84
 #define TOOLBAR 48
 #define CONTENT_Y (TABBAR + TOOLBAR)
 #define MAX_TABS 6
@@ -56,6 +62,10 @@ typedef struct {
 	int32_t x, y;
 } PeelEvent;
 int orange_peel_open(const char *title, int width, int height, PeelInfo *info);
+int orange_peel_open_resizable(const char *title, int width, int height, int min_width, int min_height, int bar_height,
+                               PeelInfo *info);
+void orange_peel_ack_resize(int width, int height);
+void orange_peel_move_request(void);
 void orange_peel_commit(int x, int y, int width, int height);
 int orange_peel_next_event(PeelEvent *event, int blocking);
 void orange_peel_close(void);
@@ -202,12 +212,12 @@ static int field_x(void)
 /* Tab i spans [tab_x(i), tab_x(i) + tab_width()) on the strip. */
 static int tab_width(void)
 {
-	return MIN(220, (browser.window.width - 8 - 44) / MAX(browser.count, 1));
+	return MIN(220, (browser.window.width - TAB_LEFT - 44) / MAX(browser.count, 1));
 }
 
 static int tab_x(int index)
 {
-	return 8 + index * tab_width();
+	return TAB_LEFT + index * tab_width();
 }
 
 static int plus_x(void)
@@ -588,8 +598,13 @@ static void tabbar_click(int x, int y)
 			activate(i);
 		return;
 	}
-	if (browser.count < MAX_TABS && x >= plus_x() && x < plus_x() + 28 && open_tab(START_PAGE))
-		edit_address(TRUE);
+	if (browser.count < MAX_TABS && x >= plus_x() && x < plus_x() + 28) {
+		if (open_tab(START_PAGE))
+			edit_address(TRUE);
+		return;
+	}
+	/* The strip's empty background moves the window, like a title bar. */
+	orange_peel_move_request();
 }
 
 static void toolbar_click(int x, int y)
@@ -674,10 +689,37 @@ static void handle_wheel(const PeelEvent *e)
 	wpe_event_unref(scroll);
 }
 
+/* Peel configured a new size: every tab's view and the bars follow. */
+static void resize(int width, int height)
+{
+	if (width == browser.window.width && height == browser.window.height) {
+		orange_peel_ack_resize(width, height);
+		return;
+	}
+	browser.window.width = width;
+	browser.window.height = height;
+	orange_display_set_size(browser.display, width, height - CONTENT_Y);
+	for (int i = 0; i < browser.count; i++) {
+		WPEView *view = browser.tabs[i].view;
+		WPEToplevel *toplevel = wpe_view_get_toplevel(view);
+		if (toplevel)
+			wpe_toplevel_resized(toplevel, width, height - CONTENT_Y);
+		wpe_view_resized(view, width, height - CONTENT_Y);
+	}
+	draw_tabs();
+	draw_toolbar();
+	orange_view_set_active(ACTIVE->view, TRUE);
+	orange_peel_ack_resize(width, height);
+	printf("orange-browser: resized to %dx%d\n", width, height);
+	fflush(stdout);
+}
+
 static gboolean dispatch(gpointer data)
 {
 	PeelEvent *e = data;
-	if (e->kind == 1)
+	if (e->kind == 5)
+		resize(e->x, e->y);
+	else if (e->kind == 1)
 		handle_key(e);
 	else if (e->kind == 2)
 		handle_mouse(e);
@@ -718,7 +760,8 @@ int main(int argc, char **argv)
 	g_mkdir_with_parents(PROFILE "/media", 0700);
 	printf("orange-browser: website data in %s\n", data_dir);
 
-	if (orange_peel_open("Orange Browser", WINDOW_WIDTH, WINDOW_HEIGHT, &browser.window) != 0) {
+	if (orange_peel_open_resizable("Orange Browser", WINDOW_WIDTH, WINDOW_HEIGHT, MIN_WIDTH, MIN_HEIGHT, TABBAR,
+	                               &browser.window) != 0) {
 		fprintf(stderr, "orange-browser: no display\n");
 		return 1;
 	}

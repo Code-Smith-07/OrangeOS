@@ -23,7 +23,8 @@ NAMES = ("welcome", "terminal", "clock", "about", "windows", "appearance",
          "dock_welcome", "dock_terminal", "dock_clock", "dock_about",
          "dock_windows", "dock_appearance", "dock_files", "dock_trash",
          "dock_browser", "menu_search", "search", "dock_calculator",
-         "app_browser")
+         "app_browser", "cursor_resize_h", "cursor_resize_v",
+         "cursor_resize_nwse", "cursor_resize_nesw")
 
 def main():
     header = bytearray()
