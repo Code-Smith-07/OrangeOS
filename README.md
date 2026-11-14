@@ -331,7 +331,18 @@ reveals/restores the desktop, and **Escape** dismisses a panel. Windows
 Files' and the browser's own toolbar) zooms and restores, and dragging a
 window to the **left or right screen edge** tiles it to that half. Open and
 minimise are animated; Appearance has a **Reduce motion** switch. The chosen
-theme and Reduce motion are kept on the `/data` disk across restarts. On a Mac, function keys
+theme and Reduce motion are kept on the `/data` disk across restarts.
+
+The menu bar shows the front app's own menus (File, Edit, View...) and a
+**Window** menu, a **bell** with recent notifications, and the Orange menu
+(About, Settings, Lock Screen). The apps: **Files** (Documents on the data
+disk, New Folder, Rename with F2, Trash with Put Back, Quick Look on Space,
+double click to open), **Text Editor** (safe saving, asks before closing
+unsaved work), **Image Viewer** (PNG, BMP, PPM), **Calculator**, and
+**Settings**. In Settings, Wi-Fi, Bluetooth, Sound and Display change the
+Mac's real hardware through the companion, and **Lock Screen** sets a
+password: OrangeOS then starts at a lock screen and locks after the idle
+time you choose. Spotlight also finds files in Documents. On a Mac, function keys
 may require `Fn`; Command shortcuts stay with the Mac, so OrangeOS uses Option.
 The plan to bring the whole system to a macOS level of finish, with sizes
 measured from macOS itself and the path to UTM, VirtualBox and VMware, is
