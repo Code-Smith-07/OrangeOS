@@ -113,6 +113,45 @@ pub const Window = struct {
         }
     }
 
+    /// Ask Peel to open a file with the app that handles it.
+    pub fn openDocument(self: *const Window, path: []const u8) void {
+        _ = pulp.portSend(self.server, proto.Op.open_document, path[0..@min(path.len, 255)]) catch {};
+    }
+
+    /// Change the title bar text (the app shown in the menu bar stays).
+    pub fn setTitle(self: *const Window, title: []const u8) void {
+        var buf: [4 + 48]u8 = undefined;
+        @memcpy(buf[0..4], @import("std").mem.asBytes(&self.id));
+        const n = @min(title.len, 48);
+        @memcpy(buf[4..][0..n], title[0..n]);
+        _ = pulp.portSend(self.server, proto.Op.set_title, buf[0 .. 4 + n]) catch {};
+    }
+
+    /// Publish this window's menus (see proto.MENU_MAX_BYTES for the text).
+    pub fn setMenu(self: *const Window, text: []const u8) void {
+        var buf: [4 + proto.MENU_MAX_BYTES]u8 = undefined;
+        @memcpy(buf[0..4], @import("std").mem.asBytes(&self.id));
+        const n = @min(text.len, proto.MENU_MAX_BYTES);
+        @memcpy(buf[4..][0..n], text[0..n]);
+        _ = pulp.portSend(self.server, proto.Op.set_menu, buf[0 .. 4 + n]) catch {};
+    }
+
+    /// Show a notification banner, kept in the notification list.
+    pub fn notify(self: *const Window, title: []const u8, body: []const u8) void {
+        sendNotification(self.server, title, body);
+    }
+
+    pub fn setPreference(self: *const Window, key: u32, value: u32) void {
+        const msg = proto.Preference{ .key = key, .value = value };
+        _ = pulp.portSend(self.server, proto.Op.set_preference, @import("std").mem.asBytes(&msg)) catch {};
+    }
+
+    /// Ask for the desktop preferences; they arrive as Op.preferences.
+    pub fn requestPreferences(self: *const Window) void {
+        const pid = pulp.getpid();
+        _ = pulp.portSend(self.server, proto.Op.get_preferences, @import("std").mem.asBytes(&pid)) catch {};
+    }
+
     /// Tell Peel that a rectangle of the buffer changed.
     pub fn commit(self: *const Window, x: i32, y: i32, w: i32, h: i32) void {
         const msg = proto.Commit{
@@ -138,6 +177,20 @@ pub const Window = struct {
     }
 };
 
+fn sendNotification(server: i64, title: []const u8, body: []const u8) void {
+    var msg = proto.Notify{ .title_len = @intCast(@min(title.len, 48)), .body_len = @intCast(@min(body.len, 120)), .title = [_]u8{0} ** 48, .body = [_]u8{0} ** 120 };
+    @memcpy(msg.title[0..msg.title_len], title[0..msg.title_len]);
+    @memcpy(msg.body[0..msg.body_len], body[0..msg.body_len]);
+    _ = pulp.portSend(server, proto.Op.notify, @import("std").mem.asBytes(&msg)) catch {};
+}
+
+/// A notification from a program with no window (a command-line tool).
+pub fn notifyWithoutWindow(title: []const u8, body: []const u8) Error!void {
+    const server = pulp.portConnect(proto.PORT) catch return Error.NoDisplayServer;
+    defer pulp.handleClose(server);
+    sendNotification(server, title, body);
+}
+
 /// Connect to Peel and ask for a window.
 pub fn createWindow(title: []const u8, w: i32, h: i32, x: i32, y: i32) Error!Window {
     return createWindowWithFlags(title, w, h, x, y, proto.WindowFlags.closable);
@@ -159,6 +212,8 @@ pub const Options = struct {
     min_h: i32 = 0,
     /// Full-size content windows: the client's top bar height.
     bar_height: i32 = 0,
+    /// Which application this is (proto.App.*).
+    app: u32 = proto.App.welcome,
 };
 
 /// Connect to Peel and ask for a window. A resizable window's buffer is
@@ -231,6 +286,7 @@ pub fn open(o: Options) Error!Window {
         .min_w = @intCast(@max(0, @min(o.min_w, w))),
         .min_h = @intCast(@max(0, @min(o.min_h, h))),
         .bar_height = @intCast(@max(0, o.bar_height)),
+        .app = o.app,
         .title = undefined,
         .shm_name = undefined,
     };

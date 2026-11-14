@@ -23,9 +23,22 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+QEMU=qemu-system-x86_64
 if [ "$(uname -s)" = Darwin ]; then
+    # A sharp picture on a Retina screen: QEMU runs from a small app bundle
+    # that tells macOS it draws at full resolution (host/macos), and the
+    # guest's 2560x1600 picture is scaled smoothly when it has to be scaled
+    # at all (on a 13-inch MacBook Air it maps one to one).
+    if [ ! -x "build/OrangeOS Preview.app/Contents/MacOS/orange-qemu" ]; then
+        sh host/macos/bundle-preview.sh >/dev/null
+    fi
+    firmware="$(dirname "$(dirname "$(readlink -f "$(command -v qemu-system-x86_64)" 2>/dev/null || command -v qemu-system-x86_64)")")/share/qemu"
+    if [ -f "$firmware/bios-256k.bin" ]; then
+        QEMU="build/OrangeOS Preview.app/Contents/MacOS/orange-qemu"
+        set -- -L "$firmware" "$@"
+    fi
     # Sound through the Mac's output (the guest's /dev/audio).
-    set -- -display cocoa,show-cursor=off,full-screen=on,zoom-to-fit=on \
+    set -- -display cocoa,show-cursor=off,full-screen=on,zoom-to-fit=on,zoom-interpolation=on \
         -audiodev coreaudio,id=snd0 -device intel-hda -device hda-output,audiodev=snd0 "$@"
     companion="build/OrangeOS Companion.app/Contents/MacOS/orange-host"
     if [ "${ORANGE_BRIDGE:-1}" != 0 ]; then
@@ -43,7 +56,7 @@ if [ "$(uname -s)" = Darwin ]; then
     fi
 fi
 
-qemu-system-x86_64 \
+"$QEMU" \
     -M q35 -m "${ORANGE_VM_RAM:-3G}" -smp "${ORANGE_VM_CPUS:-2}" \
     -rtc base=utc,clock=host -cdrom build/orange.iso -boot d \
     -drive id=disk0,file=build/disk.img,format=raw,if=none \

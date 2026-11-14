@@ -185,6 +185,15 @@ pub fn build(b: *std.Build) void {
     files_mod.addImport("libpeel", libpeel_mod);
     const keymap_mod = b.createModule(.{ .root_source_file = b.path("userland/apps/squeeze/keymap.zig"), .target = user_target, .optimize = user_optimize });
     files_mod.addImport("keymap", keymap_mod);
+    const account_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/account/account.zig"), .target = user_target, .optimize = user_optimize });
+    const appkit_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/appkit/app.zig"), .target = user_target, .optimize = user_optimize });
+    appkit_mod.addImport("pulp", pulp_mod);
+    appkit_mod.addImport("libpeel", libpeel_mod);
+    appkit_mod.addImport("ui", ui_mod);
+    appkit_mod.addImport("keymap", keymap_mod);
+    const image_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/image/image.zig"), .target = user_target, .optimize = user_optimize });
+    appkit_mod.addImport("image", image_mod);
+    files_mod.addImport("appkit", appkit_mod);
 
     const host_protocol_mod = b.createModule(.{ .root_source_file = b.path("userland/libs/host-services/protocol.zig"), .target = user_target, .optimize = user_optimize });
     const host_model_mod = b.createModule(.{ .root_source_file = b.path("userland/apps/hardware/model.zig"), .target = user_target, .optimize = user_optimize });
@@ -231,6 +240,9 @@ pub fn build(b: *std.Build) void {
         .{ .name = "grove", .path = "userland/apps/grove/main.zig" },
         .{ .name = "about", .path = "userland/apps/about/main.zig" },
         .{ .name = "files", .path = "userland/apps/files/main.zig" },
+        .{ .name = "editor", .path = "userland/apps/editor/main.zig" },
+        .{ .name = "viewer", .path = "userland/apps/viewer/main.zig" },
+        .{ .name = "calculator", .path = "userland/apps/calculator/main.zig" },
         .{ .name = "trash", .path = "userland/apps/trash/main.zig" },
         .{ .name = "ping", .path = "userland/bin/ping/main.zig" },
         .{ .name = "net", .path = "userland/bin/net/main.zig" },
@@ -261,6 +273,9 @@ pub fn build(b: *std.Build) void {
         mod.addImport("files_view", files_mod);
         mod.addImport("gfx", gfx_mod);
         mod.addImport("keymap", keymap_mod);
+        mod.addImport("account", account_mod);
+        mod.addImport("appkit", appkit_mod);
+        mod.addImport("image", image_mod);
         if (std.mem.eql(u8, prog.name, "c-abi-probe")) mod.addCSourceFile(.{
             .file = b.path("userland/bin/c-abi-probe/probe.c"),
             .flags = &.{ "-std=c11", "-ffreestanding", "-fno-stack-protector", "-mno-red-zone", "-mno-avx", "-Wall", "-Wextra", "-Werror" },

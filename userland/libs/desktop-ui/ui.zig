@@ -15,7 +15,7 @@ pub const Color = struct {
 };
 const font = @import("typography");
 pub const textWidth = font.textWidth;
-pub const Icon = enum { welcome, terminal, clock, about, windows, appearance, files, trash, chevron_left, chevron_right, chevron_up, document, brand, controls, close, minimize, maximize, pointer, folder_orange, folder_green, folder_purple, folder_pink, folder_gold, wifi, bluetooth, speaker, sun, battery, battery_plain, sidebar_home, sidebar_apps, sidebar_system, sidebar_trash, menu_wifi, menu_bluetooth, menu_speaker, menu_controls, menu_battery, menu_battery_plain, menu_brand, dock_welcome, dock_terminal, dock_clock, dock_about, dock_windows, dock_appearance, dock_files, dock_trash, dock_browser, menu_search, search, dock_calculator, app_browser, cursor_resize_h, cursor_resize_v, cursor_resize_nwse, cursor_resize_nesw };
+pub const Icon = enum { welcome, terminal, clock, about, windows, appearance, files, trash, chevron_left, chevron_right, chevron_up, document, brand, controls, close, minimize, maximize, pointer, folder_orange, folder_green, folder_purple, folder_pink, folder_gold, wifi, bluetooth, speaker, sun, battery, battery_plain, sidebar_home, sidebar_apps, sidebar_system, sidebar_trash, menu_wifi, menu_bluetooth, menu_speaker, menu_controls, menu_battery, menu_battery_plain, menu_brand, dock_welcome, dock_terminal, dock_clock, dock_about, dock_windows, dock_appearance, dock_files, dock_trash, dock_browser, menu_search, search, dock_calculator, app_browser, cursor_resize_h, cursor_resize_v, cursor_resize_nwse, cursor_resize_nesw, dock_editor, dock_viewer, app_editor, app_viewer, app_calculator, menu_bell, sym_folder_plus, sym_pencil, sym_eye, sym_restore, sym_lock, sym_user, sym_image, sym_display, sym_clock, sym_keyboard, sym_info, sym_bell, sym_save, sym_plus, sym_minus, sidebar_documents, image_file };
 pub const Button = struct { id: u32, rect: Rect };
 
 /// The shared toolkit (docs/design/014, M2): one set of measured sizes and
@@ -143,6 +143,144 @@ pub fn segment(r: Rect, count: usize, i: usize) Rect {
     const w = @divTrunc(r.w, @as(i32, @intCast(@max(1, count))));
     return .{ .x = r.x + @as(i32, @intCast(i)) * w, .y = r.y, .w = w, .h = r.h };
 }
+
+/// One line of editable text: what a rename field, a name sheet or a
+/// password field holds. Pure state; `textField` draws it.
+pub fn TextInput(comptime capacity: usize) type {
+    return struct {
+        const Self = @This();
+        buf: [capacity]u8 = undefined,
+        len: usize = 0,
+        caret: usize = 0,
+
+        pub fn text(self: *const Self) []const u8 {
+            return self.buf[0..self.len];
+        }
+        pub fn set(self: *Self, value: []const u8) void {
+            self.len = @min(value.len, capacity);
+            @memcpy(self.buf[0..self.len], value[0..self.len]);
+            self.caret = self.len;
+        }
+        pub fn clear(self: *Self) void {
+            self.len = 0;
+            self.caret = 0;
+        }
+        /// Insert a printable character at the caret; false when full.
+        pub fn insert(self: *Self, ch: u8) bool {
+            if (ch < 32 or ch > 126 or self.len == capacity) return false;
+            var i = self.len;
+            while (i > self.caret) : (i -= 1) self.buf[i] = self.buf[i - 1];
+            self.buf[self.caret] = ch;
+            self.len += 1;
+            self.caret += 1;
+            return true;
+        }
+        pub fn backspace(self: *Self) bool {
+            if (self.caret == 0) return false;
+            self.caret -= 1;
+            return self.deleteAtCaret();
+        }
+        pub fn deleteAtCaret(self: *Self) bool {
+            if (self.caret >= self.len) return false;
+            var i = self.caret;
+            while (i + 1 < self.len) : (i += 1) self.buf[i] = self.buf[i + 1];
+            self.len -= 1;
+            return true;
+        }
+        /// Editing keys by set-1 scancode: Backspace, Delete, Left, Right,
+        /// Home, End. True when the key was one of them.
+        pub fn editKey(self: *Self, code: u8) bool {
+            switch (code) {
+                0x0E => _ = self.backspace(),
+                0x53 => _ = self.deleteAtCaret(),
+                0x4B => self.caret -|= 1,
+                0x4D => self.caret = @min(self.len, self.caret + 1),
+                0x47 => self.caret = 0,
+                0x4F => self.caret = self.len,
+                else => return false,
+            }
+            return true;
+        }
+    };
+}
+
+/// A text field around `text`, with the caret after `caret` characters
+/// when focused. `secure` shows dots (a password). The text scrolls so the
+/// caret stays inside the field and nothing is drawn outside it.
+pub fn textField(s: *Surface, r: Rect, text: []const u8, caret: usize, focused: bool, secure: bool, placeholder: []const u8) void {
+    if (focused) s.rounded(.{ .x = r.x - 2, .y = r.y - 2, .w = r.w + 4, .h = r.h + 4 }, Metrics.field_radius + 2, Tone.accent_soft, 255);
+    s.rounded(r, Metrics.field_radius, if (focused) Tone.accent else Tone.field_rim, 255);
+    s.rounded(.{ .x = r.x + 1, .y = r.y + 1, .w = r.w - 2, .h = r.h - 2 }, Metrics.field_radius - 1, Tone.field, 255);
+    const clip = s.clip;
+    defer s.setClip(clip);
+    const inner = Rect{ .x = r.x + 7, .y = r.y, .w = r.w - 14, .h = r.h };
+    s.setClip(Rect.intersect(clip, inner));
+    const base = r.y + @divTrunc(r.h, 2) - 4;
+    if (text.len == 0 and !focused) {
+        label(s, placeholder, inner.x, base, 1, Tone.placeholder);
+        return;
+    }
+    const dot: i32 = 9;
+    const before: i32 = if (secure) @as(i32, @intCast(@min(caret, text.len))) * dot else textWidth(text[0..@min(caret, text.len)], 1);
+    const shift = @max(0, before - (inner.w - 2));
+    if (secure) {
+        for (0..text.len) |i| s.circle(inner.x - shift + @as(i32, @intCast(i)) * dot + 4, r.y + @divTrunc(r.h, 2), 3, Tone.text);
+    } else {
+        if (text.len == 0) label(s, placeholder, inner.x, base, 1, Tone.placeholder);
+        label(s, text, inner.x - shift, base, 1, Tone.text);
+    }
+    if (focused) s.fill(.{ .x = inner.x - shift + before, .y = r.y + 4, .w = 1, .h = r.h - 8 }, Tone.accent);
+}
+
+/// The measured macOS switch (42 x 25): a solid track and a glossy knob.
+pub fn switchControl(s: *const Surface, r: Rect, on: bool) void {
+    s.rounded(r, @divTrunc(r.h, 2), if (on) Tone.accent else 0xD4D6DB, 255);
+    s.rounded(.{ .x = r.x + 1, .y = r.y + 1, .w = r.w - 2, .h = 6 }, 5, 0xFFFFFF, if (on) 40 else 70);
+    const d = r.h - 4;
+    const x = if (on) r.right() - d - 2 else r.x + 2;
+    s.rounded(.{ .x = x, .y = r.y + 3, .w = d, .h = d }, @divTrunc(d, 2), 0x000000, 30);
+    s.rounded(.{ .x = x, .y = r.y + 2, .w = d, .h = d }, @divTrunc(d, 2), 0xFFFFFF, 255);
+}
+
+/// A sheet, as on the Mac: the window dims and a panel asks one question
+/// with up to three buttons, the last one the default (accent) action.
+pub const Sheet = struct {
+    panel: Rect,
+    buttons: [3]Rect = undefined,
+    count: usize,
+    /// Where an optional text field goes (under the message).
+    field: Rect,
+
+    pub fn layout(window_w: i32, window_h: i32, button_count: usize, with_field: bool) Sheet {
+        const w: i32 = @min(@as(i32, 380), window_w - 32);
+        const h: i32 = if (with_field) 176 else 142;
+        const panel = Rect{ .x = @divTrunc(window_w - w, 2), .y = @max(8, @divTrunc(window_h - h, 3)), .w = w, .h = h };
+        var sheet = Sheet{ .panel = panel, .count = @min(button_count, 3), .field = .{ .x = panel.x + 20, .y = panel.y + 84, .w = w - 40, .h = 24 } };
+        const bw: i32 = @min(@as(i32, 104), @divTrunc(w - 40 - 16, 3));
+        var x = panel.right() - 20;
+        var i = sheet.count;
+        while (i > 0) {
+            i -= 1;
+            x -= bw;
+            sheet.buttons[i] = .{ .x = x, .y = panel.bottom() - 20 - Metrics.push_small_h, .w = bw, .h = Metrics.push_small_h };
+            x -= 8;
+        }
+        return sheet;
+    }
+
+    pub fn paint(self: Sheet, s: *Surface, window_w: i32, window_h: i32, title: []const u8, message: []const u8, labels: []const []const u8, pointer: Pointer, first_id: u32) void {
+        s.rounded(.{ .x = 0, .y = 0, .w = window_w, .h = window_h }, 0, 0x000000, 46);
+        const p = self.panel;
+        s.rounded(.{ .x = p.x - 1, .y = p.y + 3, .w = p.w + 2, .h = p.h + 3 }, 15, 0x000000, 34);
+        s.rounded(p, 14, 0xFFFFFF, 255);
+        label(s, fitting(title, p.w - 40), p.x + 20, p.y + 26, 1, Tone.text);
+        s.fill(.{ .x = p.x + 20, .y = p.y + 44, .w = p.w - 40, .h = 1 }, Tone.hairline);
+        label(s, fitting(message, p.w - 40), p.x + 20, p.y + 58, 1, Tone.secondary);
+        for (0..self.count) |i| {
+            pushButton(s, self.buttons[i], labels[i], i + 1 == self.count, ControlState.of(pointer, first_id + @as(u32, @intCast(i))));
+        }
+    }
+};
 
 /// The longest prefix of `text` that fits in `width` at text scale 1.
 pub fn fitting(text: []const u8, width: i32) []const u8 {
@@ -355,6 +493,38 @@ test "toolkit controls stay inside their rectangles" {
     }
     try std.testing.expectEqualStrings("Doc", fitting("Documents", textWidth("Doc", 1)));
     try std.testing.expectEqual(@as(usize, 0), fitting("Documents", 0).len);
+}
+
+test "text input edits at the caret and never overflows" {
+    const std = @import("std");
+    var t: TextInput(6) = .{};
+    for ("abc") |c| try std.testing.expect(t.insert(c));
+    try std.testing.expect(t.editKey(0x4B)); // left
+    try std.testing.expect(t.insert('X'));
+    try std.testing.expectEqualStrings("abXc", t.text());
+    try std.testing.expect(t.editKey(0x0E)); // backspace removes X
+    try std.testing.expectEqualStrings("abc", t.text());
+    try std.testing.expect(t.editKey(0x47) and t.editKey(0x53)); // home, delete
+    try std.testing.expectEqualStrings("bc", t.text());
+    try std.testing.expect(!t.insert(7)); // not printable
+    t.set("123456789");
+    try std.testing.expectEqualStrings("123456", t.text());
+    try std.testing.expect(!t.insert('x')); // full
+    try std.testing.expect(!t.editKey(0x1C));
+}
+
+test "sheets keep their buttons inside the panel at any window size" {
+    const std = @import("std");
+    for ([_]i32{ 200, 320, 560, 1262 }) |w| for ([_]usize{ 1, 2, 3 }) |n| {
+        const sheet = Sheet.layout(w, 300, n, true);
+        try std.testing.expect(sheet.panel.x >= 0 and sheet.panel.right() <= w);
+        var last: i32 = sheet.panel.x;
+        for (sheet.buttons[0..n]) |b| {
+            try std.testing.expect(b.x >= last and b.right() <= sheet.panel.right() - 20 and b.w > 20);
+            last = b.right();
+        }
+        try std.testing.expect(sheet.field.bottom() < sheet.buttons[0].y);
+    };
 }
 
 test "pointer only activates the originally pressed target" {

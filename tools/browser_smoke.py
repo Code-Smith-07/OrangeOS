@@ -28,7 +28,7 @@ BACK = (28, 136)
 ADDRESS = (500, 136)
 ABOUT_CARD = (300, 356)
 BLANK_LINK = (150, 338)
-DOCK_BROWSER = (702, 732)
+DOCK_BROWSER = (596, 732)
 
 
 def loads(guest, uri):

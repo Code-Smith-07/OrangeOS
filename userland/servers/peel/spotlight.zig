@@ -9,7 +9,7 @@
 const std = @import("std");
 
 /// Artwork for a result; desktop.zig maps each to an atlas icon.
-pub const Glyph = enum { files, welcome, terminal, clock, about, browser, controls, trash, appearance, windows, desktop, calendar, calculator };
+pub const Glyph = enum { files, welcome, terminal, clock, about, browser, controls, trash, appearance, windows, desktop, calendar, calculator, editor, viewer, settings, lock, document, folder, image };
 
 pub const Target = union(enum) {
     none,
@@ -19,9 +19,11 @@ pub const Target = union(enum) {
     action: u16,
     /// An open window, by its stable id.
     window: u32,
+    /// A file or folder: its index in the list given to search().
+    file: u16,
 };
 
-pub const Kind = enum { calculation, app, action, window };
+pub const Kind = enum { calculation, app, action, window, file };
 
 pub const Result = struct {
     kind: Kind,
@@ -34,6 +36,8 @@ pub const Result = struct {
 
 pub const MAX_RESULTS = 6;
 pub const MAX_QUERY = 40;
+/// How many files search() looks at.
+pub const MAX_FILES = 64;
 
 /// The action numbers Spotlight can run, mirrored from desktop.Action so this
 /// file stays testable on its own (desktop.zig asserts they agree).
@@ -44,6 +48,8 @@ pub const actions = struct {
     pub const new_terminal: u16 = 9;
     pub const calendar: u16 = 13;
     pub const wallpaper: u16 = 20;
+    pub const lock: u16 = 31;
+    pub const notifications: u16 = 30;
 };
 
 const Entry = struct {
@@ -67,6 +73,12 @@ const catalog = [_]Entry{
     app("About Orange OS", "Application", .about, 3, "version system information"),
     app("Control Center", "Wi-Fi, Bluetooth, sound and display", .controls, 6, "wifi bluetooth sound volume brightness display battery network"),
     app("Trash", "Application", .trash, 5, "bin deleted recycle"),
+    app("Text Editor", "Application", .editor, 8, "write notes document textedit notepad edit"),
+    app("Image Viewer", "Application", .viewer, 9, "preview photo picture png bmp"),
+    app("Calculator", "Application", .calculator, 10, "sum maths add numbers"),
+    app("Settings", "Application", .settings, 11, "preferences system display sound network bluetooth keyboard password users"),
+    act("Lock Screen", "Ask for the password again", .lock, actions.lock, "password sign out security"),
+    act("Notifications", "Recent notifications", .controls, actions.notifications, "alerts banners bell"),
     act("Appearance", "Theme and wallpaper", .appearance, actions.settings, "settings preferences wallpaper theme background colours"),
     act("Mission Control", "See all open windows", .windows, actions.overview, "windows overview expose switch"),
     act("Show Desktop", "Hide or bring back all windows", .desktop, actions.desktop, "desktop hide minimise"),
@@ -120,10 +132,22 @@ pub fn trim(query: []const u8) []const u8 {
 
 pub const OpenWindow = struct { id: u32, title: []const u8, glyph: Glyph };
 
+/// A file or folder Spotlight may offer (from the Documents folder).
+pub const FileEntry = struct { name: []const u8, where: []const u8, glyph: Glyph };
+
+/// The icon for a file, from its name.
+pub fn fileGlyph(name: []const u8, is_dir: bool) Glyph {
+    if (is_dir) return .folder;
+    for ([_][]const u8{ ".png", ".bmp", ".ppm" }) |ext| {
+        if (name.len > ext.len and startsWithFold(name[name.len - ext.len ..], ext)) return .image;
+    }
+    return .document;
+}
+
 /// Fill `out` with the best matches, best first; returns how many. A sum
 /// (when the query is one) comes first, then apps, actions and windows by
 /// score. `number_buf` holds the sum's text and must outlive the results.
-pub fn search(raw_query: []const u8, windows: []const OpenWindow, out: *[MAX_RESULTS]Result, number_buf: *[48]u8) usize {
+pub fn search(raw_query: []const u8, windows: []const OpenWindow, files: []const FileEntry, out: *[MAX_RESULTS]Result, number_buf: *[48]u8) usize {
     const query = trim(raw_query);
     var count: usize = 0;
     if (query.len == 0) return 0;
@@ -131,7 +155,7 @@ pub fn search(raw_query: []const u8, windows: []const OpenWindow, out: *[MAX_RES
         out[0] = .{ .kind = .calculation, .title = formatNumber(number_buf, value), .subtitle = "Calculator", .glyph = .calculator, .target = .none, .score = 1000 };
         count = 1;
     }
-    var candidates: [catalog.len + 8]Result = undefined;
+    var candidates: [catalog.len + 8 + MAX_FILES]Result = undefined;
     var n: usize = 0;
     for (catalog) |entry| {
         const s = score(entry.result.title, entry.keywords, query);
@@ -146,6 +170,13 @@ pub fn search(raw_query: []const u8, windows: []const OpenWindow, out: *[MAX_RES
         const s = score(w.title, "", query);
         if (s == 0) continue;
         candidates[n] = .{ .kind = .window, .title = w.title, .subtitle = "Open window", .glyph = w.glyph, .target = .{ .window = w.id }, .score = s - 1 };
+        n += 1;
+    }
+    for (files[0..@min(files.len, MAX_FILES)], 0..) |f, i| {
+        // Files rank below apps and windows of the same name.
+        const s = score(f.name, "", query);
+        if (s < 3) continue;
+        candidates[n] = .{ .kind = .file, .title = f.name, .subtitle = f.where, .glyph = f.glyph, .target = .{ .file = @intCast(i) }, .score = s - 2 };
         n += 1;
     }
     std.sort.insertion(Result, candidates[0..n], {}, struct {
@@ -283,7 +314,7 @@ fn find(query: []const u8, windows: []const OpenWindow) []const Result {
         var out: [MAX_RESULTS]Result = undefined;
         var buf: [48]u8 = undefined;
     };
-    const n = search(query, windows, &S.out, &S.buf);
+    const n = search(query, windows, &.{}, &S.out, &S.buf);
     return S.out[0..n];
 }
 
@@ -343,4 +374,31 @@ test "sums are worked out and shown first" {
 test "not a sum: plain numbers, broken or unsafe expressions" {
     for ([_][]const u8{ "42", "-5", "1/0", "2+", "(1+2", "1+2)", "2^99999", "1e5+1", "((((((((((((((((((1))))))))))))))))))+1", "files" }) |q|
         try std.testing.expect(calculate(q) == null);
+}
+
+test "files are found by name, below apps of the same name" {
+    var out: [MAX_RESULTS]Result = undefined;
+    var buf: [48]u8 = undefined;
+    const files = [_]FileEntry{
+        .{ .name = "notes.txt", .where = "Documents", .glyph = fileGlyph("notes.txt", false) },
+        .{ .name = "Files report.txt", .where = "Documents", .glyph = .document },
+        .{ .name = "Holiday.PNG", .where = "Documents", .glyph = fileGlyph("Holiday.PNG", false) },
+        .{ .name = "Projects", .where = "Documents", .glyph = fileGlyph("Projects", true) },
+    };
+    var n = search("notes", &.{}, &files, &out, &buf);
+    // The file itself first, then Text Editor (its keyword is "notes").
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqual(Kind.file, out[0].kind);
+    try std.testing.expectEqual(@as(u16, 0), out[0].target.file);
+    n = search("files", &.{}, &files, &out, &buf);
+    try std.testing.expectEqualStrings("Files", out[0].title);
+    try std.testing.expectEqualStrings("Files report.txt", out[1].title);
+    n = search("holi", &.{}, &files, &out, &buf);
+    try std.testing.expectEqual(Glyph.image, out[0].glyph);
+    n = search("proj", &.{}, &files, &out, &buf);
+    try std.testing.expectEqual(Glyph.folder, out[0].glyph);
+    try std.testing.expectEqualStrings("Settings", blk: {
+        _ = search("sett", &.{}, &files, &out, &buf);
+        break :blk out[0].title;
+    });
 }

@@ -14,8 +14,8 @@ case "${ORANGE_DISK_PROFILE:-desktop}" in
         DISK=build/disk.img
         FSIMG=build/citrus.img
         ROOTFS=build/rootfs
-        FS_MIB=48
-        DISK_MIB=80
+        FS_MIB=96
+        DISK_MIB=128
         ;;
     browser)
         DISK=build/browser-disk.img
@@ -64,6 +64,9 @@ done
 cp userland/servers/peel/assets/coastal-glass-1280.bmp "$ROOTFS/share/wallpapers/coastal-glass.bmp"
 cp userland/servers/peel/assets/citrus-atelier-1280.bmp "$ROOTFS/share/wallpapers/citrus-atelier.bmp"
 cp userland/servers/peel/assets/midnight-aurora-1280.bmp "$ROOTFS/share/wallpapers/midnight-aurora.bmp"
+# Sample pictures for Image Viewer and Quick Look (this repository's own art).
+mkdir -p "$ROOTFS/share/pictures"
+cp assets/pictures/*.png "$ROOTFS/share/pictures/"
 
 echo "Welcome to Orange OS." > "$ROOTFS/etc/motd"
 printf 'NAME="Orange OS"\nVERSION="0.1.0"\nKERNEL="Zest"\n' > "$ROOTFS/etc/os-release"
@@ -98,7 +101,7 @@ if [ ! -f zig-out/bin/init ]; then
 fi
 
 cp zig-out/bin/init "$ROOTFS/sbin/init"
-for prog in juice echo uname greetd greet peel clock squeeze grove about files trash ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe cxx-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe tls-probe futex-probe futex-waiter thread-probe thread-exit-probe thread-fault-probe thread-last-probe net-thread-probe net-exit-probe tcp-probe jit-probe fault-wx musl-probe cxx-probe file-probe thread-capacity pipe-probe epoll-probe unix-probe spawn-probe spawn-child mmap-probe shm-probe random-probe signal-probe inet-probe fault-null fault-ro fault-nx fault-opcode jit-alias-probe data-probe audio-probe; do
+for prog in juice echo uname greetd greet peel clock squeeze grove about files trash editor viewer calculator settings notify ping net fetch bench host-agent host-probe hardware vm-probe simd-probe c-abi-probe cxx-abi-probe reap-probe orphan-probe orphan-slow fd-probe socket-probe ipc-probe tls-probe futex-probe futex-waiter thread-probe thread-exit-probe thread-fault-probe thread-last-probe net-thread-probe net-exit-probe tcp-probe jit-probe fault-wx musl-probe cxx-probe file-probe thread-capacity pipe-probe epoll-probe unix-probe spawn-probe spawn-child mmap-probe shm-probe random-probe signal-probe inet-probe fault-null fault-ro fault-nx fault-opcode jit-alias-probe data-probe audio-probe; do
     if [ -f "zig-out/bin/$prog" ]; then
         cp "zig-out/bin/$prog" "$ROOTFS/bin/$prog"
     fi

@@ -47,6 +47,11 @@ pub const NR = struct {
     pub const port_connect: u64 = 51;
     pub const port_send: u64 = 52;
     pub const port_recv: u64 = 53;
+    pub const rename: u64 = 33;
+    pub const unlink: u64 = 32;
+    pub const rmdir: u64 = 31;
+    pub const stat: u64 = 25;
+    pub const statfs: u64 = 122;
     pub const shm_create: u64 = 54;
     pub const shm_map: u64 = 55;
     pub const handle_close: u64 = 56;
@@ -288,6 +293,71 @@ pub fn openWith(path: []const u8, flags: u64) Error!i64 {
 pub fn mkdir(path: []const u8) Error!void {
     const r = syscall2(NR.mkdir, @intFromPtr(path.ptr), path.len);
     if (r < 0 and r != -17) return errno(r);
+}
+
+/// Fill `buf` with random bytes from the kernel.
+pub fn random(buf: []u8) Error!void {
+    var done: usize = 0;
+    while (done < buf.len) {
+        const r = syscall3(148, @intFromPtr(buf.ptr) + done, buf.len - done, 0);
+        if (r <= 0) return errno(if (r == 0) -5 else r);
+        done += @intCast(r);
+    }
+}
+
+/// Move or rename a file or directory within one filesystem.
+pub fn rename(from: []const u8, to: []const u8) Error!void {
+    const r = syscall4(NR.rename, @intFromPtr(from.ptr), from.len, @intFromPtr(to.ptr), to.len);
+    if (r < 0) return errno(r);
+}
+
+/// Delete a file.
+pub fn unlink(path: []const u8) Error!void {
+    const r = syscall2(NR.unlink, @intFromPtr(path.ptr), path.len);
+    if (r < 0) return errno(r);
+}
+
+/// Delete an empty directory.
+pub fn rmdir(path: []const u8) Error!void {
+    const r = syscall2(NR.rmdir, @intFromPtr(path.ptr), path.len);
+    if (r < 0) return errno(r);
+}
+
+/// What `stat` reports: size in bytes, kind (1 file, 2 directory), and
+/// whether the file's filesystem can be written (mode bit 2).
+pub const FileStatus = extern struct {
+    size: u64,
+    kind: u32,
+    mode: u32 = 0,
+
+    pub fn isDir(self: FileStatus) bool {
+        return self.kind == 2;
+    }
+    pub fn writable(self: FileStatus) bool {
+        return self.mode & 2 != 0;
+    }
+};
+
+pub fn stat(path: []const u8) Error!FileStatus {
+    var out: FileStatus = undefined;
+    const r = syscall3(NR.stat, @intFromPtr(path.ptr), path.len, @intFromPtr(&out));
+    if (r < 0) return errno(r);
+    return out;
+}
+
+/// True when `path` exists.
+pub fn exists(path: []const u8) bool {
+    _ = stat(path) catch return false;
+    return true;
+}
+
+/// Space on the filesystem holding `path`.
+pub const FsStatus = extern struct { total_bytes: u64, free_bytes: u64, read_only: u32, reserved: u32 = 0 };
+pub fn statfs(path: []const u8) Error!FsStatus {
+    var out: FsStatus = undefined;
+    const r = syscall3(NR.statfs, @intFromPtr(path.ptr), path.len, @intFromPtr(&out));
+    if (r < 0) return errno(r);
+    return out;
 }
 
 /// Make what was written to `fd` durable (the /data volume saves to disk;

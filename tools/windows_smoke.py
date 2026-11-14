@@ -196,12 +196,12 @@ def main():
         assert close_enough(red, (0xFF, 0x5F, 0x57)), f"toolbar close button {red}"
         g.screenshot("04-files")
         print("PASS Files is a toolbar window with its close button at 26,26", flush=True)
-        drag(g, fx + 380, fy + 26, fx + 480, fy + 76)
+        drag(g, fx + 320, fy + 26, fx + 420, fy + 76)
         g.until(lambda: frames(g, files, "moved"), "the toolbar background moves Files")
         moved = frames(g, files, "moved")[-1]
         assert moved[:2] == (fx + 100, fy + 50), (moved, fx, fy)
         print("PASS dragging Files' toolbar background moves the window", flush=True)
-        double_click(g, moved[0] + 380, moved[1] + 26)
+        double_click(g, moved[0] + 320, moved[1] + 26)
         g.until(lambda: f"desktop: tiled window {files} fill" in g.log(), "a double click on the toolbar zooms Files")
         zx, zy, zw, zh = tile(g, "fill")
         g.until(lambda: f"files: resized to {zw - 2}x{zh - 1}" in g.log(), "Files lays itself out at the zoomed size")
@@ -215,7 +215,7 @@ def main():
         g.click(zx + 19 + 20 + 7, zy + 26)
         g.until(lambda: f"desktop: minimized window {files}" in g.log(), "the yellow button minimises")
         g.until(lambda: g.log().count(f"desktop: motion done {files}") > done, "minimising moves into the dock")
-        dock_x = (g.width - 740) // 2 + 16 + 0 * 76 + 36
+        dock_x = (g.width - 952) // 2 + 16 + 0 * 76 + 36
         dock_y = g.height - DOCK_H - 14 + 8 + 27
         g.click(dock_x, dock_y)
         g.until(lambda: g.log().count(f"desktop: motion done {files}") > done + 1, "the dock brings Files back with motion")
@@ -239,7 +239,7 @@ def main():
 
         # 7. The browser follows its window size (images with WPE only).
         if browser:
-            g.click((g.width - 740) // 2 + 16 + 5 * 76 + 36, dock_y)
+            g.click((g.width - 952) // 2 + 16 + 5 * 76 + 36, dock_y)
             g.until(lambda: "orange-browser: tabs 1" in g.log(), "the browser opens", 180)
             wid = window_id(g, "Orange Browser")
             time.sleep(3)

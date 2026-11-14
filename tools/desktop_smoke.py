@@ -118,6 +118,16 @@ class Guest:
         self.monitor("mouse_button 0")
         time.sleep(.4)
 
+    def double(self, x, y):
+        """A double click: two quick presses at one place."""
+        self.move(x, y)
+        for _ in range(2):
+            self.monitor("mouse_button 1")
+            time.sleep(.04)
+            self.monitor("mouse_button 0")
+            time.sleep(.06)
+        time.sleep(.5)
+
     def key(self, key):
         self.monitor(f"sendkey {key}")
         time.sleep(.4)
@@ -241,7 +251,7 @@ def main():
         g.click(*button(g, terminal_id, 1))
         g.until(lambda: f"minimized window {terminal_id}" in g.log(), "yellow button minimizes terminal")
         g.until(lambda: g.pixel(200, 250) != base, "minimize repaint")
-        g.click(479, 732)
+        g.click(368, 732)
         g.until(lambda: g.pixel(200, 250) == base, "dock restore repaint")
         print("PASS dock restores existing terminal", flush=True)
         g.click(*button(g, terminal_id, 2))
@@ -252,17 +262,17 @@ def main():
         g.screenshot("02-zoom")
         g.click(*button(g, terminal_id, 2))
         g.until(lambda: f"zoom window {terminal_id} = 0" in g.log(), "green button restores geometry")
-        g.click(560, 732)
+        g.click(444, 732)
         g.until(lambda: '"clock"' in g.log(), "dock launches Clock")
-        g.click(560, 732)
-        g.click(560, 732)
+        g.click(444, 732)
+        g.click(444, 732)
         assert len(re.findall(r'peel: window \d+ "clock"', g.log())) == 1
         print("PASS repeated dock clicks keep one Clock", flush=True)
         g.screenshot("03-clock")
         clock_id = int(re.findall(r'peel: window (\d+) "clock"', g.log())[-1])
         g.click(*button(g, clock_id, 0))
         g.until(lambda: "clock: closed" in g.log(), "Clock close control")
-        g.click(641, 732)
+        g.click(520, 732)
         g.until(lambda: '"About Orange OS"' in g.log(), "dock launches About")
         about_id = int(re.search(r'peel: window (\d+) "About', g.log())[1])
         # Zoom About and exercise a client button in transformed coordinates.
@@ -331,7 +341,7 @@ def main():
         g.until(lambda: f'closed window {welcome_id} "Welcome"' in g.log(), "Welcome closes")
         time.sleep(1)
         assert len(re.findall(r'peel: window \d+ "Welcome"', g.log())) == 1
-        g.click(398, 732)
+        g.click(292, 732)
         g.until(lambda: len(re.findall(r'peel: window \d+ "Welcome"', g.log())) == 2, "Welcome relaunches from dock")
         # A close press followed by dragging off the control cancels the close.
         g.move(*button(g, terminal_id, 0))
@@ -358,7 +368,7 @@ def main():
         # A live client behind a held drag must invalidate the backdrop cache.
         # Move Terminal left so the entire clock is exposed, without releasing.
         clock_count = len(re.findall(r'peel: window \d+ "clock"', g.log()))
-        g.click(560,732)
+        g.click(444,732)
         g.until(lambda: len(re.findall(r'peel: window \d+ "clock"', g.log())) > clock_count, "Clock reopens for drag-cache test")
         g.move(360,131)
         g.monitor("mouse_button 1")
@@ -373,7 +383,7 @@ def main():
         g.click(800,409)
         g.click(*button(g, clock_id, 0))
         # Files reads the real guest VFS; Trash is an honest read-only folder.
-        g.click(322,732)
+        g.click(216,732)
         g.until(lambda: '"Files"' in g.log() and 'files: listed /:' in g.log(),"Files launches and lists root")
         files_id=int(re.search(r'peel: window (\d+) "Files"',g.log())[1])
         g.screenshot("09-files-grid")
@@ -384,12 +394,16 @@ def main():
         g.screenshot("09-files-list")
         g.click(fx + 680 - 16 - 48, fy + 26)
         g.until(lambda: 'files: view grid' in g.log(), "Files switches back to grid view")
-        g.click(330,300)
+        g.click(330,320)
         g.until(lambda: 'files: listed /etc:' in g.log(),"Files browses System")
         # Folders come first: /etc/ssl, then the TLS trust store in it.
+        # A click selects; a double click opens; Space is Quick Look.
         g.click(520,298)
+        assert 'files: listed /etc/ssl:' not in g.log(), "a single click opened a folder"
+        g.double(520,298)
         g.until(lambda: 'files: listed /etc/ssl:' in g.log(),"Files opens a folder")
         g.click(520,298)
+        g.key("spc")
         g.until(lambda: 'files: preview /etc/ssl/cert.pem' in g.log(),"Files previews real text")
         time.sleep(1)
         g.screenshot("09-files-preview")
@@ -401,9 +415,9 @@ def main():
         g.until(lambda: g.log().count('files: listed /:')==2,"Files Back returns to root")
         g.click(*button(g, files_id, 0))
         g.until(lambda: f'closed window {files_id} "Files"' in g.log(),"Files closes")
-        g.click(954,732)
+        g.click(1076,732)
         g.until(lambda: '"Trash"' in g.log() and 'files: listed /Trash: 0 entries' in g.log(),"Trash opens its actual empty folder")
-        g.click(954,732)
+        g.click(1076,732)
         assert len(re.findall(r'peel: window \d+ "Trash"',g.log()))==1
         time.sleep(1)
         g.screenshot("10-trash")

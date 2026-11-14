@@ -9,6 +9,8 @@ const pulp = @import("pulp");
 const overview = @import("overview.zig");
 const host_model = @import("host_model");
 pub const spotlight = @import("spotlight.zig");
+pub const menus = @import("menus.zig");
+pub const notes = @import("notes.zig");
 
 pub const BAR_H = 28;
 pub const DOCK_H = 64;
@@ -37,6 +39,18 @@ pub const Action = struct {
     pub const spotlight: u16 = 24;
     /// Appearance: the Reduce Motion switch.
     pub const reduce_motion: u16 = 25;
+    pub const editor: u16 = 26;
+    pub const viewer: u16 = 27;
+    pub const calculator: u16 = 28;
+    /// The Settings application (Action.settings is the quick Appearance panel).
+    pub const settings_app: u16 = 29;
+    pub const notifications: u16 = 30;
+    pub const lock: u16 = 31;
+    pub const clear_notes: u16 = 32;
+    pub const banner: u16 = 33;
+    /// Menu titles in the menu bar, then the items of the open menu.
+    pub const app_menu: u16 = 40;
+    pub const menu_item: u16 = 60;
     pub const window: u16 = 100;
     /// Spotlight result rows, then app-switcher tiles.
     pub const result: u16 = 200;
@@ -45,10 +59,11 @@ pub const Action = struct {
 comptime {
     const a = spotlight.actions;
     if (a.overview != Action.overview or a.settings != Action.settings or a.desktop != Action.desktop or
-        a.new_terminal != Action.new_terminal or a.calendar != Action.calendar or a.wallpaper != Action.wallpaper)
+        a.new_terminal != Action.new_terminal or a.calendar != Action.calendar or a.wallpaper != Action.wallpaper or
+        a.lock != Action.lock or a.notifications != Action.notifications)
         @compileError("spotlight.actions must mirror desktop.Action");
 }
-pub const Popup = enum { none, menu, overview, settings, calendar, spotlight, switcher };
+pub const Popup = enum { none, menu, overview, settings, calendar, spotlight, switcher, app_menu, notifications };
 /// One tile in the Alt+Tab switcher: a window, most recently used first.
 pub const SwitchItem = struct { id: u32 = 0, app: usize = 0, title: []const u8 = "", hidden: bool = false };
 pub const Item = struct {
@@ -68,7 +83,16 @@ pub const State = struct {
     hover: u16 = 0,
     palette: usize = 0,
     active: []const u8 = "Desktop",
-    running: [8]bool = [_]bool{false} ** 8,
+    running: [APP_COUNT]bool = [_]bool{false} ** APP_COUNT,
+    /// The front application's name and menus (its own, then Peel's Window
+    /// menu), and which menu is open.
+    app_name: []const u8 = "Desktop",
+    bar: ?*const menus.Bar = null,
+    open_menu: usize = 0,
+    /// Notifications: the list, and the one shown as a banner now.
+    notes: ?*const notes.Store = null,
+    banner: ?*const notes.Note = null,
+    lock: LockView = .{},
     items: [8]Item = [_]Item{.{}} ** 8,
     count: usize = 0,
     seconds: ?u64 = null,
@@ -87,6 +111,19 @@ pub const State = struct {
     prefs_kept: bool = false,
     /// No open or minimise motion.
     reduce_motion: bool = false,
+};
+
+pub const APP_COUNT = 12;
+/// Names for the menu bar, by Peel's application index.
+pub const APP_NAMES = [APP_COUNT][]const u8{ "Welcome", "Terminal", "Clock", "About", "Files", "Trash", "Control Center", "Orange Browser", "Text Editor", "Image Viewer", "Calculator", "Settings" };
+
+/// What the lock screen shows. The password itself never reaches the
+/// painter: only how many characters were typed.
+pub const LockView = struct {
+    active: bool = false,
+    name: []const u8 = "",
+    typed: usize = 0,
+    message: []const u8 = "",
 };
 
 pub const ThemeColors = struct {
@@ -130,10 +167,12 @@ fn activateTheme(index: usize) void {
     ACCENT = active_theme.accent;
 }
 const COLORS = [_]u32{ 0xFF9258, 0x7879F1, 0xFF5B86, 0x39CFC0, 0x63B5FF, 0xA895F3 };
-const LABELS = [_][]const u8{ "Files", "Welcome", "Terminal", "Clock", "About", "Browser", "Windows", "Appearance", "Trash" };
-const DOCK_ACTIONS = [_]u16{ Action.files, Action.home, Action.terminal, Action.clock, Action.about, Action.browser, Action.overview, Action.settings, Action.trash };
-const DOCK_ICONS = [_]ui.Icon{ .dock_files, .dock_welcome, .dock_terminal, .dock_clock, .dock_about, .dock_browser, .dock_windows, .dock_appearance, .dock_trash };
-const DOCK_APPS = [_]?usize{ 4, 0, 1, 2, 3, 7, null, null, 5 };
+// The dock: apps, then Mission Control and Settings, then Trash.
+const LABELS = [_][]const u8{ "Files", "Welcome", "Terminal", "Clock", "About", "Browser", "Text Editor", "Calculator", "Image Viewer", "Mission Control", "Settings", "Trash" };
+const DOCK_ACTIONS = [_]u16{ Action.files, Action.home, Action.terminal, Action.clock, Action.about, Action.browser, Action.editor, Action.calculator, Action.viewer, Action.overview, Action.settings_app, Action.trash };
+const DOCK_ICONS = [_]ui.Icon{ .dock_files, .dock_welcome, .dock_terminal, .dock_clock, .dock_about, .dock_browser, .dock_editor, .dock_calculator, .dock_viewer, .dock_windows, .dock_appearance, .dock_trash };
+const DOCK_APPS = [_]?usize{ 4, 0, 1, 2, 3, 7, 8, 10, 9, null, 11, 5 };
+const DOCK_W: i32 = 16 + 12 * 76 + 24;
 // Clean assets derived from the three approved concepts. The BMP resources
 // live on CitrusFS, not inside Peel's ELF (keeping the app binary lean).
 // Peel loads each once into bounded SHM and installs a read-only slice here.
@@ -177,12 +216,12 @@ fn bitmapPixel(x: i32, y: i32, width: i32, height: i32, bmp: []const u8) u32 {
 }
 
 pub fn dockRect(s: *const Surface) Rect {
-    return .{ .x = @divTrunc(s.width - 740, 2), .y = s.height - DOCK_H - 14, .w = 740, .h = DOCK_H };
+    return .{ .x = @divTrunc(s.width - DOCK_W, 2), .y = s.height - DOCK_H - 14, .w = DOCK_W, .h = DOCK_H };
 }
 /// The dock slot showing an application (Peel's app index); Control
 /// Center, which has no tile, uses Appearance's.
 pub fn dockSlot(app: usize) usize {
-    return ([_]usize{ 1, 2, 3, 4, 0, 8, 7, 5 })[@min(app, 7)];
+    return ([APP_COUNT]usize{ 1, 2, 3, 4, 0, 11, 10, 5, 6, 8, 7, 10 })[@min(app, APP_COUNT - 1)];
 }
 
 /// The Reduce Motion switch: the measured macOS switch, 42 x 25 points.
@@ -193,18 +232,102 @@ pub fn motionSwitch(s: *const Surface) Rect {
 
 pub fn dockItem(s: *const Surface, index: usize) Rect {
     const d = dockRect(s);
-    return .{ .x = d.x + 16 + @as(i32, @intCast(index)) * 76 + (if (index >= 6) @as(i32, 12) else 0) + (if (index == 8) @as(i32, 12) else 0), .y = d.y + 8, .w = 72, .h = 54 };
+    return .{ .x = d.x + 16 + @as(i32, @intCast(index)) * 76 + (if (index >= 9) @as(i32, 12) else 0) + (if (index == 11) @as(i32, 12) else 0), .y = d.y + 8, .w = 72, .h = 54 };
 }
 pub fn popupRect(s: *const Surface, popup: Popup) Rect {
     return switch (popup) {
         .none => .{ .x = 0, .y = 0, .w = 0, .h = 0 },
-        .menu => .{ .x = 12, .y = 44, .w = 270, .h = 220 },
+        .menu => .{ .x = 8, .y = BAR_H + 4, .w = 250, .h = 12 + ORANGE_MENU.len * 28 + 12 },
+        .app_menu => app_menu_rect,
+        .notifications => .{ .x = s.width - 376, .y = BAR_H + 8, .w = 360, .h = 66 + @as(i32, @intCast(@max(1, note_rows))) * NOTE_H + 10 },
         .settings => .{ .x = s.width - 376, .y = 48, .w = 360, .h = 450 },
         .calendar => .{ .x = s.width - 376, .y = 48, .w = 360, .h = 438 },
         .overview => .{ .x = @divTrunc(s.width - 650, 2), .y = 92, .w = 650, .h = 428 },
         .spotlight => spotlightRect(s, spotlight_rows),
         .switcher => switcherRect(s, switcher_tiles),
     };
+}
+
+// The Orange menu, as the Apple menu: about, settings, and the session.
+const OrangeItem = struct { label: []const u8, action: u16, gap: bool = false };
+const ORANGE_MENU = [_]OrangeItem{
+    .{ .label = "About Orange OS", .action = Action.about },
+    .{ .label = "Settings...", .action = Action.settings_app, .gap = true },
+    .{ .label = "Welcome", .action = Action.home },
+    .{ .label = "New Terminal Window", .action = Action.new_terminal },
+    .{ .label = "Mission Control", .action = Action.overview },
+    .{ .label = "Lock Screen", .action = Action.lock, .gap = true },
+};
+fn orangeItem(s: *const Surface, i: usize) Rect {
+    const p = popupRect(s, .menu);
+    return .{ .x = p.x + 6, .y = p.y + 12 + @as(i32, @intCast(i)) * 28, .w = p.w - 12, .h = 24 };
+}
+
+// ── App menus (docs/design/014, M7) ───────────────────────────────────────
+const MENU_ITEM_H: i32 = 24;
+const MENU_GAP_H: i32 = 9;
+var app_menu_rect: Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+
+/// Where the app's name ends and its menu titles begin.
+fn menuStart(s: *const Surface, state: *const State) i32 {
+    return 46 + font.menuWidth(state.app_name, s.scale) + 12;
+}
+/// Menu title `i` in the menu bar.
+pub fn menuTitle(s: *const Surface, state: *const State, i: usize) Rect {
+    const bar = state.bar orelse return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    var x = menuStart(s, state);
+    for (bar.menus[0..bar.count], 0..) |m, k| {
+        const w = font.menuWidth(m.title, s.scale) + 18;
+        if (k == i) return .{ .x = x, .y = 2, .w = w, .h = BAR_H - 4 };
+        x += w;
+    }
+    return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+}
+/// The open menu's panel, under its title. Call when a menu opens.
+pub fn layoutAppMenu(s: *const Surface, state: *const State) void {
+    const bar = state.bar orelse return;
+    if (state.open_menu >= bar.count) return;
+    const m = &bar.menus[state.open_menu];
+    var w: i32 = 190;
+    var h: i32 = 12;
+    for (m.items[0..m.count]) |item| {
+        h += if (item.separator) MENU_GAP_H else MENU_ITEM_H;
+        const need = font.textWidth(item.label, 1) + 44 + (if (item.shortcut.len > 0) font.textWidth(item.shortcut, 1) + 28 else 0);
+        w = @max(w, need);
+    }
+    const t = menuTitle(s, state, state.open_menu);
+    app_menu_rect = .{ .x = @min(t.x, s.width - w - 8), .y = BAR_H + 2, .w = w, .h = h };
+}
+/// Item `j` of the open menu (separators are short rows).
+pub fn appMenuItem(state: *const State, j: usize) Rect {
+    const bar = state.bar orelse return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+    const m = &bar.menus[@min(state.open_menu, bar.count -| 1)];
+    var y = app_menu_rect.y + 6;
+    for (m.items[0..m.count], 0..) |item, k| {
+        const h: i32 = if (item.separator) MENU_GAP_H else MENU_ITEM_H;
+        if (k == j) return .{ .x = app_menu_rect.x + 6, .y = y, .w = app_menu_rect.w - 12, .h = h };
+        y += h;
+    }
+    return .{ .x = 0, .y = 0, .w = 0, .h = 0 };
+}
+
+// ── Notifications (M6) ─────────────────────────────────────────────────────
+const NOTE_H: i32 = 58;
+var note_rows: usize = 1;
+/// How many notifications the list shows (set before it opens).
+pub fn setNoteRows(n: usize) void {
+    note_rows = @min(n, 7);
+}
+pub fn bellButton(s: *const Surface) Rect {
+    return .{ .x = s.width - 246, .y = 2, .w = 28, .h = 24 };
+}
+/// The banner under the menu bar's right end.
+pub fn bannerRect(s: *const Surface) Rect {
+    return .{ .x = s.width - 376, .y = BAR_H + 10, .w = 360, .h = 64 };
+}
+fn clearButton(s: *const Surface) Rect {
+    const p = popupRect(s, .notifications);
+    return .{ .x = p.right() - 18 - 64, .y = p.y + 16, .w = 64, .h = 26 };
 }
 
 // Spotlight sits in the upper third, as on the Mac: one tall search field,
@@ -259,13 +382,16 @@ fn paletteCard(s: *const Surface, i: usize) Rect {
 pub fn hit(s: *const Surface, state: *const State, x: i32, y: i32) u16 {
     if (y < BAR_H) {
         if (searchButton(s).contains(x, y)) return Action.spotlight;
-        if (x < 145) return Action.menu;
-        if (x >= s.width - 240) return Action.calendar;
+        if (bellButton(s).contains(x, y)) return Action.notifications;
+        if (x < 40) return Action.menu;
+        if (x >= s.width - 200) return Action.calendar;
         if (x >= s.width - (if (s.width >= 1160) @as(i32, 480) else 300)) return Action.hardware;
-        if (x >= 390 and x < 486) return Action.overview;
-        if (x >= 500 and x < 600) return Action.desktop;
+        if (state.bar) |bar| for (0..bar.count) |i| {
+            if (menuTitle(s, state, i).contains(x, y)) return Action.app_menu + @as(u16, @intCast(i));
+        };
         return Action.dismiss;
     }
+    if (state.banner != null and state.popup != .notifications and bannerRect(s).contains(x, y)) return Action.banner;
     for (DOCK_ACTIONS, 0..) |action, i| {
         if (dockItem(s, i).contains(x, y)) return action;
     }
@@ -275,11 +401,21 @@ pub fn hit(s: *const Surface, state: *const State, x: i32, y: i32) u16 {
         if (!p.contains(x, y)) return Action.dismiss;
         switch (state.popup) {
             .menu => {
-                if (x < p.x + 12 or x >= p.right() - 12) return Action.dismiss;
-                if (y >= p.y + 56 and y < p.y + 196) {
-                    const row: usize = @intCast(@divTrunc(y - p.y - 56, 35));
-                    return ([_]u16{ Action.home, Action.new_terminal, Action.overview, Action.about })[row];
-                }
+                for (ORANGE_MENU, 0..) |item, i| if (orangeItem(s, i).contains(x, y)) return item.action;
+                return Action.keep_popup;
+            },
+            .app_menu => {
+                if (state.bar) |bar| if (state.open_menu < bar.count) {
+                    const m = &bar.menus[state.open_menu];
+                    for (m.items[0..m.count], 0..) |item, j| {
+                        if (item.enabled and !item.separator and appMenuItem(state, j).contains(x, y)) return Action.menu_item + @as(u16, @intCast(j));
+                    }
+                };
+                return Action.keep_popup;
+            },
+            .notifications => {
+                if (clearButton(s).contains(x, y)) return Action.clear_notes;
+                return Action.keep_popup;
             },
             .overview => for (0..state.count) |i| {
                 if (windowCard(s, i).contains(x, y)) return Action.window + @as(u16, @intCast(i));
@@ -382,6 +518,7 @@ pub fn expandDamage(s: *const Surface, state: *const State, damage: Rect) Rect {
     if (state.hover != 0 or state.notice.len > 0)
         out = gfx.expandForGlass(out, .{ .x = dock.x - 32, .y = dock.y - 90, .w = dock.w + 64, .h = 90 });
     if (state.popup != .none) out = gfx.expandForGlass(out, popupExtent(s, state.popup));
+    if (state.banner != null) out = gfx.expandForGlass(out, gfx.shadowExtent(bannerRect(s)));
     return out;
 }
 
@@ -402,6 +539,8 @@ pub fn hoverDamage(s: *const Surface, state: *const State, old: u16, new: u16) R
         old == Action.desktop or new == Action.desktop or old == Action.hardware or new == Action.hardware or state.popup == .menu))
         damage = Rect.unionWith(damage, popupRect(s, state.popup));
     if ((state.popup == .spotlight or state.popup == .switcher) and old != new and (old >= Action.result or new >= Action.result))
+        damage = Rect.unionWith(damage, popupRect(s, state.popup));
+    if ((state.popup == .app_menu or state.popup == .notifications) and old != new)
         damage = Rect.unionWith(damage, popupRect(s, state.popup));
     return damage;
 }
@@ -548,12 +687,16 @@ pub fn paint(s: *const Surface, state: *const State) void {
     activateTheme(state.palette);
     // Translucent top strip with only real, actionable menus/status.
     bar_material.paint(s, .{ .x = 0, .y = 0, .w = s.width, .h = BAR_H }, 0, active_theme.bar, 222);
-    ui.icon(s, .menu_brand, 14, 4, 20);
-    font.drawMenu(s, "Orange OS", 42, 10, INK);
-    font.drawMenu(s, state.active[0..@min(state.active.len, 25)], 162, 10, INK);
-    font.drawMenu(s, "Windows", 398, 10, INK);
-    font.drawMenu(s, "Desktop", 510, 10, INK);
-    if (state.popup == .calendar) s.rounded(.{ .x = s.width - 242, .y = 3, .w = 232, .h = 22 }, 7, WHITE, 100);
+    // The Orange menu, the front app's name, then its menus (M7).
+    if (state.popup == .menu) s.rounded(.{ .x = 8, .y = 2, .w = 30, .h = BAR_H - 4 }, 5, INK, 26);
+    ui.icon(s, .menu_brand, 13, 4, 20);
+    font.drawMenu(s, state.app_name, 46, 10, INK);
+    if (state.bar) |bar| for (bar.menus[0..bar.count], 0..) |m, i| {
+        const r = menuTitle(s, state, i);
+        if (state.popup == .app_menu and state.open_menu == i) s.rounded(r, 5, INK, 26);
+        font.drawMenu(s, m.title, r.x + 9, 10, INK);
+    };
+    if (state.popup == .calendar) s.rounded(.{ .x = s.width - 204, .y = 3, .w = 194, .h = 22 }, 7, WHITE, 100);
     if (state.seconds) |seconds| {
         const date = pulp.calendar.fromEpoch(seconds, pulp.timezone_minutes);
         var date_buf: [32]u8 = undefined;
@@ -564,6 +707,12 @@ pub fn paint(s: *const Surface, state: *const State) void {
     } else font.drawMenu(s, "Clock unavailable", s.width - 180, 10, INK);
     if (state.popup == .spotlight) s.rounded(searchButton(s), 5, INK, 26);
     ui.iconTint(s, .menu_search, searchButton(s).x + 4, 4, 20, INK);
+    if (state.popup == .notifications) s.rounded(bellButton(s), 5, INK, 26);
+    ui.iconTint(s, .menu_bell, bellButton(s).x + 4, 4, 20, INK);
+    if (state.notes) |store| if (store.unread > 0) {
+        // An unread dot, in the accent colour.
+        s.circle(bellButton(s).x + 20, 8, 3, ACCENT);
+    };
     if (state.controls_open) s.rounded(.{ .x = s.width - 282, .y = 2, .w = 28, .h = 24 }, 5, INK, 26);
     ui.iconTint(s, .menu_controls, s.width - 278, 4, 20, INK);
     paintHostStatus(s, state);
@@ -573,8 +722,8 @@ pub fn paint(s: *const Surface, state: *const State) void {
     const shelf = Rect{ .x = dock.x, .y = dock.y + 7, .w = dock.w, .h = dock.h - 10 };
     dock_material.paintShadowed(s, shelf, 16, active_theme.dock, 165);
     if (active_theme.edge_highlights) s.rounded(.{ .x = shelf.x + 20, .y = shelf.y, .w = shelf.w - 40, .h = 1 }, 0, active_theme.rim, 115);
-    s.rounded(.{ .x = dock.x + 486, .y = dock.y + 17, .w = 1, .h = 31 }, 0, 0x778397, 60);
-    s.rounded(.{ .x = dock.x + 651, .y = dock.y + 17, .w = 1, .h = 31 }, 0, 0x778397, 60);
+    s.rounded(.{ .x = dockItem(s, 9).x - 7, .y = dock.y + 17, .w = 1, .h = 31 }, 0, 0x778397, 60);
+    s.rounded(.{ .x = dockItem(s, 11).x - 7, .y = dock.y + 17, .w = 1, .h = 31 }, 0, 0x778397, 60);
     var drawing = s.*;
     for (DOCK_ACTIONS, 0..) |action, i| {
         const r = dockItem(s, i);
@@ -597,6 +746,7 @@ pub fn paint(s: *const Surface, state: *const State) void {
         glass(s, toast, 12, 242);
         centered(s, state.notice, toast, INK);
     }
+    if (state.banner) |note| if (state.popup != .notifications) paintBanner(s, note);
     if (state.popup == .none) return;
     const p = popupRect(s, state.popup);
     if (!Rect.overlaps(popupExtent(s, state.popup), s.clip)) return;
@@ -610,13 +760,43 @@ pub fn paint(s: *const Surface, state: *const State) void {
     const material_finished = if (pulp.desktop_profile) pulp.uptimeMs() else 0;
     switch (state.popup) {
         .menu => {
-            text(s, "Orange OS", p.x + 18, p.y + 24, MUTED);
-            const labels = [_][]const u8{ "Welcome to Orange", "New terminal", "All windows", "About Orange OS" };
-            const actions = [_]u16{ Action.home, Action.new_terminal, Action.overview, Action.about };
-            for (labels, 0..) |label, i| {
-                const r = Rect{ .x = p.x + 12, .y = p.y + 56 + @as(i32, @intCast(i)) * 35, .w = p.w - 24, .h = 33 };
-                if (state.hover == actions[i]) s.rounded(r, 7, active_theme.hover, 240);
-                text(s, label, r.x + 10, r.y + 12, INK);
+            for (ORANGE_MENU, 0..) |item, i| {
+                const r = orangeItem(s, i);
+                const hot = state.hover == item.action;
+                if (hot) s.rounded(r, 5, ACCENT, 255);
+                text(s, item.label, r.x + 10, r.y + 8, if (hot) 0xFFFFFF else INK);
+                if (item.gap) s.rounded(.{ .x = r.x + 8, .y = r.bottom() + 1, .w = r.w - 16, .h = 1 }, 0, MUTED, 60);
+            }
+        },
+        .app_menu => if (state.bar) |bar| if (state.open_menu < bar.count) {
+            const m = &bar.menus[state.open_menu];
+            for (m.items[0..m.count], 0..) |item, j| {
+                const r = appMenuItem(state, j);
+                if (item.separator) {
+                    s.rounded(.{ .x = r.x + 8, .y = r.y + 4, .w = r.w - 16, .h = 1 }, 0, MUTED, 70);
+                    continue;
+                }
+                const hot = item.enabled and state.hover == Action.menu_item + @as(u16, @intCast(j));
+                if (hot) s.rounded(r, 5, ACCENT, 255);
+                const ink: u32 = if (hot) 0xFFFFFF else if (item.enabled) INK else gfx.lerp(MUTED, active_theme.panel, 110);
+                text(s, item.label, r.x + 12, r.y + 8, ink);
+                if (item.shortcut.len > 0) text(s, item.shortcut, r.right() - 12 - font.textWidth(item.shortcut, 1), r.y + 8, if (hot) 0xFFFFFF else MUTED);
+            }
+        },
+        .notifications => {
+            font.drawText(s, "Notifications", p.x + 18, p.y + 20, 1, INK);
+            const store = state.notes;
+            const count = if (store) |st| st.count else 0;
+            if (count > 0) {
+                const cb = clearButton(s);
+                s.rounded(cb, 6, if (state.hover == Action.clear_notes) active_theme.hover else WHITE, 220);
+                centered(s, "Clear", cb, ACCENT);
+            }
+            s.rounded(.{ .x = p.x + 18, .y = p.y + 52, .w = p.w - 36, .h = 1 }, 0, MUTED, 60);
+            if (count == 0) {
+                text(s, "No notifications", p.x + 18, p.y + 78, MUTED);
+            } else for (store.?.items[0..@min(count, note_rows)], 0..) |*note, i| {
+                paintNote(s, note, .{ .x = p.x + 10, .y = p.y + 60 + @as(i32, @intCast(i)) * NOTE_H, .w = p.w - 20, .h = NOTE_H - 6 }, false);
             }
         },
         .overview => {
@@ -696,8 +876,101 @@ pub fn paint(s: *const Surface, state: *const State) void {
     }
 }
 
+fn appIcon(app: u32) ui.Icon {
+    return DOCK_ICONS[dockSlot(app)];
+}
+
+/// One notification: its app's icon, title, body and time. Long text is
+/// cut to fit the card; nothing is drawn outside it.
+fn paintNote(s: *const Surface, note: *const notes.Note, r: Rect, card: bool) void {
+    if (!card) s.rounded(r, 10, WHITE, 150);
+    var icons = s.*;
+    ui.icon(&icons, appIcon(note.app), r.x + 10, r.y + @divTrunc(r.h - 32, 2), 32);
+    var when: []const u8 = "";
+    var time_buf: [32]u8 = undefined;
+    if (note.at != 0) when = pulp.calendar.clockText(&time_buf, pulp.calendar.fromEpoch(note.at, pulp.timezone_minutes));
+    // "5:55:06 AM" -> "5:55 AM": seconds are noise in a list.
+    var short_buf: [16]u8 = undefined;
+    if (when.len >= 10) {
+        const colon = @import("std").mem.lastIndexOfScalar(u8, when, ':') orelse when.len;
+        const tail = when[@min(when.len, colon + 3)..];
+        when = @import("std").fmt.bufPrint(&short_buf, "{s}{s}", .{ when[0..colon], tail }) catch when;
+    }
+    const tw = font.textWidth(when, 1);
+    const room = r.w - 54 - 12;
+    text(s, ui.fitting(note.title(), room - tw - 10), r.x + 52, r.y + 12, INK);
+    text(s, when, r.right() - 12 - tw, r.y + 12, MUTED);
+    text(s, ui.fitting(note.body(), room), r.x + 52, r.y + 31, MUTED);
+}
+
+fn paintBanner(s: *const Surface, note: *const notes.Note) void {
+    const r = bannerRect(s);
+    if (!Rect.overlaps(gfx.shadowExtent(r), s.clip)) return;
+    banner_material.paintShadowed(s, r, 16, active_theme.panel, 232);
+    glassRim(s, r, 16);
+    paintNote(s, note, .{ .x = r.x, .y = r.y + 4, .w = r.w, .h = r.h - 8 }, true);
+}
+var banner_material: gfx.FrostCache(120_000) = .{};
+
+/// The lock screen (M8), drawn over the wallpaper the caller has painted:
+/// the time, who is signed in, and a password field that shows only dots.
+pub fn paintLock(s: *const Surface, state: *const State) void {
+    activateTheme(state.palette);
+    const full = Rect{ .x = 0, .y = 0, .w = s.width, .h = s.height };
+    s.rounded(full, 0, 0x0A1020, 96);
+    if (state.seconds) |seconds| {
+        const date = pulp.calendar.fromEpoch(seconds, pulp.timezone_minutes);
+        var date_buf: [32]u8 = undefined;
+        var time_buf: [32]u8 = undefined;
+        const day = pulp.calendar.dateText(&date_buf, date);
+        var clock = pulp.calendar.clockText(&time_buf, date);
+        // Hours and minutes only: a lock screen is read at a glance.
+        if (@import("std").mem.lastIndexOfScalar(u8, clock, ':')) |colon| clock = clock[0..colon];
+        font.drawText(s, day, @divTrunc(s.width - font.textWidth(day, 2), 2), @divTrunc(s.height, 7), 2, 0xFFFFFF);
+        font.drawText(s, clock, @divTrunc(s.width - font.textWidth(clock, 4), 2), @divTrunc(s.height, 7) + 44, 4, 0xFFFFFF);
+    }
+    const cx = @divTrunc(s.width, 2);
+    const top = @divTrunc(s.height * 55, 100);
+    // Avatar: one accent colour, a darker rim and a soft top reflection.
+    s.circle(cx, top, 44, gfx.lerp(ACCENT, 0x000000, 60));
+    s.circle(cx, top, 42, ACCENT);
+    s.rounded(.{ .x = cx - 26, .y = top - 38, .w = 52, .h = 20 }, 10, 0xFFFFFF, 40);
+    ui.iconTint(s, .sym_user, cx - 26, top - 26, 52, 0xFFFFFF);
+    const name = ui.fitting(state.lock.name, 300);
+    font.drawText(s, name, cx - @divTrunc(font.textWidth(name, 1), 2), top + 60, 1, 0xFFFFFF);
+    const field = lockField(s);
+    s.rounded(field, 15, 0xFFFFFF, 64);
+    s.rounded(.{ .x = field.x + 1, .y = field.y + 1, .w = field.w - 2, .h = field.h - 2 }, 14, 0x0A1020, 70);
+    if (state.lock.typed == 0) {
+        const hint = "Enter Password";
+        font.drawText(s, hint, cx - @divTrunc(font.textWidth(hint, 1), 2), field.y + 11, 1, 0xC9D2E0);
+    } else {
+        const shown: i32 = @intCast(@min(state.lock.typed, 18));
+        const start = cx - @divTrunc(shown * 11, 2) + 5;
+        var i: i32 = 0;
+        while (i < shown) : (i += 1) s.circle(start + i * 11, field.y + 15, 3, 0xFFFFFF);
+    }
+    const hint = if (state.lock.message.len > 0) state.lock.message else "Press Return to unlock";
+    font.drawText(s, hint, cx - @divTrunc(font.textWidth(hint, 1), 2), field.bottom() + 16, 1, if (state.lock.message.len > 0) 0xFFD0C8 else 0xC9D2E0);
+}
+pub fn lockField(s: *const Surface) Rect {
+    return .{ .x = @divTrunc(s.width, 2) - 110, .y = @divTrunc(s.height * 55, 100) + 86, .w = 220, .h = 30 };
+}
+/// What changes while typing: the field and the line under it.
+pub fn lockTypingRect(s: *const Surface) Rect {
+    const f = lockField(s);
+    return .{ .x = f.x - 60, .y = f.y - 4, .w = f.w + 120, .h = f.h + 44 };
+}
+
 fn glyphIcon(g: spotlight.Glyph) ui.Icon {
     return switch (g) {
+        .editor => .dock_editor,
+        .viewer => .dock_viewer,
+        .settings => .dock_appearance,
+        .lock => .sym_lock,
+        .document => .document,
+        .folder => .folder_orange,
+        .image => .image_file,
         .files => .dock_files,
         .welcome => .dock_welcome,
         .terminal => .dock_terminal,
@@ -722,6 +995,10 @@ pub fn appGlyph(app: usize) spotlight.Glyph {
         4 => .files,
         5 => .trash,
         6 => .controls,
+        8 => .editor,
+        9 => .viewer,
+        10 => .calculator,
+        11 => .settings,
         else => .browser,
     };
 }
@@ -792,6 +1069,10 @@ fn switcherIcon(app: usize) ui.Icon {
         3 => .about,
         4 => .files,
         5 => .trash,
+        8 => .app_editor,
+        9 => .app_viewer,
+        10 => .app_calculator,
+        11 => .appearance,
         else => .app_browser,
     };
 }

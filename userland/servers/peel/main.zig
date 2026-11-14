@@ -20,6 +20,10 @@ const desktop = @import("desktop.zig");
 const pointer = @import("pointer.zig");
 const window_body = @import("window_body.zig");
 const frame = @import("frame.zig");
+const menus = desktop.menus;
+const notes_mod = desktop.notes;
+const account_mod = @import("account");
+const std = @import("std");
 const host_model = @import("host_model");
 var host_json: [4096]u8 = undefined;
 var host_scratch: [32768]u8 = undefined;
@@ -62,6 +66,17 @@ const Window = struct {
     want_edges: frame.Edges = .{},
     configure_sent: ?[2]i32 = null,
     configure_at: u64 = 0,
+    /// Which application the window belongs to (proto.App.*).
+    app: u32 = 0,
+    /// The app's menus as it sent them (parsed when it is in front).
+    menu_buf: [proto.MENU_MAX_BYTES]u8 = undefined,
+    menu_len: usize = 0,
+    menu_serial: u32 = 0,
+    /// The close button asks the client first; when it was last asked, and
+    /// when the client last sent anything (to tell busy from stuck).
+    confirms_close: bool = false,
+    close_asked_ms: u64 = 0,
+    last_msg_ms: u64 = 0,
     /// Tiled to half the screen (restore_rect keeps the size from before).
     tiled: frame.Tile = .none,
     /// Open, minimise and restore motion: the frame drawn, from and to, and
@@ -210,7 +225,7 @@ fn tickAnimations() bool {
 
 /// The dock tile an application's window minimises into.
 fn dockTileFor(w: *const Window) Rect {
-    return desktop.dockItem(&screen, desktop.dockSlot(appIndex(w.title())));
+    return desktop.dockItem(&screen, desktop.dockSlot(w.app));
 }
 /// The work area: below the menu bar, down to the bottom of the screen
 /// (windows may sit behind the dock, as on the Mac).
@@ -293,7 +308,18 @@ const WALLPAPER_PATHS = [_][]const u8{
     "/share/wallpapers/citrus-atelier.bmp",
     "/share/wallpapers/midnight-aurora.bmp",
 };
-var pending_apps: [8]i64 = [_]i64{-1} ** 8;
+var pending_apps: [desktop.APP_COUNT]i64 = [_]i64{-1} ** desktop.APP_COUNT;
+/// A document waiting for the app Peel started for it: handed over when
+/// that process creates its window.
+const PendingOpen = struct { pid: i64 = -1, len: usize = 0, path: [256]u8 = undefined };
+var pending_open: [4]PendingOpen = [_]PendingOpen{.{}} ** 4;
+/// The front app's menus, parsed from a private copy of its text.
+var bar_text: [proto.MENU_MAX_BYTES]u8 = undefined;
+var bar: menus.Bar = .{};
+var bar_key: u64 = ~@as(u64, 0);
+var note_store: notes_mod.Store = .{};
+var banner_shown = false;
+var battery_warned = false;
 var shell_pressed: ?u16 = null;
 var control_pressed: ?struct { id: u32, control: i32 } = null;
 var desktop_hidden: [MAX_WINDOWS]u32 = [_]u32{0} ** MAX_WINDOWS;
@@ -319,16 +345,36 @@ fn appIndex(title: []const u8) usize {
 
 fn syncShell() void {
     shell.active = "Desktop";
+    shell.app_name = "Desktop";
+    var top_win: ?*const Window = null;
     var z = window_count;
     while (z > 0) {
         z -= 1;
         const w = &windows[z_order[z]];
         if (w.visible and !w.panel) {
             shell.active = w.title();
+            shell.app_name = desktop.APP_NAMES[w.app];
+            top_win = w;
             break;
         }
     }
-    shell.running = [_]bool{false} ** 8;
+    // The menu bar: the top_win app's menus, then Peel's Window menu. Parsed
+    // again only when the top_win window or its menus change.
+    const key: u64 = if (top_win) |w| (@as(u64, w.id) << 32) | (@as(u64, w.menu_serial) << 1) | @intFromBool(w.resizable) else 0;
+    if (key != bar_key) {
+        bar_key = key;
+        const len = if (top_win) |w| w.menu_len else 0;
+        if (top_win) |w| @memcpy(bar_text[0..len], w.menu_buf[0..len]);
+        bar = menus.parse(bar_text[0..len]);
+        bar.menus[bar.count] = menus.windowMenu(top_win != null, if (top_win) |w| w.resizable else false);
+        bar.count += 1;
+        if (shell.popup == .app_menu) shell.popup = .none;
+        addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = desktop.BAR_H });
+    }
+    shell.bar = &bar;
+    shell.notes = &note_store;
+    shell.banner = if (lock.active) null else note_store.banner(pulp.uptimeMs());
+    shell.running = [_]bool{false} ** desktop.APP_COUNT;
     shell.count = 0;
     shell.controls_open = false;
     shell.reduce_motion = reduce_motion;
@@ -337,7 +383,7 @@ fn syncShell() void {
             shell.controls_open = shell.controls_open or windows[i].visible;
             continue;
         }
-        const app = appIndex(windows[i].title());
+        const app: usize = windows[i].app;
         shell.running[app] = true;
         shell.items[shell.count] = .{ .id = windows[i].id, .revision = windows[i].revision, .title = windows[i].title(), .hidden = !windows[i].visible, .app = app, .pixels = windows[i].pixels, .width = windows[i].client_w * screen.scale, .height = windows[i].client_h * screen.scale, .stride = windows[i].stride };
         shell.count += 1;
@@ -373,7 +419,7 @@ fn launchApp(app: usize, new_instance: bool) void {
         while (i > 0) {
             i -= 1;
             const idx = z_order[i];
-            if (appIndex(windows[idx].title()) == app) {
+            if (windows[idx].app == app) {
                 focusWindow(idx);
                 if (windows[idx].panel) pulp.puts("desktop: control panel opened\n");
                 return;
@@ -384,16 +430,111 @@ fn launchApp(app: usize, new_instance: bool) void {
             if (ended == null) return;
         }
     }
+    _ = startApp(app);
+}
+
+const APP_PATHS = [desktop.APP_COUNT][]const u8{ "/bin/grove", "/bin/squeeze", "/bin/clock", "/bin/about", "/bin/files", "/bin/trash", "/bin/hardware", "/bin/orange-browser", "/bin/editor", "/bin/viewer", "/bin/calculator", "/bin/settings" };
+
+/// Start an application's program; its pid, or null with a notice.
+fn startApp(app: usize) ?i64 {
     if (window_count == MAX_WINDOWS) {
         shell.notice = "Window limit reached. Close a window.";
-        return;
+        return null;
     }
-    const paths = [_][]const u8{ "/bin/grove", "/bin/squeeze", "/bin/clock", "/bin/about", "/bin/files", "/bin/trash", "/bin/hardware", "/bin/orange-browser" };
-    pending_apps[app] = pulp.spawn(paths[app]) catch {
+    const pid = pulp.spawn(APP_PATHS[app]) catch {
         shell.notice = "Could not start the application.";
+        return null;
+    };
+    pending_apps[app] = pid;
+    pulp.print("desktop: launched {s}\n", .{APP_PATHS[app]});
+    return pid;
+}
+
+fn hasExtension(path: []const u8, comptime list: []const []const u8) bool {
+    inline for (list) |ext| {
+        if (path.len > ext.len and std.ascii.eqlIgnoreCase(path[path.len - ext.len ..], ext)) return true;
+    }
+    return false;
+}
+
+/// Open a file or folder with the application that handles it, the way a
+/// double click in Files or a Spotlight result does: folders in Files,
+/// pictures in Image Viewer, everything else in Text Editor.
+fn openDocument(path: []const u8) void {
+    if (path.len == 0 or path.len > 255 or path[0] != '/') return;
+    const st = pulp.stat(path) catch {
+        shell.notice = "That item is no longer there.";
         return;
     };
-    pulp.print("desktop: launched {s}\n", .{paths[app]});
+    const app: usize = if (st.isDir()) proto.App.files else if (hasExtension(path, &.{ ".png", ".bmp", ".ppm" })) proto.App.viewer else proto.App.editor;
+    pulp.print("desktop: open {s} with {s}\n", .{ path, desktop.APP_NAMES[app] });
+    if (app == proto.App.files) {
+        // One Files window: show the folder in it when it is already open.
+        for (0..window_count) |i| if (windows[i].app == proto.App.files) {
+            _ = pulp.portSend(windows[i].reply_port, proto.Op.open_file, path) catch {};
+            focusWindow(i);
+            return;
+        };
+    }
+    const pid = startApp(app) orelse return;
+    for (&pending_open) |*slot| {
+        if (slot.pid >= 0 and pulp.uptimeMs() -| slot_started(slot) < 30_000) continue;
+        slot.pid = pid;
+        slot.len = path.len;
+        @memcpy(slot.path[0..path.len], path);
+        pending_started[@divExact(@intFromPtr(slot) - @intFromPtr(&pending_open), @sizeOf(PendingOpen))] = pulp.uptimeMs();
+        return;
+    }
+    shell.notice = "Too many documents are opening. Try again.";
+}
+var pending_started: [4]u64 = [_]u64{0} ** 4;
+fn slot_started(slot: *const PendingOpen) u64 {
+    return pending_started[@divExact(@intFromPtr(slot) - @intFromPtr(&pending_open), @sizeOf(PendingOpen))];
+}
+
+/// Post a notification: kept in the list, shown as a banner for a moment.
+fn postNote(title: []const u8, body: []const u8, app: u32) void {
+    if (!note_store.post(title, body, app, pulp.wallTime() orelse 0, pulp.uptimeMs())) return;
+    pulp.print("desktop: notification \"{s}\" from {s}\n", .{ note_store.items[0].title(), desktop.APP_NAMES[@min(app, desktop.APP_COUNT - 1)] });
+    addDamage(gfx.shadowExtent(desktop.bannerRect(&screen)));
+    addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = desktop.BAR_H });
+    if (shell.popup == .notifications) addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = screen.height });
+}
+
+/// One of the open menu's items was chosen: Peel's own Window items act
+/// here; an app's item goes back to the app with its id.
+fn menuChosen(j: usize) void {
+    if (shell.open_menu >= bar.count) return;
+    const m = &bar.menus[shell.open_menu];
+    if (j >= m.count) return;
+    const item = m.items[j];
+    if (!item.enabled or item.separator) return;
+    pulp.print("desktop: menu {s} > {s}\n", .{ m.title, item.label });
+    const top_win = activeWindow();
+    if (item.id < menus.SHELL_ID) {
+        const idx = top_win orelse return;
+        _ = pulp.portSend(windows[idx].reply_port, proto.Op.menu_action, std.mem.asBytes(&item.id)) catch {};
+        return;
+    }
+    switch (item.id) {
+        menus.Shell.overview => shellAction(desktop.Action.overview),
+        menus.Shell.show_desktop => toggleDesktop(),
+        menus.Shell.minimise => if (top_win) |idx| minimizeWindow(idx),
+        menus.Shell.zoom => if (top_win) |idx| zoomWindow(idx),
+        menus.Shell.tile_left => if (top_win) |idx| tileWindow(idx, .left),
+        menus.Shell.tile_right => if (top_win) |idx| tileWindow(idx, .right),
+        menus.Shell.close => if (top_win) |idx| requestClose(windows[idx].id),
+        else => {},
+    }
+}
+
+fn minimizeWindow(idx: usize) void {
+    // Shrink into the app's dock tile and fade out.
+    startAnim(idx, windows[idx].rect, dockTileFor(&windows[idx]), 255, 0, true);
+    addDamage(windows[idx].damageRect());
+    if (activeWindow()) |active| addDamage(windows[active].damageRect());
+    chromeDamage();
+    pulp.print("desktop: minimized window {d}\n", .{windows[idx].id});
 }
 
 fn toggleDesktop() void {
@@ -523,6 +664,38 @@ fn shellAction(action: u16) void {
         desktop.Action.trash => launchApp(5, false),
         desktop.Action.hardware => if (!panel_was_open) launchApp(6, false),
         desktop.Action.browser => launchApp(7, false),
+        desktop.Action.editor => launchApp(proto.App.editor, false),
+        desktop.Action.viewer => launchApp(proto.App.viewer, false),
+        desktop.Action.calculator => launchApp(proto.App.calculator, false),
+        desktop.Action.settings_app => launchApp(proto.App.settings, false),
+        desktop.Action.notifications => if (old != .notifications) {
+            desktop.setNoteRows(note_store.count);
+            note_store.markRead();
+            note_store.dismissBanner();
+            shell.popup = .notifications;
+            pulp.print("desktop: notifications open, {d} kept\n", .{note_store.count});
+        },
+        desktop.Action.clear_notes => {
+            note_store.clear();
+            desktop.setNoteRows(0);
+            shell.popup = .notifications;
+            pulp.puts("desktop: notifications cleared\n");
+        },
+        desktop.Action.banner => note_store.dismissBanner(),
+        desktop.Action.lock => lockScreen("the Orange menu"),
+        desktop.Action.app_menu...desktop.Action.app_menu + menus.MAX_MENUS => {
+            const i = action - desktop.Action.app_menu;
+            if (i < bar.count and !(old == .app_menu and shell.open_menu == i)) {
+                shell.open_menu = i;
+                shell.popup = .app_menu;
+                syncShell();
+                desktop.layoutAppMenu(&screen, &shell);
+                pulp.print("desktop: menu {s} open\n", .{bar.menus[i].title});
+            }
+        },
+        desktop.Action.menu_item...desktop.Action.menu_item + menus.MAX_ITEMS - 1 => {
+            if (old == .app_menu) menuChosen(action - desktop.Action.menu_item);
+        },
         desktop.Action.menu => shell.popup = if (old == .menu) .none else .menu,
         desktop.Action.overview => shell.popup = if (old == .overview) .none else .overview,
         desktop.Action.settings => shell.popup = if (old == .settings) .none else .settings,
@@ -859,6 +1032,18 @@ fn expandedDamage(area: Rect, retained_calendar: bool) Rect {
 
 fn composite(clip: Rect) void {
     if (clip.isEmpty()) return;
+    if (lock.active) {
+        // Nothing of the session is drawn while locked: wallpaper, then
+        // the lock screen.
+        screen.setClip(clip);
+        defer screen.resetClip();
+        paintWallpaper(clip);
+        syncShell();
+        shell.lock = .{ .active = true, .name = if (account) |*a| a.name() else "", .typed = lock.input.len, .message = lock.message };
+        desktop.paintLock(&screen, &shell);
+        return;
+    }
+    shell.lock = .{};
     // Everything drawn this frame is confined to the damage region. Window
     // backgrounds and title bars are drawn unclipped by intent - they are
     // whole-rectangle fills - so without this a small commit would blank an
@@ -1047,7 +1232,10 @@ fn handleCreateWindow(payload: []const u8) void {
     windows[idx].owner_pid = req.pid;
     windows[idx].closable = req.flags & proto.WindowFlags.closable != 0;
     windows[idx].panel = is_panel;
-    pending_apps[appIndex(windows[idx].title())] = -1;
+    windows[idx].app = if (req.app != 0 and req.app < desktop.APP_COUNT) req.app else @intCast(appIndex(windows[idx].title()));
+    windows[idx].confirms_close = !is_panel and req.flags & proto.WindowFlags.confirms_close != 0;
+    windows[idx].last_msg_ms = pulp.uptimeMs();
+    pending_apps[windows[idx].app] = -1;
 
     // A shared reply port would deliver one client's answer to whichever
     // client happened to read first, so each process owns its own port.
@@ -1061,6 +1249,11 @@ fn handleCreateWindow(payload: []const u8) void {
         windows[idx].id, windows[idx].title(), w, h, req.pid,
     });
     logFrame(idx, "opened");
+    // A document this app was started for: hand it over now.
+    for (&pending_open) |*slot| if (slot.pid == req.pid) {
+        _ = pulp.portSend(reply, proto.Op.open_file, slot.path[0..slot.len]) catch {};
+        slot.pid = -1;
+    };
 
     // A window opens by growing from 92% and fading in (not panels).
     if (!is_panel) startAnim(idx, frame.openFrom(windows[idx].rect), windows[idx].rect, 0, 255, false);
@@ -1234,6 +1427,8 @@ fn handleCommit(payload: []const u8) void {
     while (i < window_count) : (i += 1) {
         if (windows[i].id != c.window_id) continue;
         windows[i].revision +%= 1;
+        windows[i].last_msg_ms = pulp.uptimeMs();
+        notify_app = windows[i].app;
         if (shell.popup == .overview and !windows[i].panel) {
             // Workspace-switcher semantics: hold the backdrop while live
             // previews update. On dismissal shellAction repaints the whole
@@ -1302,6 +1497,44 @@ fn pumpClients() void {
             proto.Op.commit => handleCommit(buf[0..m.len]),
             proto.Op.destroy => handleDestroy(buf[0..m.len]),
             proto.Op.resized => handleResized(buf[0..m.len]),
+            proto.Op.open_document => if (!lock.active) openDocument(buf[0..m.len]),
+            proto.Op.set_title => if (m.len >= 4) {
+                if (findWindowById(std.mem.readInt(u32, buf[0..4], .little))) |idx| {
+                    var clean: [48]u8 = undefined;
+                    const n = @min(m.len - 4, 48);
+                    for (buf[4..][0..n], 0..) |c, i| clean[i] = if (c >= 32 and c <= 126) c else ' ';
+                    windows[idx].setTitle(clean[0..n]);
+                    addDamage(windows[idx].damageRect());
+                    chromeDamage();
+                }
+            },
+            proto.Op.set_menu => if (m.len >= 4) {
+                if (findWindowById(std.mem.readInt(u32, buf[0..4], .little))) |idx| {
+                    const n = @min(m.len - 4, proto.MENU_MAX_BYTES);
+                    @memcpy(windows[idx].menu_buf[0..n], buf[4..][0..n]);
+                    windows[idx].menu_len = n;
+                    windows[idx].menu_serial +%= 1;
+                    syncShell();
+                }
+            },
+            proto.Op.notify => if (m.len >= @sizeOf(proto.Notify)) {
+                const n: *align(1) const proto.Notify = @ptrCast(&buf);
+                // The sender's app is the window that most recently spoke;
+                // a program with no window posts as the system.
+                postNote(n.title[0..@min(n.title_len, 48)], n.body[0..@min(n.body_len, 120)], notify_app);
+            },
+            proto.Op.set_preference => if (m.len >= @sizeOf(proto.Preference)) {
+                const pref: *align(1) const proto.Preference = @ptrCast(&buf);
+                setPreference(pref.key, pref.value);
+            },
+            proto.Op.get_preferences => if (m.len == 8) {
+                const pid = @as(*align(1) const i64, @ptrCast(&buf)).*;
+                var name_buf: [32]u8 = undefined;
+                if (pulp.portConnect(proto.replyPortName(&name_buf, pid))) |reply| {
+                    sendPreferences(reply);
+                    pulp.handleClose(reply);
+                } else |_| {}
+            },
             proto.Op.move_request => handleMoveRequest(buf[0..m.len]),
             proto.Op.launch_app => {
                 if (m.len >= 4) {
@@ -1323,6 +1556,178 @@ fn pumpClients() void {
             },
             else => {},
         }
+    }
+}
+
+/// The app whose window most recently committed, for attributing a
+/// notification that follows (apps notify right after drawing).
+var notify_app: u32 = 0;
+
+// ── Preferences, account and lock (docs/design/014, M5 and M8) ────────────
+
+const LockState = struct {
+    active: bool = false,
+    input: ui.TextInput(account_mod.MAX_PASSWORD) = .{},
+    message: []const u8 = "",
+    failures: u32 = 0,
+};
+var lock: LockState = .{};
+var account: ?account_mod.Account = null;
+/// Minutes without input before the screen locks (0: never).
+var lock_minutes: u32 = 0;
+var last_input_ms: u64 = 0;
+
+fn loadAccount() void {
+    var buf: [512]u8 = undefined;
+    const fd = pulp.open(account_mod.PATH) catch {
+        account = null;
+        return;
+    };
+    defer pulp.close(fd);
+    const n = pulp.read(@intCast(fd), &buf) catch 0;
+    account = account_mod.Account.parse(buf[0..n]);
+    pulp.print("desktop: account {s}\n", .{if (account != null) "found" else "file unreadable"});
+}
+
+/// Lock the screen: nothing behind it is shown or receives input until
+/// the password is entered. Without an account there is nothing to ask for.
+fn lockScreen(why: []const u8) void {
+    if (lock.active) return;
+    if (account == null) {
+        shell.notice = "Set a password in Settings to lock the screen.";
+        return;
+    }
+    if (hover_window) |old| sendInputById(old, pulp.EV_MOUSE, 0, 0, -10000, -10000);
+    hover_window = null;
+    pointer_capture = null;
+    dragging = null;
+    resizing = null;
+    shell.popup = .none;
+    lock = .{ .active = true };
+    pulp.print("desktop: locked ({s})\n", .{why});
+    addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = screen.height });
+}
+
+fn lockKey(e: *const pulp.InputEvent) void {
+    if (e.code == keymap.LSHIFT or e.code == keymap.RSHIFT) shift_held = e.isPress();
+    if (!e.isPress()) return;
+    const typing = desktop.lockTypingRect(&screen);
+    if (e.code == keymap.ENTER) {
+        const acct = account orelse return;
+        if (lock.input.len == 0) return;
+        if (acct.check(lock.input.text())) {
+            // Wipe the typed password before anything else.
+            @memset(&lock.input.buf, 0);
+            lock = .{};
+            last_input_ms = pulp.uptimeMs();
+            pulp.puts("desktop: unlocked\n");
+            addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = screen.height });
+            return;
+        }
+        @memset(&lock.input.buf, 0);
+        lock.input.clear();
+        lock.failures += 1;
+        lock.message = "Wrong password. Try again.";
+        pulp.print("desktop: wrong password ({d})\n", .{lock.failures});
+        addDamage(typing);
+        return;
+    }
+    if (e.code == keymap.ESC) {
+        @memset(&lock.input.buf, 0);
+        lock.input.clear();
+    } else if (e.code == keymap.BACKSPACE) {
+        _ = lock.input.backspace();
+    } else if (e.value & 2 == 0) {
+        const ch = keymap.translate(e.code, shift_held);
+        if (!lock.input.insert(ch)) return;
+    } else return;
+    lock.message = "";
+    addDamage(typing);
+}
+
+fn sendPreferences(reply: i64) void {
+    const prefs = proto.Preferences{
+        .theme = @intCast(shell.palette),
+        .reduce_motion = @intFromBool(reduce_motion),
+        .lock_minutes = lock_minutes,
+        .kept = @intFromBool(shell.prefs_kept),
+        .has_password = @intFromBool(account != null),
+        .screen_width = @intCast(screen.width),
+        .screen_height = @intCast(screen.height),
+        .scale = @intCast(screen.scale),
+    };
+    _ = pulp.portSend(reply, proto.Op.preferences, std.mem.asBytes(&prefs)) catch {};
+}
+
+/// Tell every open Settings window the preferences changed.
+fn broadcastPreferences() void {
+    for (windows[0..window_count]) |*w| {
+        if (w.app == proto.App.settings and w.reply_port >= 0) sendPreferences(w.reply_port);
+    }
+}
+
+fn setPreference(key: u32, value: u32) void {
+    switch (key) {
+        proto.Pref.theme => if (value < desktop.THEME_NAMES.len) {
+            shell.palette = value;
+            for (0..window_count) |i| if (windows[i].panel) sendAppearance(i);
+            pulp.print("desktop: theme {d} {s}\n", .{ shell.palette, desktop.THEME_NAMES[shell.palette] });
+            savePreferences();
+            desktop.invalidateCalendar();
+            addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = screen.height });
+        },
+        proto.Pref.reduce_motion => {
+            reduce_motion = value != 0;
+            pulp.print("desktop: reduce motion {s}\n", .{if (reduce_motion) "on" else "off"});
+            savePreferences();
+        },
+        proto.Pref.lock_minutes => {
+            lock_minutes = @min(value, 240);
+            pulp.print("desktop: lock after {d} minutes\n", .{lock_minutes});
+            savePreferences();
+        },
+        proto.Pref.lock_now => lockScreen("Settings"),
+        proto.Pref.account_changed => loadAccount(),
+        else => return,
+    }
+    broadcastPreferences();
+}
+
+// ── Spotlight's file list (M3) ─────────────────────────────────────────────
+
+const DOCUMENTS = "/data/Documents";
+var spot_files: [spotlight.MAX_FILES]spotlight.FileEntry = undefined;
+var spot_paths: [spotlight.MAX_FILES][160]u8 = undefined;
+var spot_path_len: [spotlight.MAX_FILES]u8 = undefined;
+var spot_count: usize = 0;
+
+/// List Documents and the folders in it (one level down): what Spotlight
+/// can find. Read when Spotlight opens, so it is never stale for long.
+fn indexDocuments() void {
+    spot_count = 0;
+    indexFolder(DOCUMENTS, true);
+    pulp.print("desktop: spotlight sees {d} documents\n", .{spot_count});
+}
+
+fn indexFolder(dir: []const u8, descend: bool) void {
+    var entries: [48]pulp.DirEntry = undefined;
+    const n = pulp.readdirPage(dir, &entries, 0) catch return;
+    for (entries[0..n]) |*e| {
+        if (spot_count == spot_files.len) return;
+        const name = e.nameSlice();
+        if (name.len == 0 or name[0] == '.') continue;
+        const full = std.fmt.bufPrint(&spot_paths[spot_count], "{s}/{s}", .{ dir, name }) catch continue;
+        spot_path_len[spot_count] = @intCast(full.len);
+        // The name and folder shown are slices of the stored path.
+        const stored = spot_paths[spot_count][0..full.len];
+        spot_files[spot_count] = .{
+            .name = stored[dir.len + 1 ..],
+            .where = stored[@min(stored.len, "/data/".len)..dir.len],
+            .glyph = spotlight.fileGlyph(name, e.isDir()),
+        };
+        const index = spot_count;
+        spot_count += 1;
+        if (descend and e.isDir()) indexFolder(spot_paths[index][0..spot_path_len[index]], false);
     }
 }
 
@@ -1408,6 +1813,20 @@ fn requestClose(id: u32) void {
     const idx = findWindowById(id) orelse return;
     const msg = proto.Destroy{ .window_id = id };
     const bytes: [*]const u8 = @ptrCast(&msg);
+    if (windows[idx].confirms_close) {
+        // A document window is asked, and decides (it may have unsaved
+        // changes). Only a client that has not answered anything since the
+        // last ask, two seconds on, is closed over its head.
+        const w = &windows[idx];
+        const now = pulp.uptimeMs();
+        const stuck = w.close_asked_ms != 0 and w.last_msg_ms < w.close_asked_ms and now -| w.close_asked_ms > 2000;
+        if (!stuck) {
+            w.close_asked_ms = now;
+            _ = pulp.portSend(w.reply_port, proto.Op.close_requested, bytes[0..@sizeOf(proto.Destroy)]) catch {};
+            pulp.print("desktop: asked window {d} to close\n", .{id});
+            return;
+        }
+    }
     if (windows[idx].reply_port >= 0) {
         _ = pulp.portSend(
             windows[idx].reply_port,
@@ -1434,6 +1853,9 @@ fn handleMouse(e: *const pulp.InputEvent) void {
     buttons = e.code;
 
     cursor_dirty = cursor_dirty or prev_cursor_x != cursor_x or prev_cursor_y != cursor_y;
+    last_input_ms = pulp.uptimeMs();
+    // Locked: the pointer moves, and nothing else happens.
+    if (lock.active) return;
     if (panel_dismiss_capture) {
         if (!is_down) panel_dismiss_capture = false;
         return;
@@ -1587,14 +2009,7 @@ fn handleMouse(e: *const pulp.InputEvent) void {
                 if (windows[idx].control(pressed.control).contains(cursor_x, cursor_y)) {
                     switch (pressed.control) {
                         0 => requestClose(pressed.id),
-                        1 => {
-                            // Shrink into the app's dock tile and fade out.
-                            startAnim(idx, windows[idx].rect, dockTileFor(&windows[idx]), 255, 0, true);
-                            addDamage(windows[idx].damageRect());
-                            if (activeWindow()) |active| addDamage(windows[active].damageRect());
-                            chromeDamage();
-                            pulp.print("desktop: minimized window {d}\n", .{pressed.id});
-                        },
+                        1 => minimizeWindow(idx),
                         2 => zoomWindow(idx),
                         else => {},
                     }
@@ -1653,6 +2068,7 @@ var shift_held = false;
 var switch_items: [MAX_WINDOWS]desktop.SwitchItem = undefined;
 
 fn openSpotlight() void {
+    indexDocuments();
     query_len = 0;
     shell.selected = 0;
     shell.popup = .spotlight;
@@ -1671,11 +2087,11 @@ fn refreshSpotlight() void {
         z -= 1;
         const w = &windows[z_order[z]];
         if (w.panel) continue;
-        open[n] = .{ .id = w.id, .title = w.title(), .glyph = desktop.appGlyph(appIndex(w.title())) };
+        open[n] = .{ .id = w.id, .title = w.title(), .glyph = desktop.appGlyph(w.app) };
         n += 1;
     }
     shell.query = query_buf[0..query_len];
-    const count = spotlight.search(shell.query, open[0..n], &results, &number_buf);
+    const count = spotlight.search(shell.query, open[0..n], spot_files[0..spot_count], &results, &number_buf);
     shell.results = results[0..count];
     if (shell.selected >= count) shell.selected = if (count == 0) 0 else count - 1;
     const rows: usize = if (spotlight.trim(shell.query).len == 0) 0 else @max(count, 1);
@@ -1708,6 +2124,7 @@ fn runResult(r: spotlight.Result) void {
         .app => |app| launchApp(app, false),
         .action => |action| shellAction(action),
         .window => |id| if (findWindowById(id)) |wi| focusWindow(wi),
+        .file => |i| if (i < spot_count) openDocument(spot_paths[i][0..spot_path_len[i]]),
     }
 }
 
@@ -1751,7 +2168,7 @@ fn switcherStep(backwards: bool) void {
             z -= 1;
             const w = &windows[z_order[z]];
             if (w.panel) continue;
-            switch_items[n] = .{ .id = w.id, .app = appIndex(w.title()), .title = w.title(), .hidden = !w.visible };
+            switch_items[n] = .{ .id = w.id, .app = w.app, .title = w.title(), .hidden = !w.visible };
             n += 1;
         }
         if (n == 0) return;
@@ -1819,6 +2236,7 @@ fn loadPreferences() void {
             if (v < desktop.THEME_NAMES.len) shell.palette = v;
         }
         if (pulp.startsWith(line, "reduce_motion=")) reduce_motion = pulp.startsWith(line[14..], "1");
+        if (pulp.startsWith(line, "lock_minutes=")) lock_minutes = @min(240, std.fmt.parseInt(u32, line[13..], 10) catch 0);
     }
     pulp.print("desktop: preferences loaded, theme {d} {s}, reduce motion {s}\n", .{ shell.palette, desktop.THEME_NAMES[shell.palette], if (reduce_motion) "on" else "off" });
 }
@@ -1831,8 +2249,8 @@ fn savePreferences() void {
         return;
     };
     defer pulp.close(fd);
-    var buf: [96]u8 = undefined;
-    const body = @import("std").fmt.bufPrint(&buf, "# Orange OS desktop preferences\ntheme={d}\nreduce_motion={d}\n", .{ shell.palette, @intFromBool(reduce_motion) }) catch return;
+    var buf: [128]u8 = undefined;
+    const body = @import("std").fmt.bufPrint(&buf, "# Orange OS desktop preferences\ntheme={d}\nreduce_motion={d}\nlock_minutes={d}\n", .{ shell.palette, @intFromBool(reduce_motion), lock_minutes }) catch return;
     _ = pulp.write(@intCast(fd), body) catch {
         pulp.puts("desktop: preferences not saved (write failed)\n");
         return;
@@ -1844,6 +2262,11 @@ fn savePreferences() void {
 
 fn handleKey(e: *const pulp.InputEvent) void {
     drag_backdrop_valid = false;
+    last_input_ms = pulp.uptimeMs();
+    if (lock.active) {
+        lockKey(e);
+        return;
+    }
     if (e.isPress() and e.code == 0x01 and openPanel() != null) {
         dismissPanel();
         return;
@@ -1911,6 +2334,8 @@ var alt_held: bool = false;
 /// The wheel scrolls the client window under the pointer, as on other
 /// desktops: the steps travel in the event's code as a signed byte.
 fn handleWheel(e: *const pulp.InputEvent) void {
+    last_input_ms = pulp.uptimeMs();
+    if (lock.active) return;
     const idx = clientWindowAt(cursor_x, cursor_y) orelse return;
     const steps: i8 = @intCast(@max(-127, @min(127, e.dy)));
     sendInput(idx, pulp.EV_WHEEL, @bitCast(steps), 0, cursor_x, cursor_y);
@@ -2005,6 +2430,14 @@ export fn _start() callconv(.c) noreturn {
     } else |_| {}
 
     loadPreferences();
+    // An account on the data disk means the session starts locked: the
+    // lock screen is the login window.
+    loadAccount();
+    last_input_ms = pulp.uptimeMs();
+    if (account != null) {
+        lock = .{ .active = true };
+        pulp.puts("desktop: locked (start-up)\n");
+    }
 
     // First frame: everything.
     const full = Rect{ .x = 0, .y = 0, .w = screen.width, .h = screen.height };
@@ -2023,6 +2456,17 @@ export fn _start() callconv(.c) noreturn {
             last_host_poll = host_now;
             const result = pulp.syscall3(111, 0, @intFromPtr(&host_json), host_json.len);
             const host = host_model.parse(host_json[0..if (result > 0) @intCast(result) else 0], &host_scratch);
+            // Real hardware driving the desktop: warn once when the Mac's
+            // battery runs low on battery power, and again after a recharge.
+            if (host.connection == .fresh and host.rows[4].reading == .percent) {
+                const percent = host.rows[4].reading.percent;
+                const on_power = host.rows[4].power == true;
+                if (percent <= 20 and !on_power and !battery_warned) {
+                    battery_warned = true;
+                    var text: [64]u8 = undefined;
+                    postNote("Battery Low", std.fmt.bufPrint(&text, "{d}% left. Connect your Mac to power.", .{percent}) catch "", proto.App.controls);
+                } else if (percent > 25 or on_power) battery_warned = false;
+            }
             if (!shell.host.eql(host)) {
                 shell.host = host;
                 addDamage(.{ .x = screen.width - 480, .y = 0, .w = 180, .h = desktop.BAR_H });
@@ -2034,8 +2478,11 @@ export fn _start() callconv(.c) noreturn {
             if (shell.seconds == null and seconds != null) pulp.print("desktop: wall clock UTC {d}, offset {d} minutes\n", .{ seconds.?, pulp.timezone_minutes });
             if (shell.popup == .calendar and (seconds == null or shell.seconds == null or seconds.? / 60 != shell.seconds.? / 60))
                 calendar_damage.add(desktop.popupRect(&screen, .calendar));
+            const minute_changed = seconds == null or shell.seconds == null or seconds.? / 60 != shell.seconds.? / 60;
             shell.seconds = seconds;
             addDamage(.{ .x = screen.width - 330, .y = 0, .w = 330, .h = desktop.BAR_H });
+            // The lock screen's clock shows minutes.
+            if (lock.active and minute_changed) addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = @divTrunc(screen.height, 2) });
         }
 
         frame_now = pulp.uptimeMs();
@@ -2065,6 +2512,15 @@ export fn _start() callconv(.c) noreturn {
         pumpClients();
         refreshSpotlight();
         const animating = tickAnimations();
+        // A banner appears with its notification and leaves on its own.
+        const banner_now = !lock.active and note_store.banner(pulp.uptimeMs()) != null;
+        if (banner_now != banner_shown) {
+            banner_shown = banner_now;
+            addDamage(gfx.shadowExtent(desktop.bannerRect(&screen)));
+        }
+        // Lock after the chosen time without keys or pointer movement.
+        if (!lock.active and account != null and lock_minutes > 0 and pulp.uptimeMs() -| last_input_ms >= @as(u64, lock_minutes) * 60_000)
+            lockScreen("no input");
 
         // If a base is unavailable (e.g. unusual display bounds), use the
         // ordinary full-glass path. Never restore an uninitialized snapshot.
@@ -2181,6 +2637,7 @@ export fn _start() callconv(.c) noreturn {
             flushInput(w);
             backlogged = backlogged or w.backlog_len > 0;
         }
-        pulp.waitInput(if (animating) 12 else if (backlogged) 5 else 1000 - pulp.uptimeMs() % 1000);
+        const until_banner = if (banner_shown) note_store.banner_until -| pulp.uptimeMs() + 1 else 1000;
+        pulp.waitInput(if (animating) 12 else if (backlogged) 5 else @min(until_banner, 1000 - pulp.uptimeMs() % 1000));
     }
 }

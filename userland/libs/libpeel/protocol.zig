@@ -24,6 +24,29 @@ pub const WindowFlags = struct {
     /// client's `bar_height`. The client asks Peel to move the window when
     /// its own empty toolbar is dragged (Op.move_request).
     pub const full_size_content: u32 = 1 << 3;
+    /// The close button asks the client (close_requested) and leaves the
+    /// window up, so a document with unsaved changes can ask first. A
+    /// second press on the button closes it regardless.
+    pub const confirms_close: u32 = 1 << 4;
+};
+
+/// The applications Peel knows: the dock, the menu bar's app name, Spotlight
+/// and "open this document" all use these numbers. A window says which it
+/// belongs to when it is created (0 is Welcome, the default).
+pub const App = struct {
+    pub const welcome: u32 = 0;
+    pub const terminal: u32 = 1;
+    pub const clock: u32 = 2;
+    pub const about: u32 = 3;
+    pub const files: u32 = 4;
+    pub const trash: u32 = 5;
+    pub const controls: u32 = 6;
+    pub const browser: u32 = 7;
+    pub const editor: u32 = 8;
+    pub const viewer: u32 = 9;
+    pub const calculator: u32 = 10;
+    pub const settings: u32 = 11;
+    pub const count: usize = 12;
 };
 
 pub const Op = struct {
@@ -46,6 +69,19 @@ pub const Op = struct {
     /// Client -> Peel: the user pressed my toolbar background; move the
     /// window with the pointer (Destroy payload: just the window id).
     pub const move_request: u32 = 8;
+    /// Client -> Peel: open this file with the application that handles it
+    /// (payload: the path). Peel starts the app and hands it the path.
+    pub const open_document: u32 = 9;
+    /// Client -> Peel: change my title bar text (payload: the title).
+    pub const set_title: u32 = 10;
+    /// Client -> Peel: my menus for the menu bar (payload: see Menu below).
+    pub const set_menu: u32 = 11;
+    /// Client -> Peel: show a notification (Notify).
+    pub const notify: u32 = 12;
+    /// Settings -> Peel: change a desktop preference (Preference).
+    pub const set_preference: u32 = 13;
+    /// Client -> Peel: tell me the desktop preferences (payload: i64 pid).
+    pub const get_preferences: u32 = 14;
     /// Peel -> client: your window was created.
     pub const created: u32 = 128;
     /// Peel -> client: an input event landed on you.
@@ -56,6 +92,55 @@ pub const Op = struct {
     pub const appearance: u32 = 132;
     /// Peel -> client: please draw at this size (Configure).
     pub const configure: u32 = 133;
+    /// Peel -> client: open this file (payload: the path).
+    pub const open_file: u32 = 134;
+    /// Peel -> client: the user chose one of your menu items (u32 id).
+    pub const menu_action: u32 = 135;
+    /// Peel -> client: the desktop preferences (Preferences).
+    pub const preferences: u32 = 136;
+};
+
+/// Menus are sent as text, one item per line, so they are easy to build
+/// and to check: `M<title>` starts a menu, `I<id> <label>` adds an item,
+/// `D<id> <label>` a disabled one, `-` a separator; a tab and a shortcut
+/// may follow a label (shown at the right). At most 6 menus of 12 items.
+pub const MENU_MAX_BYTES: usize = 1024;
+
+pub const Notify = extern struct {
+    title_len: u32,
+    body_len: u32,
+    title: [48]u8,
+    body: [120]u8,
+};
+
+/// Preference keys for set_preference.
+pub const Pref = struct {
+    pub const theme: u32 = 1;
+    pub const reduce_motion: u32 = 2;
+    /// Minutes of no input before the screen locks (0: never).
+    pub const lock_minutes: u32 = 3;
+    /// Lock the screen now (value ignored).
+    pub const lock_now: u32 = 4;
+    /// The account file changed: read it again (value ignored).
+    pub const account_changed: u32 = 5;
+};
+
+pub const Preference = extern struct {
+    key: u32,
+    value: u32,
+};
+
+pub const Preferences = extern struct {
+    theme: u32,
+    reduce_motion: u32,
+    lock_minutes: u32,
+    /// 1 when preferences reach the /data disk.
+    kept: u32,
+    /// 1 when a password is set.
+    has_password: u32,
+    screen_width: u32,
+    screen_height: u32,
+    scale: u32,
 };
 
 /// Peel's answer to display_info: the backing scale, and the largest
@@ -92,6 +177,8 @@ pub const CreateWindow = extern struct {
     /// Full-size content: the height of the client's top bar, in which Peel
     /// centres the window buttons.
     bar_height: u32 = 0,
+    /// Which application this window belongs to (App.*).
+    app: u32 = 0,
     title: [48]u8,
     shm_name: [32]u8,
 };

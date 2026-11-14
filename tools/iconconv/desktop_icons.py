@@ -24,7 +24,12 @@ NAMES = ("welcome", "terminal", "clock", "about", "windows", "appearance",
          "dock_windows", "dock_appearance", "dock_files", "dock_trash",
          "dock_browser", "menu_search", "search", "dock_calculator",
          "app_browser", "cursor_resize_h", "cursor_resize_v",
-         "cursor_resize_nwse", "cursor_resize_nesw")
+         "cursor_resize_nwse", "cursor_resize_nesw",
+         "dock_editor", "dock_viewer", "app_editor", "app_viewer", "app_calculator",
+         "menu_bell", "sym_folder_plus", "sym_pencil", "sym_eye", "sym_restore",
+         "sym_lock", "sym_user", "sym_image", "sym_display", "sym_clock",
+         "sym_keyboard", "sym_info", "sym_bell", "sym_save", "sym_plus", "sym_minus",
+         "sidebar_documents", "image_file")
 
 def main():
     header = bytearray()

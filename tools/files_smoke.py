@@ -26,7 +26,7 @@ def fixture_disk():
     fs = work / "citrus.img"
     disk = work / "disk.img"
     # The desktop profile's filesystem size (scripts/mkdisk.sh FS_MIB).
-    subprocess.run(["python3", str(ROOT / "tools/mkcitrusfs/mkcitrusfs.py"), str(fs), str(root), "48"], check=True)
+    subprocess.run(["python3", str(ROOT / "tools/mkcitrusfs/mkcitrusfs.py"), str(fs), str(root), "96"], check=True)
     shutil.copyfile(ROOT / "build/disk.img", disk)
     with disk.open("r+b") as dst, fs.open("rb") as src:
         dst.seek(22528 * 512)
@@ -49,9 +49,9 @@ def main():
     try:
         g.until(lambda: "grove: painted" in g.log() and "squeeze: window" in g.log(), "desktop", 45)
         g.scale = 2
-        g.click(322, 732)
+        g.click(216, 732)
         g.until(lambda: "files: listed /:" in g.log(), "real Files root")
-        g.click(330, 300)
+        g.click(330, 320)
         g.until(lambda: "files: listed /etc:" in g.log(), "System folder")
         search("files-test")
         g.until(lambda: "filter 'files-test': 1 matches" in g.log(), "real substring search")
@@ -62,7 +62,7 @@ def main():
         g.until(lambda: "files: selected entry39.txt" in g.log(), "End selects last entry across pages")
         g.key("home")
         g.until(lambda: "files: selected binary.bin" in g.log(), "Home selects first entry")
-        g.key("ret")
+        g.key("spc")  # Quick Look
         g.until(lambda: "files: preview /etc/files-test/binary.bin, 256 bytes" in g.log(), "binary file read safely")
         g.screenshot("binary")
         g.key("esc")
@@ -75,7 +75,8 @@ def main():
         g.until(lambda: "filter '': 41 matches" in g.log(), "Escape restores listing")
         search("entry39")
         g.until(lambda: "filter 'entry39': 1 matches" in g.log(), "search finds entry beyond first syscall batch")
-        open_selected()
+        g.key("ret")  # Finish search with the result selected.
+        g.key("spc")  # Quick Look.
         g.until(lambda: "files: preview /etc/files-test/entry39.txt, 65536 bytes" in g.log(), "bounded 64 KiB preview via repeated reads")
         time.sleep(1)
         g.move(700, 650)
