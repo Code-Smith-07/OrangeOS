@@ -32,7 +32,10 @@ final class ProtocolTests: XCTestCase {
         var s = try Session(token:token)
         _ = try s.respond(Frame(method:1,request:1,payload:token))
         let caps = try s.respond(Frame(method:2,request:2))
-        XCTAssertTrue(String(decoding:caps.payload,as:UTF8.self).contains("not_implemented"))
+        // With no controls passed in, every control is reported as disabled.
+        let text = String(decoding:caps.payload,as:UTF8.self)
+        XCTAssertTrue(text.contains("\"wifi_control\":\"disabled\"") && text.contains("\"bluetooth_control\":\"disabled\""))
+        XCTAssertFalse(text.contains("wifi.set_power"))
         let snapshot = try s.respond(Frame(method:3,request:3),now:Date(timeIntervalSince1970:1234))
         let object = try JSONSerialization.jsonObject(with:snapshot.payload) as! [String:Any]
         XCTAssertEqual(object["unix_seconds"] as? Int,1234)
@@ -126,5 +129,42 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(calls, 2)
         // A rejected mutation must not break unrelated read-only services.
         XCTAssertEqual(try session.respond(Frame(method: 4, request: 12)).flags, 1)
+    }
+    func testRadioPowerNeedsItsOwnGrantAndAValidCommand() throws {
+        var wifiAllowed = false, wifiCalls: [Bool] = [], bluetoothCalls: [Bool] = []
+        var session = try Session(token: token, wifiControl: { on in
+            guard wifiAllowed else { return "permission_denied" }
+            wifiCalls.append(on)
+            return "applied"
+        }, bluetoothControl: { on in
+            bluetoothCalls.append(on)
+            return "failed"
+        })
+        func payload(_ operation: UInt32 = 1, _ on: UInt32 = 1, _ device: UInt32 = 1) -> Data {
+            Data([operation, on, device].flatMap { n in (0..<4).map { UInt8(truncatingIfNeeded: n >> ($0*8)) } })
+        }
+        // Not before authentication.
+        XCTAssertThrowsError(try session.respond(Frame(method: 8, request: 1, payload: payload())))
+        _ = try session.respond(Frame(method: 1, request: 2, payload: token))
+        let caps = String(decoding: try session.respond(Frame(method: 2, request: 3)).payload, as: UTF8.self)
+        XCTAssertTrue(caps.contains("wifi.set_power") && caps.contains("bluetooth.set_power"))
+        // Without the Wi-Fi grant nothing is switched.
+        XCTAssertEqual(try session.respond(Frame(method: 8, request: 4, payload: payload())).flags, 2)
+        XCTAssertEqual(wifiCalls, [])
+        wifiAllowed = true
+        let off = try session.respond(Frame(method: 8, request: 5, payload: payload(1, 0)))
+        XCTAssertEqual(String(decoding: off.payload, as: UTF8.self), "{\"status\":\"applied\"}")
+        _ = try session.respond(Frame(method: 8, request: 6, payload: payload(1, 1)))
+        XCTAssertEqual(wifiCalls, [false, true])
+        // Malformed commands never reach the radio.
+        for (i, bytes) in [payload(2), payload(1, 2), payload(1, 1, 0), payload(1, 1, 7), Data(repeating: 0, count: 11), Data()].enumerated() {
+            XCTAssertEqual(try session.respond(Frame(method: 8, request: UInt32(7+i), payload: bytes)).flags, 2)
+        }
+        XCTAssertEqual(wifiCalls, [false, true])
+        // Bluetooth is separate, and a radio that does not change is an error.
+        XCTAssertEqual(try session.respond(Frame(method: 9, request: 20, payload: payload(1, 0))).flags, 2)
+        XCTAssertEqual(bluetoothCalls, [false])
+        XCTAssertEqual(wifiCalls, [false, true])
+        XCTAssertEqual(try session.respond(Frame(method: 4, request: 21)).flags, 1)
     }
 }

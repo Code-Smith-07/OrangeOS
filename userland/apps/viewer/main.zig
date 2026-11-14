@@ -206,7 +206,8 @@ fn paint() void {
     s.fill(.{ .x = 0, .y = 0, .w = W, .h = BAR }, T.toolbar);
     s.fill(.{ .x = 0, .y = BAR - 1, .w = W, .h = 1 }, T.hairline);
     const name = if (path_len == 0) "Image Viewer" else appkit.basename(path());
-    ui.label(&s, ui.fitting(name, toolButton(0).x - 16 - ui.Metrics.buttons_w), ui.Metrics.buttons_w, 22, 1, T.text);
+    var name_buf: [140]u8 = undefined;
+    ui.label(&s, ui.elide(&name_buf, name, toolButton(0).x - 16 - ui.Metrics.buttons_w), ui.Metrics.buttons_w, 22, 1, T.text);
     const icons = [3]ui.Icon{ .sym_minus, .sym_plus, .sym_image };
     for (0..3) |i| {
         var st = ui.ControlState.of(app.pointer, @intCast(i + 1));

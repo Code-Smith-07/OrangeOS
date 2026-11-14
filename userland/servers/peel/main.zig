@@ -370,6 +370,16 @@ fn syncShell() void {
         bar.count += 1;
         if (shell.popup == .app_menu) shell.popup = .none;
         addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = desktop.BAR_H });
+        shell.bar = &bar;
+        if (pulp.desktop_profile) {
+            // Where each menu title is, for tests and for reading logs.
+            pulp.print("desktop: menu bar {s}:", .{shell.app_name});
+            for (bar.menus[0..bar.count], 0..) |m, i| {
+                const r = desktop.menuTitle(&screen, &shell, i);
+                pulp.print(" {s}@{d}+{d}", .{ m.title, r.x, r.w });
+            }
+            pulp.puts("\n");
+        }
     }
     shell.bar = &bar;
     shell.notes = &note_store;
@@ -690,7 +700,8 @@ fn shellAction(action: u16) void {
                 shell.popup = .app_menu;
                 syncShell();
                 desktop.layoutAppMenu(&screen, &shell);
-                pulp.print("desktop: menu {s} open\n", .{bar.menus[i].title});
+                const panel = desktop.popupRect(&screen, .app_menu);
+                pulp.print("desktop: menu {s} open at {d},{d} {d}x{d}\n", .{ bar.menus[i].title, panel.x, panel.y, panel.w, panel.h });
             }
         },
         desktop.Action.menu_item...desktop.Action.menu_item + menus.MAX_ITEMS - 1 => {

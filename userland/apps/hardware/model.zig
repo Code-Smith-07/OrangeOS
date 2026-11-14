@@ -99,6 +99,11 @@ pub fn parse(bytes: []const u8, scratch: []u8) Model {
                     if (value == .integer and value.integer >= 0 and value.integer <= 99) row.connected = @intCast(value.integer);
                 }
             }
+            // Radios (Wi-Fi, Bluetooth): a switch is offered only when the
+            // companion says it may be used and the state is known.
+            if (i < 2 and (row.reading == .on or row.reading == .off)) {
+                if (field(item, "control")) |control| row.control = control == .bool and control.bool;
+            }
             if ((i == 2 or i == 3) and row.reading == .percent) {
                 if (field(item, "device")) |device| {
                     if (device == .integer and device.integer > 0 and device.integer <= std.math.maxInt(u32)) row.device = @intCast(device.integer);
@@ -189,4 +194,16 @@ test "Bluetooth connected count is read only for a radio that is on" {
     try std.testing.expectEqual(@as(?u8, null), decode(prefix ++ wifi ++ off ++ brightness ++ "0.5}}").rows[1].connected);
     try std.testing.expectEqual(@as(?u8, null), decode(prefix ++ wifi ++ bogus ++ brightness ++ "0.5}}").rows[1].connected);
     try std.testing.expectEqual(@as(?u8, null), decode(prefix ++ wifi ++ bluetooth ++ brightness ++ "0.5}}").rows[1].connected);
+}
+
+test "a radio offers its switch only when granted and its state is known" {
+    var scratch: [32768]u8 = undefined;
+    const head = "{\"schema\":1,\"provider\":\"macos\",\"observed_unix_seconds\":5,\"freshness\":\"fresh\",";
+    const tail = ",\"bluetooth\":{\"source\":\"x\",\"status\":\"permission_required\",\"permission\":\"not_determined\",\"control\":true},\"brightness\":{\"source\":\"x\",\"status\":\"unavailable\",\"permission\":\"none\"}}";
+    const on = parse(head ++ "\"wifi\":{\"source\":\"CoreWLAN\",\"status\":\"available\",\"permission\":\"not_required_for_probe\",\"power\":true,\"control\":true}" ++ tail, &scratch);
+    try std.testing.expect(on.rows[0].reading == .on and on.rows[0].control);
+    // Bluetooth without permission has no known state: no switch, whatever it claims.
+    try std.testing.expect(!on.rows[1].control);
+    const off = parse(head ++ "\"wifi\":{\"source\":\"CoreWLAN\",\"status\":\"available\",\"permission\":\"x\",\"power\":false,\"control\":false}" ++ tail, &scratch);
+    try std.testing.expect(off.rows[0].reading == .off and !off.rows[0].control);
 }

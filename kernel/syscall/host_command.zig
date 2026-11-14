@@ -1,5 +1,8 @@
-//! Bounded VM-to-host audio/display request mailbox. Only the read-only system
-//! hardware app may submit; only the boot-authorized agent may dispatch/ack.
+//! Bounded VM-to-host device request mailbox: sound volume, display
+//! brightness, and Wi-Fi and Bluetooth power. Only the system's own
+//! hardware apps (Control Center and Settings) may submit; only the
+//! boot-authorized agent may dispatch/ack. The Mac companion still decides
+//! whether each kind of request is allowed.
 const std = @import("std");
 const sched = @import("../sched/sched.zig");
 const sync = @import("../sync/spinlock.zig");
@@ -19,8 +22,9 @@ var deadline: u64 = 0;
 pub fn operation(op: u64, arg0: u64, arg1: u64) i64 {
     const task = sched.currentTask() orelse return -13;
     const proc = task.process orelse return -13;
-    if (((op <= 1 or op == 5) and !proc.host_controls) or (op >= 2 and op != 5 and !proc.host_bridge)) return -13;
-    if (op > 5) return -22;
+    const submit = op <= 1 or (op >= 5 and op <= 7);
+    if (op > 7) return -22;
+    if ((submit and !proc.host_controls) or (!submit and !proc.host_bridge)) return -13;
     if (op == 2) {
         if (arg1 != @sizeOf(Command)) return -22;
         validate.check(task.pageTable(), arg0, @sizeOf(Command), true) catch return -14;
@@ -33,12 +37,20 @@ pub fn operation(op: u64, arg0: u64, arg1: u64) i64 {
         result = -110;
     }
     switch (op) {
-        0, 5 => {
+        // 0 volume, 5 brightness (percent, device); 6 Wi-Fi, 7 Bluetooth
+        // power (0 off or 1 on; the device argument must be 1).
+        0, 5, 6, 7 => {
             if (arg0 > 100 or (op == 5 and arg0 < 5) or arg1 == 0 or arg1 > std.math.maxInt(u32)) return -22;
+            if (op >= 6 and (arg0 > 1 or arg1 != 1)) return -22;
             if (active and now < deadline + 6000) return -16;
             if (serial == std.math.maxInt(u32)) return -75;
             serial += 1;
-            command = .{ .id = serial, .percent = @intCast(arg0), .device = @intCast(arg1), .kind = if (op == 5) 2 else 1 };
+            command = .{ .id = serial, .percent = @intCast(arg0), .device = @intCast(arg1), .kind = switch (op) {
+                5 => 2,
+                6 => 3,
+                7 => 4,
+                else => 1,
+            } };
             owner = proc.pid;
             active = true;
             done = false;

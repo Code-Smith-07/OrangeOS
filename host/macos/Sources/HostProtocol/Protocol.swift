@@ -57,8 +57,11 @@ public struct Session {
     private let hardware: (() -> HardwareSnapshot)?
     private let audioControl: ((UInt32, UInt32) -> String)?
     private let brightnessControl: ((UInt32, UInt32) -> String)?
-    private var hasControls: Bool { audioControl != nil || brightnessControl != nil }
-    public init(token: Data, hardware: (() -> HardwareSnapshot)? = nil, audioControl: ((UInt32, UInt32) -> String)? = nil, brightnessControl: ((UInt32, UInt32) -> String)? = nil) throws {
+    private let wifiControl: ((Bool) -> String)?
+    private let bluetoothControl: ((Bool) -> String)?
+    private var hasControls: Bool { audioControl != nil || brightnessControl != nil || wifiControl != nil || bluetoothControl != nil }
+    public init(token: Data, hardware: (() -> HardwareSnapshot)? = nil, audioControl: ((UInt32, UInt32) -> String)? = nil, brightnessControl: ((UInt32, UInt32) -> String)? = nil,
+                wifiControl: ((Bool) -> String)? = nil, bluetoothControl: ((Bool) -> String)? = nil) throws {
         guard token.count == 64, token.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
             throw WireError.authentication
         }
@@ -66,6 +69,8 @@ public struct Session {
         self.hardware = hardware
         self.audioControl = audioControl
         self.brightnessControl = brightnessControl
+        self.wifiControl = wifiControl
+        self.bluetoothControl = bluetoothControl
     }
     public mutating func respond(_ frame: Frame, now: Date = Date()) throws -> Frame {
         guard frame.flags == 0, frame.request > lastRequest else { throw WireError.sequence }
@@ -88,15 +93,35 @@ public struct Session {
             let result = control(device, percent)
             return try reply(frame, ["status": result], error: result != "applied")
         }
+        if frame.method == 8 || frame.method == 9 {
+            // Radio power: operation 1, then 0 (off) or 1 (on), then 1.
+            guard frame.payload.count == 12 else { return try reply(frame, ["error":"invalid_argument"], error: true) }
+            let bytes = Array(frame.payload)
+            func number(_ offset: Int) -> UInt32 { (0..<4).reduce(0) { $0 | UInt32(bytes[offset+$1]) << ($1*8) } }
+            guard number(0) == 1, number(4) <= 1, number(8) == 1 else { return try reply(frame, ["error":"invalid_argument"], error: true) }
+            guard let control = frame.method == 8 ? wifiControl : bluetoothControl else { return try reply(frame, ["error":"permission_denied"], error: true) }
+            let result = control(number(4) == 1)
+            return try reply(frame, ["status": result], error: result != "applied")
+        }
         guard frame.payload.isEmpty else { return try reply(frame, ["error":"invalid_argument"], error: true) }
         switch frame.method {
         case 2:
-            return try reply(frame, ["provider":"macos", "mode": hasControls ? "host_consent" : "read_only",
-                "operations": ["host.capabilities","host.snapshot","host.ping"] + (hardware == nil ? [] : ["host.hardware"]) + (audioControl == nil ? [] : ["audio.set_volume"]) + (brightnessControl == nil ? [] : ["display.set_brightness"]),
+            var operations = ["host.capabilities", "host.snapshot", "host.ping"]
+            if hardware != nil { operations.append("host.hardware") }
+            if audioControl != nil { operations.append("audio.set_volume") }
+            if brightnessControl != nil { operations.append("display.set_brightness") }
+            if wifiControl != nil { operations.append("wifi.set_power") }
+            if bluetoothControl != nil { operations.append("bluetooth.set_power") }
+            func control(_ present: Bool) -> String { present ? "host_consent_required" : "disabled" }
+            let capabilities: [String: Any] = [
+                "provider": "macos", "mode": hasControls ? "host_consent" : "read_only",
+                "operations": operations,
                 "hardware_readback": hardware == nil ? "not_implemented" : "available",
-                "wifi_control":"not_implemented", "bluetooth_control":"not_implemented", "brightness_control": brightnessControl == nil ? "disabled" : "host_consent_required",
-                "audio_control": audioControl == nil ? "disabled" : "host_consent_required",
-                "capture":"disabled", "host_mutations": hasControls ? "controls_require_live_host_grants" : "denied"])
+                "wifi_control": control(wifiControl != nil), "bluetooth_control": control(bluetoothControl != nil),
+                "brightness_control": control(brightnessControl != nil), "audio_control": control(audioControl != nil),
+                "capture": "disabled", "host_mutations": hasControls ? "controls_require_live_host_grants" : "denied",
+            ]
+            return try reply(frame, capabilities)
         case 3:
             return try reply(frame, ["provider":"macos", "unix_seconds":Int64(now.timeIntervalSince1970),
                 "timezone":TimeZone.current.identifier,

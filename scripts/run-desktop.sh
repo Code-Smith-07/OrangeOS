@@ -6,6 +6,8 @@
 # Center show the Mac's real Wi-Fi, Bluetooth, battery, brightness and sound
 # (host/macos/README.md). It talks to the guest over a private virtio-serial
 # channel with a fresh per-run key; nothing is opened to the network.
+# Settings and Control Center can then change the Mac's volume, brightness,
+# Wi-Fi and Bluetooth: these grants are given at start (ORANGE_GRANTS).
 # ORANGE_BRIDGE=0 runs without it (the indicators then show "?").
 set -eu
 cd "$(dirname "$0")/.."
@@ -74,8 +76,16 @@ if [ -n "$bridge_dir" ]; then
         sleep 0.1
         tries=$((tries + 1))
     done
-    "$companion" --socket "$bridge_dir/agent.sock" --token-file "$bridge_dir/key" --controls \
-        > "$bridge_dir/companion.log" 2>&1 &
+    # The controls OrangeOS may use on this Mac from the start. Each shows
+    # ticked in the companion's menu-bar menu and can be switched off there.
+    # ORANGE_GRANTS=none starts with none (grant them from the menu instead).
+    grants="${ORANGE_GRANTS:-sound,brightness,wifi,bluetooth}"
+    if [ "$grants" = none ]; then
+        set -- "$companion" --socket "$bridge_dir/agent.sock" --token-file "$bridge_dir/key" --controls
+    else
+        set -- "$companion" --socket "$bridge_dir/agent.sock" --token-file "$bridge_dir/key" --controls --grant "$grants"
+    fi
+    "$@" > "$bridge_dir/companion.log" 2>&1 &
     companion_pid=$!
 fi
 

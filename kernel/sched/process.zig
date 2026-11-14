@@ -300,7 +300,7 @@ fn spawnPathInternal(path: []const u8, pty: ?*@import("../ipc/object.zig").Objec
 
     const t = sched.spawnProcess(name, spawnThread, req, .normal, .{
         .pty = pty,
-        .host_controls = std.mem.eql(u8, path, "/bin/hardware"),
+        .host_controls = std.mem.eql(u8, path, "/bin/hardware") or std.mem.eql(u8, path, "/bin/settings"),
         .host_bridge = service_manager and std.mem.eql(u8, path, "/bin/host-agent"),
     }) catch return error.OutOfMemory;
 

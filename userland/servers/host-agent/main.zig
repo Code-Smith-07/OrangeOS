@@ -67,11 +67,17 @@ export fn _start() callconv(.c) noreturn {
                 std.mem.writeInt(u32, command_payload[0..4], 1, .little);
                 std.mem.writeInt(u32, command_payload[4..8], command.percent, .little);
                 std.mem.writeInt(u32, command_payload[8..12], command.device, .little);
-                method = if (command.kind == 2) 7 else 6;
+                // 6 volume, 7 brightness, 8 Wi-Fi power, 9 Bluetooth power.
+                method = switch (command.kind) {
+                    2 => 7,
+                    3 => 8,
+                    4 => 9,
+                    else => 6,
+                };
                 next_send = 0;
             }
             if (!pending and now >= next_send) {
-                if (send(method, id + 1, if (method == 1) &token else if (method == 6 or method == 7) &command_payload else "")) {
+                if (send(method, id + 1, if (method == 1) &token else if (method >= 6 and method <= 9) &command_payload else "")) {
                     id += 1;
                     pending = true;
                     deadline = now + 5000;
@@ -85,7 +91,7 @@ export fn _start() callconv(.c) noreturn {
                 };
                 if (complete) {
                     const h = wire.decode(parser.buffer[0..16]) catch unreachable;
-                    if (!pending or (h.flags != 1 and !((method == 6 or method == 7) and h.flags == 2)) or h.method != method or h.request != id) {
+                    if (!pending or (h.flags != 1 and !((method >= 6 and method <= 9) and h.flags == 2)) or h.method != method or h.request != id) {
                         failed = true;
                         break;
                     }
@@ -97,7 +103,7 @@ export fn _start() callconv(.c) noreturn {
                         }
                     }
                     if (failed) break;
-                    if (method == 6 or method == 7) {
+                    if (method >= 6 and method <= 9) {
                         const outcome: i64 = if (h.flags == 1 and std.mem.eql(u8, payload, "{\"status\":\"applied\"}")) 0 else if (std.mem.indexOf(u8, payload, "permission_denied") != null) -13 else if (std.mem.indexOf(u8, payload, "unsupported") != null) -95 else if (std.mem.indexOf(u8, payload, "route_changed") != null) -116 else -5;
                         _ = pulp.syscall3(112, 3, command_id, @bitCast(outcome));
                         command_id = 0;
@@ -123,7 +129,7 @@ export fn _start() callconv(.c) noreturn {
                     if (method == 4) pulp.puts("host-agent: pong\n");
                     pending = false;
                     parser.reset();
-                    method = if (method < 3) method + 1 else if (method == 3 or method == 4 or method == 6 or method == 7) 5 else 4;
+                    method = if (method < 3) method + 1 else if (method == 3 or method == 4 or (method >= 6 and method <= 9)) 5 else 4;
                     next_send = now + (if (method >= 4) @as(u64, 1000) else 0);
                 }
             };

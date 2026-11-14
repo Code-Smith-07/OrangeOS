@@ -166,8 +166,19 @@ fn upButton() ui.Rect {
 fn viewControl() ui.Rect {
     return .{ .x = app.width() - 16 - 64, .y = 12, .w = 64, .h = 28 };
 }
+/// The folder's name as the toolbar shows it.
+fn titleText() []const u8 {
+    for (places) |place| if (std.mem.eql(u8, place.path, path())) return place.name;
+    return if (path_len == 1) "Orange OS" else appkit.basename(path());
+}
+/// The search field is as wide as the window allows, and gives up room
+/// (down to 64 points) before the folder's name would be cut.
 fn searchRect() ui.Rect {
-    const w = @min(@as(i32, 180), @max(110, app.width() - SIDEBAR_W - 440));
+    const ideal = @min(@as(i32, 180), @max(110, app.width() - SIDEBAR_W - 440));
+    const title_x = upButton().right() + 14;
+    const others = 12 + 3 * 32 + 10; // the three actions and their gaps
+    const left_for_search = viewControl().x - 10 - title_x - others - (ui.textWidth(titleText(), 1) + 8);
+    const w = std.math.clamp(left_for_search, 64, ideal);
     return .{ .x = viewControl().x - 10 - w, .y = 15, .w = w, .h = ui.Metrics.search_h };
 }
 /// New Folder (or Put Back), Move to Trash (or Empty), Quick Look.
@@ -836,7 +847,8 @@ fn paintLook(s: *ui.Surface, area: ui.Rect) void {
     const box = lookBox();
     const H = app.height();
     const c = contentArea();
-    ui.label(s, ui.fitting(look_name[0..look_name_len], box.w - 12), box.x + 6, BAR + 26, 1, 0x253247);
+    var look_buf: [140]u8 = undefined;
+    ui.label(s, ui.elide(&look_buf, look_name[0..look_name_len], box.w - 12), box.x + 6, BAR + 26, 1, 0x253247);
     s.rounded(box, 10, 0xF4F7FB, 255);
     var status_buf: [120]u8 = undefined;
     var size_buf: [24]u8 = undefined;
@@ -913,7 +925,8 @@ fn paintItems(s: *ui.Surface, area: ui.Rect) void {
         if (grid_view) {
             if (chosen or hot) s.rounded(r, 11, if (chosen) 0xD6E6FC else 0xEDF4FD, 255);
             ui.icon(s, entryIcon(i), r.x + 24, r.y + 8, 64);
-            const shown = ui.fitting(name, 102);
+            var name_buf: [140]u8 = undefined;
+            const shown = ui.elide(&name_buf, name, 102);
             // The selected name sits on an accent pill, as in the Finder.
             if (chosen) s.rounded(.{ .x = r.x + @divTrunc(r.w - ui.textWidth(shown, 1), 2) - 5, .y = r.y + 80, .w = ui.textWidth(shown, 1) + 10, .h = 20 }, 5, ui.Tone.accent, 255);
             s.setClip(ui.Rect.intersect(area, .{ .x = r.x + 2, .y = r.y + 78, .w = 108, .h = 24 }));
@@ -924,9 +937,8 @@ fn paintItems(s: *ui.Surface, area: ui.Rect) void {
             const dim: u32 = if (chosen) 0xE6EFFD else 0x8994A5;
             if (chosen) s.rounded(r, 5, ui.Tone.accent, 255) else if (hot) s.rounded(r, 5, 0xEDF4FD, 255) else if (i % 2 == 1) s.rounded(r, 5, 0xF6F8FB, 255);
             ui.icon(s, entryIcon(i), r.x + 8, r.y + 3, 18);
-            s.setClip(ui.Rect.intersect(area, .{ .x = r.x + 32, .y = r.y, .w = r.w - 32 - 190, .h = r.h }));
-            ui.label(s, name, r.x + 32, r.y + 8, 1, ink);
-            s.setClip(area);
+            var name_buf: [140]u8 = undefined;
+            ui.label(s, ui.elide(&name_buf, name, r.w - 32 - 190), r.x + 32, r.y + 8, 1, ink);
             var size_buf: [24]u8 = undefined;
             ui.label(s, if (entries[i].isDir()) "--" else model.sizeText(sizes[i], &size_buf), W - 186, r.y + 8, 1, dim);
             ui.label(s, kindText(i), W - 100, r.y + 8, 1, dim);
@@ -967,12 +979,9 @@ fn paint(area: ui.Rect) void {
         ui.toolbarButton(&s, toolButton(i), icons[i], st);
     }
     // The folder's name, between the buttons and the actions.
-    var basename: []const u8 = if (path_len == 1) "Orange OS" else appkit.basename(path());
-    for (places) |place| if (std.mem.eql(u8, place.path, path())) {
-        basename = place.name;
-    };
     const title_x = upButton().right() + 14;
-    ui.label(&s, ui.fitting(basename, toolButton(0).x - 10 - title_x), title_x, 22, 1, T.text);
+    var title_buf: [140]u8 = undefined;
+    ui.label(&s, ui.elide(&title_buf, titleText(), toolButton(0).x - 10 - title_x), title_x, 22, 1, T.text);
     ui.searchField(&s, searchRect(), query.text(), if (search_active) "Type to filter..." else "Search", search_active);
     const view = viewControl();
     const view_hover: ?usize = if (pointer.hover == 30) 0 else if (pointer.hover == 31) 1 else null;

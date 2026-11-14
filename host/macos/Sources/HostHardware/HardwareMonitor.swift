@@ -16,9 +16,14 @@ public final class HardwareMonitor {
     private var timer: DispatchSourceTimer?
     private let audioConsent: AudioConsent
     private let brightnessConsent: BrightnessConsent
-    public init(audioConsent: AudioConsent = AudioConsent(), brightnessConsent: BrightnessConsent = BrightnessConsent()) {
+    private let wifiConsent: RadioConsent
+    private let bluetoothConsent: RadioConsent
+    public init(audioConsent: AudioConsent = AudioConsent(), brightnessConsent: BrightnessConsent = BrightnessConsent(),
+                wifiConsent: RadioConsent = RadioConsent(.wifi), bluetoothConsent: RadioConsent = RadioConsent(.bluetooth)) {
         self.audioConsent = audioConsent
         self.brightnessConsent = brightnessConsent
+        self.wifiConsent = wifiConsent
+        self.bluetoothConsent = bluetoothConsent
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now(), repeating: 2)
         timer.setEventHandler { [weak self] in self?.refresh() }
@@ -31,6 +36,9 @@ public final class HardwareMonitor {
         var result = snapshot.aged(now: Date())
         if !audioConsent.allowed { result.audio.control = false; result.audio.permission = "not_granted" }
         if !brightnessConsent.allowed { result.brightness.control = false; result.brightness.permission = "not_granted" }
+        // A radio can be switched when its grant is on and its state is known.
+        result.wifi.control = wifiConsent.allowed && result.wifi.power != nil
+        result.bluetooth.control = bluetoothConsent.allowed && result.bluetooth.power != nil
         if result.freshness == "fresh" && ProcessInfo.processInfo.systemUptime - observedUptime > 6 { result.freshness = "stale" }
         return result
     }
@@ -41,8 +49,9 @@ public final class HardwareMonitor {
         let wifi: HardwareState
         if let iface = CWWiFiClient.shared().interface() {
             let on = iface.powerOn()
-            wifi = .init(source: "CoreWLAN.powerOn", status: on ? "available" : "unknown", permission: "not_required_for_probe",
-                         power: on ? true : nil, note: on ? "Host radio on; guest NAT health is separate" : "API false may mean off or query failure; not asserted as off")
+            // With an interface in hand, false is the radio being off.
+            wifi = .init(source: "CoreWLAN.powerOn", status: "available", permission: "not_required_for_probe",
+                         power: on, note: on ? "Host radio on; guest NAT health is separate" : "Host radio off")
         } else { wifi = .init(source: "CoreWLAN", status: "unavailable", note: "No interface returned") }
         let bluetooth: HardwareState
         // Authorization can be checked without creating a manager or prompting.

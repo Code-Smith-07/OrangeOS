@@ -53,13 +53,14 @@ func connectSocket(_ path: String) throws -> Int32 {
     return fd
 }
 
-func serve(_ fd: Int32, token: Data, monitor: HardwareMonitor, consent: AudioConsent?, brightness: BrightnessConsent?) throws {
+func serve(_ fd: Int32, token: Data, monitor: HardwareMonitor, consent: AudioConsent?, brightness: BrightnessConsent?, wifi: RadioConsent?, bluetooth: RadioConsent?) throws {
     var decoder = Decoder()
     var session = try Session(token:token, hardware: { monitor.current() }, audioControl: consent.map { grant in
         { device, percent in grant.apply(device: device, percent: percent) }
     }, brightnessControl: brightness.map { grant in
         { display, percent in grant.apply(display: display, percent: percent) }
-    })
+    }, wifiControl: wifi.map { grant in { on in grant.apply(on: on) } },
+       bluetoothControl: bluetooth.map { grant in { on in grant.apply(on: on) } })
     var input = [UInt8](repeating:0,count:4096)
     var period = ProcessInfo.processInfo.systemUptime
     var count = 0
@@ -95,6 +96,10 @@ func serve(_ fd: Int32, token: Data, monitor: HardwareMonitor, consent: AudioCon
 final class CompanionMenu: NSObject, NSMenuDelegate, CBCentralManagerDelegate {
     let consent: AudioConsent
     let brightness: BrightnessConsent
+    let wifi: RadioConsent
+    let bluetooth: RadioConsent
+    let wifiItem = NSMenuItem(title: "Allow OrangeOS to turn Wi-Fi on and off", action: #selector(toggleWiFi), keyEquivalent: "")
+    let bluetoothPowerItem = NSMenuItem(title: "Allow OrangeOS to turn Bluetooth on and off", action: #selector(toggleBluetoothPower), keyEquivalent: "")
     let item: NSStatusItem
     let grantItem = NSMenuItem(title: "Allow OrangeOS to change Mac volume", action: #selector(toggleAudio), keyEquivalent: "")
     let brightnessItem = NSMenuItem(title: "Allow built-in display brightness control", action: #selector(toggleBrightness), keyEquivalent: "")
@@ -102,9 +107,11 @@ final class CompanionMenu: NSObject, NSMenuDelegate, CBCentralManagerDelegate {
     /// Created only when the person chooses the Bluetooth item: creating a
     /// manager is what makes macOS ask. It never scans or connects.
     var bluetoothManager: CBCentralManager?
-    init(consent: AudioConsent, brightness: BrightnessConsent) {
+    init(consent: AudioConsent, brightness: BrightnessConsent, wifi: RadioConsent, bluetooth: RadioConsent) {
         self.consent = consent
         self.brightness = brightness
+        self.wifi = wifi
+        self.bluetooth = bluetooth
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         item.button?.image = NSImage(systemSymbolName: "speaker.wave.2", accessibilityDescription: "OrangeOS Companion")
@@ -116,7 +123,14 @@ final class CompanionMenu: NSObject, NSMenuDelegate, CBCentralManagerDelegate {
         menu.addItem(.separator())
         grantItem.target = self; menu.addItem(grantItem)
         brightnessItem.target = self; menu.addItem(brightnessItem)
+        wifiItem.target = self; menu.addItem(wifiItem)
+        bluetoothPowerItem.target = self; menu.addItem(bluetoothPowerItem)
         bluetoothItem.target = self; menu.addItem(bluetoothItem)
+        // Grants given when the companion was started show as ticked.
+        grantItem.state = consent.allowed ? .on : .off
+        brightnessItem.state = brightness.allowed ? .on : .off
+        wifiItem.state = wifi.allowed ? .on : .off
+        bluetoothPowerItem.state = bluetooth.allowed ? .on : .off
         let compatibility = NSMenuItem(title: "Display uses a macOS compatibility adapter", action: nil, keyEquivalent: "")
         compatibility.isEnabled = false; menu.addItem(compatibility)
         menu.addItem(.separator())
@@ -160,15 +174,26 @@ final class CompanionMenu: NSObject, NSMenuDelegate, CBCentralManagerDelegate {
         brightness.setAllowed(!brightness.allowed)
         brightnessItem.state = brightness.allowed ? .on : .off
     }
-    @objc func disconnect() { consent.setAllowed(false); brightness.setAllowed(false); NSApplication.shared.terminate(nil) }
+    @objc func toggleWiFi() {
+        wifi.setAllowed(!wifi.allowed)
+        wifiItem.state = wifi.allowed ? .on : .off
+    }
+    @objc func toggleBluetoothPower() {
+        bluetooth.setAllowed(!bluetooth.allowed)
+        bluetoothPowerItem.state = bluetooth.allowed ? .on : .off
+    }
+    @objc func disconnect() {
+        consent.setAllowed(false); brightness.setAllowed(false); wifi.setAllowed(false); bluetooth.setAllowed(false)
+        NSApplication.shared.terminate(nil)
+    }
 }
 
-func runConnections(path: String, token: Data, monitor: HardwareMonitor, consent: AudioConsent?, brightness: BrightnessConsent?) throws {
+func runConnections(path: String, token: Data, monitor: HardwareMonitor, consent: AudioConsent?, brightness: BrightnessConsent?, wifi: RadioConsent?, bluetooth: RadioConsent?) throws {
     while true {
         let fd: Int32
         do { fd = try connectSocket(path) }
         catch RunError.connection { Thread.sleep(forTimeInterval:0.25); continue }
-        do { try serve(fd,token:token,monitor:monitor,consent:consent,brightness:brightness) }
+        do { try serve(fd,token:token,monitor:monitor,consent:consent,brightness:brightness,wifi:wifi,bluetooth:bluetooth) }
         catch { fputs("orange-host: rejected session or transport failure\n",stderr) }
         close(fd)
         Thread.sleep(forTimeInterval:0.25)
@@ -216,6 +241,16 @@ do {
         print("CoreAudio unchanged-level write/readback: \(result)")
         exit(result == "applied" ? 0 : 1)
     }
+    if args.count == 2 && args[1] == "--verify-wifi-write" {
+        let result = Radios.verifyUnchangedWiFi()
+        print("Wi-Fi unchanged-state write/readback: \(result)")
+        exit(result == "applied" ? 0 : 1)
+    }
+    if args.count == 2 && args[1] == "--verify-bluetooth-write" {
+        let result = Radios.verifyUnchangedBluetooth()
+        print("Bluetooth unchanged-state write/readback: \(result)")
+        exit(result == "applied" ? 0 : 1)
+    }
     if args.count == 2 && args[1] == "--probe-hardware" {
         let monitor = HardwareMonitor()
         let deadline = Date().addingTimeInterval(5)
@@ -224,27 +259,38 @@ do {
         print(String(decoding: try encoder.encode(monitor.current()), as: UTF8.self))
         exit(0)
     }
-    let controls = args.count == 6 && args[5] == "--controls"
-    guard (args.count == 5 || controls), args[1] == "--socket", args[3] == "--token-file" else { throw RunError.arguments }
+    // --controls shows the menu with a grant for each control; --grant a,b
+    // starts with those grants already given (the person who starts the
+    // companion chooses; each stays visible and can be switched off).
+    let controls = args.count >= 6 && args[5] == "--controls"
+    let granted: Set<String> = args.count == 8 && args[6] == "--grant" ? Set(args[7].split(separator: ",").map(String.init)) : []
+    guard args.count == 5 || (controls && (args.count == 6 || args.count == 8)), args[1] == "--socket", args[3] == "--token-file",
+          granted.isSubset(of: ["sound", "brightness", "wifi", "bluetooth"]), args.count != 8 || args[6] == "--grant" else { throw RunError.arguments }
     let token = try readToken(args[4])
     _ = try Session(token: token)
     if controls, let status = runDisclaimed(args) { exit(status) }
     let consent = AudioConsent()
     let brightness = BrightnessConsent()
-    let monitor = HardwareMonitor(audioConsent: consent, brightnessConsent: brightness)
-    print(controls ? "orange-host: controls require individual live grants in the Mac menu bar" : "orange-host: read-only companion; host mutations disabled")
+    let wifi = RadioConsent(.wifi)
+    let bluetooth = RadioConsent(.bluetooth)
+    consent.setAllowed(granted.contains("sound"))
+    brightness.setAllowed(granted.contains("brightness"))
+    wifi.setAllowed(granted.contains("wifi"))
+    bluetooth.setAllowed(granted.contains("bluetooth"))
+    let monitor = HardwareMonitor(audioConsent: consent, brightnessConsent: brightness, wifiConsent: wifi, bluetoothConsent: bluetooth)
+    print(controls ? "orange-host: controls need grants in the Mac menu bar; granted at start: \(granted.sorted().joined(separator: ","))" : "orange-host: read-only companion; host mutations disabled")
     fflush(stdout)
     if controls {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
-        let menu = CompanionMenu(consent: consent, brightness: brightness)
+        let menu = CompanionMenu(consent: consent, brightness: brightness, wifi: wifi, bluetooth: bluetooth)
         Thread.detachNewThread {
-            do { try runConnections(path: args[2], token: token, monitor: monitor, consent: consent, brightness: brightness) }
+            do { try runConnections(path: args[2], token: token, monitor: monitor, consent: consent, brightness: brightness, wifi: wifi, bluetooth: bluetooth) }
             catch { fputs("orange-host: unsafe session path\n", stderr); exit(1) }
         }
         withExtendedLifetime(menu) { app.run() }
     } else {
-        try runConnections(path: args[2], token: token, monitor: monitor, consent: nil, brightness: nil)
+        try runConnections(path: args[2], token: token, monitor: monitor, consent: nil, brightness: nil, wifi: nil, bluetooth: nil)
     }
 } catch {
     fputs("orange-host: invalid arguments or unsafe session files\n",stderr)

@@ -334,7 +334,8 @@ fn paint() void {
     s.fill(.{ .x = 0, .y = BAR - 1, .w = W, .h = 1 }, T.hairline);
     const save_rect = saveButton();
     const name_room = save_rect.x - 16 - ui.Metrics.buttons_w;
-    const name = ui.fitting(docName(), @max(0, name_room - 70));
+    var name_buf: [140]u8 = undefined;
+    const name = ui.elide(&name_buf, docName(), @max(0, name_room - 70));
     ui.label(&s, name, ui.Metrics.buttons_w, 22, 1, T.text);
     if (buf.dirty) ui.label(&s, "Edited", ui.Metrics.buttons_w + ui.textWidth(name, 1) + 10, 22, 1, T.placeholder);
     var st = ui.ControlState.of(app.pointer, 1);

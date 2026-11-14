@@ -282,6 +282,24 @@ pub const Sheet = struct {
     }
 };
 
+/// `text` when it fits in `width`; otherwise as much of it as fits followed
+/// by "...", written into `buf`. For names that can be any length (a file,
+/// a folder, a document): a cut name must say that it was cut.
+pub fn elide(buf: []u8, text: []const u8, width: i32) []const u8 {
+    if (textWidth(text, 1) <= width) return text;
+    const dots = "...";
+    const room = width - textWidth(dots, 1);
+    if (room <= 0) return "";
+    var n = @min(text.len, buf.len - dots.len);
+    while (n > 0 and textWidth(text[0..n], 1) > room) n -= 1;
+    // No space before the dots.
+    while (n > 0 and text[n - 1] == ' ') n -= 1;
+    if (n == 0) return "";
+    @memcpy(buf[0..n], text[0..n]);
+    @memcpy(buf[n..][0..dots.len], dots);
+    return buf[0 .. n + dots.len];
+}
+
 /// The longest prefix of `text` that fits in `width` at text scale 1.
 pub fn fitting(text: []const u8, width: i32) []const u8 {
     var n = text.len;
@@ -492,6 +510,11 @@ test "toolkit controls stay inside their rectangles" {
         };
     }
     try std.testing.expectEqualStrings("Doc", fitting("Documents", textWidth("Doc", 1)));
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("Documents", elide(&buf, "Documents", 500));
+    const cut = elide(&buf, "A very long folder name indeed", 90);
+    try std.testing.expect(std.mem.endsWith(u8, cut, "...") and textWidth(cut, 1) <= 90 and cut.len > 3);
+    try std.testing.expectEqualStrings("", elide(&buf, "Documents", 4));
     try std.testing.expectEqual(@as(usize, 0), fitting("Documents", 0).len);
 }
 

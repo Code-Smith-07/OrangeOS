@@ -1,6 +1,6 @@
 # 014: A macOS-class experience
 
-Status: programme plan, with M1 and M2 done. Created 6 Nov 2026; M2 7 Nov 2026.
+Status: programme plan, with M1 to M8 built. Created 6 Nov 2026; M2 7 Nov 2026; M3 to M8 14 Nov 2026.
 
 The aim: OrangeOS should feel as finished as macOS: the shell, the
 everyday apps, how they connect to the hardware, and that it runs in the
@@ -213,4 +213,30 @@ What M2 does not do yet: live resize of the browser's web page during the
 drag happens at the client's pace (WebKit draws the new size a moment
 later, white until then); window snapping to other windows; keyboard
 shortcuts for tiling (Command combinations stay with the Mac under QEMU).
+
+## 7. M3 to M8 (14 Nov 2026)
+
+- **M3 Files, M4 apps:** commit 889271a. Tests `tools/files_ops_smoke.py`,
+  `tools/apps_smoke.py`.
+- **M5 Settings:** `userland/apps/settings`. Wi-Fi, Bluetooth, Sound and
+  Display change the Mac's real hardware through the companion (kernel
+  mailbox ops 0, 5, 6, 7; companion methods 6 to 9, each behind its own
+  grant; `scripts/run-desktop.sh` gives the grants at start, `ORANGE_GRANTS`
+  overrides). Appearance and Lock Screen are saved on /data.
+- **M6 Notifications:** `notes.zig`; banner, bell, list, Clear; apps, a
+  terminal command (`notify`) and a low Mac battery post them.
+- **M7 App menus:** `menus.zig`; apps publish menus as text, Peel draws
+  them and adds its Window menu.
+- **M8 Lock:** `userland/libs/account` (salted PBKDF2-HMAC-SHA256, never the
+  password); locks at start-up, from the Orange menu, Spotlight or
+  Settings, and after the chosen idle time.
+- Tests: `tools/settings_smoke.py` (with a stand-in companion, so the real
+  Mac's radios are never switched by a test) and `tools/menus_smoke.py`.
+
+Not done: Control Center has no Wi-Fi/Bluetooth switches yet (Settings
+does); the browser is not yet checked against a list of real sites; menu
+bar is still 28 pt; VirtualBox/VMware and real-PC support (section 5, V1
+to V4) is still the plan, not built. Real laptops need drivers OrangeOS
+does not have yet (NVMe, USB keyboards and mice via xHCI, more network
+cards, ACPI battery), which is the next programme after this one.
 

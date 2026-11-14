@@ -243,6 +243,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "editor", .path = "userland/apps/editor/main.zig" },
         .{ .name = "viewer", .path = "userland/apps/viewer/main.zig" },
         .{ .name = "calculator", .path = "userland/apps/calculator/main.zig" },
+        .{ .name = "settings", .path = "userland/apps/settings/main.zig" },
+        .{ .name = "notify", .path = "userland/bin/notify/main.zig" },
         .{ .name = "trash", .path = "userland/apps/trash/main.zig" },
         .{ .name = "ping", .path = "userland/bin/ping/main.zig" },
         .{ .name = "net", .path = "userland/bin/net/main.zig" },
