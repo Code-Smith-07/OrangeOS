@@ -183,7 +183,25 @@ fn setupTx() !void {
 }
 
 pub fn init() Error!bool {
-    const dev = pci.findByVendor(VENDOR_INTEL, DEVICE_82540EM) orelse return false;
+    // The Intel gigabit cards virtual machines offer. They share the
+    // registers this driver uses (legacy descriptors, polling):
+    //   82540EM  QEMU and VirtualBox "PRO/1000 MT Desktop"
+    //   82545EM  VMware "e1000" and VirtualBox "PRO/1000 MT Server"
+    //   82543GC  VirtualBox "PRO/1000 T Server"
+    //   82574L   VMware and QEMU "e1000e"
+    const models = [_]struct { id: u16, name: []const u8 }{
+        .{ .id = DEVICE_82540EM, .name = "82540EM" },
+        .{ .id = 0x100F, .name = "82545EM" },
+        .{ .id = 0x1004, .name = "82543GC" },
+        .{ .id = 0x100C, .name = "82544GC" },
+        .{ .id = 0x10D3, .name = "82574L" },
+    };
+    const dev = for (models) |candidate| {
+        if (pci.findByVendor(VENDOR_INTEL, candidate.id)) |found| {
+            model_name = candidate.name;
+            break found;
+        }
+    } else return false;
     dev.enableBusMaster();
 
     const bar = dev.bar(0) orelse return Error.NoDevice;
@@ -212,6 +230,12 @@ pub fn init() Error!bool {
 
     present = true;
     return true;
+}
+
+var model_name: []const u8 = "";
+/// Which Intel card was found ("82540EM", "82574L", ...).
+pub fn model() []const u8 {
+    return model_name;
 }
 
 pub fn macAddress() [6]u8 {

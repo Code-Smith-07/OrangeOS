@@ -21,6 +21,7 @@ const tsc = @import("../../time/tsc.zig");
 const time = @import("../../time/time.zig");
 const pci = @import("../pci/pci.zig");
 const ahci = @import("../../drivers/block/ahci.zig");
+const ata = @import("../../drivers/block/ata.zig");
 const nvme = @import("../../drivers/block/nvme.zig");
 const block = @import("../../drivers/block/block.zig");
 const partition = @import("../../drivers/block/partition.zig");
@@ -162,7 +163,12 @@ pub fn init() !void {
         break :blk 0;
     };
 
-    const disks = nvme_disks + sata_disks;
+    // A legacy IDE controller as well: it is what VirtualBox gives a new
+    // machine and what older PCs have, and a machine may mix controllers
+    // (the system disk on one, the data disk on another).
+    const ata_disks = ata.init();
+
+    const disks = nvme_disks + sata_disks + ata_disks;
     if (disks == 0) {
         console.warn("no disks found", .{});
     } else {

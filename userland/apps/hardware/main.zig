@@ -27,6 +27,13 @@ var staging: [W * H * 4]u32 = undefined;
 var json_memory: [32768]u8 = undefined;
 var previews: [2]?u8 = .{ null, null };
 var messages: [2][]const u8 = .{ "", "" };
+/// What the last Wi-Fi or Bluetooth switch did, shown at the bottom.
+var radio_message: []const u8 = "";
+/// The round Wi-Fi (0) and Bluetooth (1) buttons: a click switches the
+/// Mac's radio when the companion allows it.
+fn radioButton(index: usize) ui.Rect {
+    return .{ .x = 24, .y = 24 + @as(i32, @intCast(index)) * 56, .w = 36, .h = 36 };
+}
 fn reading(row: model.Row, buf: []u8) []const u8 {
     return switch (row.reading) {
         .on => "On",
@@ -108,13 +115,14 @@ fn paint(win: *const libpeel.Window, state: model.Model, region: ui.Rect) void {
         .invalid => "Mac data unavailable",
         .unavailable => "Connecting to your Mac",
     }, 24, 363, 1, c.ink);
-    ui.label(&s, switch (state.rows[1].reading) {
+    const can_switch = state.connection == .fresh and (state.rows[0].control or state.rows[1].control);
+    ui.label(&s, if (radio_message.len > 0) radio_message else switch (state.rows[1].reading) {
         .status => |why| switch (why) {
             .permission_required => "Bluetooth: allow it in the Mac companion menu",
             .denied, .restricted => "Bluetooth: allow in Mac System Settings",
-            else => "Wi-Fi and Bluetooth: status only",
+            else => if (can_switch) "Click Wi-Fi or Bluetooth to switch it" else "Wi-Fi and Bluetooth: status only",
         },
-        else => "Wi-Fi and Bluetooth: status only",
+        else => if (can_switch) "Click Wi-Fi or Bluetooth to switch it" else "Wi-Fi and Bluetooth: status only",
     }, 24, 389, 1, c.muted);
     ui.publishRegion(win, &staging, region);
 }
@@ -127,6 +135,9 @@ export fn _start() callconv(.c) noreturn {
     var down = false;
     var captured: ?usize = null;
     var pending_control: usize = 0;
+    // A radio switch waiting for the Mac's answer, and the button pressed.
+    var pending_radio: ?usize = null;
+    var radio_pressed: ?usize = null;
     var last_poll: u64 = 0;
     const full: ui.Rect = .{ .x = 0, .y = 0, .w = W, .h = H };
     paint(&win, state, full);
@@ -150,6 +161,10 @@ export fn _start() callconv(.c) noreturn {
             if (input.kind != pulp.EV_MOUSE) continue;
             const pressed = input.code & 1 != 0;
             if (pressed and !down) {
+                radio_pressed = null;
+                for (0..2) |i| {
+                    if (radioButton(i).contains(input.x, input.y)) radio_pressed = i;
+                }
                 captured = null;
                 if (pending == 0) for (0..2) |i| {
                     if (state.rows[2 + i].control and sliderHit(i).contains(input.x, input.y)) captured = i;
@@ -181,11 +196,43 @@ export fn _start() callconv(.c) noreturn {
                     dirty[i] = true;
                 }
             }
+            // A click (press and release on the same round button) switches
+            // that radio on the Mac.
+            if (!pressed and down) if (radio_pressed) |i| {
+                radio_pressed = null;
+                const row = state.rows[i];
+                if (radioButton(i).contains(input.x, input.y) and pending == 0 and state.connection == .fresh) {
+                    if (!row.control) {
+                        radio_message = "Allow this switch in the Mac companion menu";
+                    } else {
+                        const id = pulp.syscall3(112, 6 + i, @intFromBool(row.reading != .on), 1);
+                        if (id > 0) {
+                            pending = @intCast(id);
+                            pending_radio = i;
+                            radio_message = "Asking your Mac...";
+                        } else radio_message = "Request unavailable. Please try again.";
+                    }
+                    paint(&win, state, full);
+                }
+            };
             down = pressed;
         }
         if (pending != 0) {
             const result = pulp.syscall3(112, 1, pending, 0);
-            if (result != -11) {
+            if (result != -11 and pending_radio != null) {
+                const i = pending_radio.?;
+                radio_message = switch (result) {
+                    0 => if (i == 0) "Mac Wi-Fi switched" else "Mac Bluetooth switched",
+                    -13 => "Not allowed in the Mac companion menu",
+                    -95 => "This Mac does not support that switch",
+                    -110, -107 => "Mac connection lost. Try again.",
+                    else => "Your Mac could not make the change",
+                };
+                pending = 0;
+                pending_radio = null;
+                pulp.print("hardware: {s} result {d}\n", .{ if (i == 0) "wifi" else "bluetooth", result });
+                paint(&win, state, full);
+            } else if (result != -11) {
                 messages[pending_control] = switch (result) {
                     0 => if (pending_control == 0) "Mac brightness updated" else "Mac volume updated",
                     -13 => "Permission revoked on Mac",

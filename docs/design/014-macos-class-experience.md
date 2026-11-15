@@ -143,7 +143,8 @@ OrangeOS is an x86-64 system. The ISO is already a hybrid BIOS and UEFI image
 | Apple Silicon Mac (this M4) | QEMU (our scripts) | Yes, by emulation (TCG) |
 | Apple Silicon Mac | **UTM**, "Emulate", x86_64 | Yes: UTM is QEMU underneath, same speed as ours |
 | Apple Silicon Mac | VMware Fusion, Parallels, VirtualBox | No: on Apple Silicon these run Arm guests only |
-| Intel or AMD PC | VirtualBox, VMware Workstation/Player, Hyper-V, QEMU/KVM | Should, at full native speed, once V2–V4 pass |
+| Intel or AMD PC | VirtualBox, VMware Workstation/Player, QEMU/KVM | Expected to, at full native speed: V2 and V3 pass (below); V4 is the real check |
+| Intel or AMD PC | Hyper-V | No: it needs VMBus drivers |
 
 Plan:
 
@@ -239,4 +240,25 @@ bar is still 28 pt; VirtualBox/VMware and real-PC support (section 5, V1
 to V4) is still the plan, not built. Real laptops need drivers OrangeOS
 does not have yet (NVMe, USB keyboards and mice via xHCI, more network
 cards, ACPI battery), which is the next programme after this one.
+
+## 8. VM portability: V2 and V3 done (15 Nov 2026)
+
+`tools/vm_shapes_smoke.py` boots eight machines in QEMU, each shaped like
+what VirtualBox or VMware gives a guest, and checks the disk, the network
+address and the desktop on each. Two gaps it found are fixed:
+
+- **IDE disks.** VirtualBox puts a new machine's disk on a PIIX IDE
+  controller; OrangeOS found no disk. `kernel/drivers/block/ata.zig` is a
+  polling ATA driver (28 and 48-bit addresses, flush). It runs beside
+  NVMe and AHCI, so the system and data disks may sit on any mix of them.
+- **More Intel network cards.** The e1000 driver now also takes the 82545EM
+  (VMware's e1000), 82543GC and 82544GC (VirtualBox's server cards) and the
+  82574L (e1000e).
+
+`scripts/export-vm.sh` writes the ISO and VMDK disks other programs open,
+and `docs/running-in-virtual-machines.md` has the settings and the honest
+list of what is missing for real PCs (USB input, SCSI, more network cards,
+an ACPI battery driver, an installer). V1 (a ready UTM bundle) is replaced
+by the settings in that guide, since UTM is not installed here to check a
+bundle against. V4 still needs an Intel or AMD computer.
 

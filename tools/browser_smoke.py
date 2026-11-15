@@ -22,12 +22,14 @@ import runtime_smoke  # noqa: E402  (the HTTPS fixture)
 from desktop_smoke import Guest  # noqa: E402
 
 # Logical screen positions of the browser window's parts (its default
-# placement on the 1280x800 desktop).
-TAB_STRIP = 94
-BACK = (28, 136)
-ADDRESS = (500, 136)
-ABOUT_CARD = (300, 356)
-BLANK_LINK = (150, 338)
+# placement on the 1280x800 desktop). The window draws under the window
+# buttons (docs/design/014, M2): the tab strip is its top 36 points, with
+# the tabs to the right of the buttons, then the 48-point toolbar.
+TAB_STRIP = 56
+BACK = (28, 98)
+ADDRESS = (500, 98)
+ABOUT_CARD = (300, 318)
+BLANK_LINK = (150, 300)
 DOCK_BROWSER = (596, 732)
 
 
@@ -63,8 +65,8 @@ def main():
         if g.screenshot("browser-check").read_bytes()[3:7] == b"2560":
             g.scale = 2
         g.screenshot("11-browser-start")
-        header = average(g, 60, 186, 300, 40)
-        card = average(g, 80, 336, 300, 30)
+        header = average(g, 60, 148, 300, 40)
+        card = average(g, 80, 298, 300, 30)
         assert header[0] > 220 and 100 < header[1] < 200 and header[2] < 90, f"orange header, got {header}"
         assert min(card) > 215, f"light card (white with link text), got {card}"
         print(f"PASS start page pixels: header {header}, card {card}", flush=True)

@@ -122,6 +122,11 @@ class StandInCompanion(threading.Thread):
 KEYS = {" ": "spc", "-": "minus"}
 
 
+def g_width(g):
+    size = re.search(r"peel: (\d+)x(\d+)", g.log())
+    return int(size.group(1)) // g.scale
+
+
 def typed(g, text):
     for ch in text:
         g.key(KEYS.get(ch, ch))
@@ -169,6 +174,24 @@ def main():
         time.sleep(.6)
         g.screenshot("01-battery-low-banner")
         print("PASS a low battery on the Mac raises a real notification", flush=True)
+
+        # Control Center: the round Wi-Fi button switches the radio too.
+        time.sleep(6)  # the banner leaves
+        g.click(1015, 16)
+        g.until(lambda: "desktop: control panel opened" in g.log(), "Control Center opens")
+        g.until(lambda: "hardware: view snapshot" in g.log(), "Control Center has the readings", 20)
+        time.sleep(1)
+        g.click(g_width(g) - 372 + 42, 36 + 42)
+        g.until(lambda: "hardware: wifi result 0" in g.log(), "Control Center's Wi-Fi button reaches the companion", 20)
+        assert mac.commands[-1] == (8, 0, 1) and mac.state["wifi"] is False, mac.commands
+        time.sleep(3)
+        g.screenshot("01b-control-center-wifi-off")
+        g.click(g_width(g) - 372 + 42, 36 + 42)
+        g.until(lambda: g.log().count("hardware: wifi result 0") == 2 and mac.state["wifi"] is True, "and switches it back on", 20)
+        g.key("esc")
+        time.sleep(1)
+        mac.commands.clear()
+        print("PASS Control Center's Wi-Fi button switches the radio off and on", flush=True)
 
         spotlight(g, "settings")
         g.until(lambda: "settings: painted Wi-Fi" in g.log(), "Settings opens", 30)
