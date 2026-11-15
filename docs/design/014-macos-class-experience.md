@@ -262,3 +262,26 @@ an ACPI battery driver, an installer). V1 (a ready UTM bundle) is replaced
 by the settings in that guide, since UTM is not installed here to check a
 bundle against. V4 still needs an Intel or AMD computer.
 
+## 9. The browser on real websites (16 Nov 2026)
+
+`tools/browser_sites.py` types each address into Orange Browser and
+reports what WebKit did. On this Mac, under emulation:
+
+| Site | Result | Seconds |
+|---|---|---|
+| example.com | loaded | 3 |
+| en.wikipedia.org/wiki/Orange_(fruit) | loaded, with pictures | 20 |
+| duckduckgo.com | loaded | 6 |
+| news.ycombinator.com | loaded | 4 |
+| github.com (a profile page) | loaded | 8 |
+| developer.mozilla.org | loaded | 6 |
+| www.bbc.com/news | loaded | 10 |
+
+`tools/browser_smoke.py` (links, Back, HTTPS, typing into a page, tabs,
+the wheel) passes on the redesigned window. The engine is WebKit with its
+JIT, so most sites work. Known limits, from docs/design/012: no WebGL, no
+protected video (DRM), no WebRTC calls, no AV1 video, one program playing
+sound at a time, no downloads or file uploads yet, and no IPv6. Heavy
+sites are slow here because the whole computer is emulated; in a virtual
+machine on an Intel or AMD PC they run at normal speed.
+
