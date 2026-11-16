@@ -348,6 +348,23 @@ The plan to bring the whole system to a macOS level of finish, with sizes
 measured from macOS itself and the path to UTM, VirtualBox and VMware, is
 [014](docs/design/014-macos-class-experience.md).
 
+**Arm64 (started).** On an Apple Silicon Mac the x86 system above is
+emulated instruction by instruction, which is why heavy pages and video are
+slow there. The fix is an Arm64 build that Apple's Hypervisor runs
+directly, the way Parallels runs Windows. Its first stage exists:
+
+```sh
+zig build arm            # zig-out/bin/kernel-arm64.elf
+scripts/run-arm.sh       # native on an Arm host, emulated elsewhere
+python3 tools/arm_boot_smoke.py
+```
+
+It boots on QEMU's Arm `virt` machine, reads the device tree, takes
+interrupts, runs the timer on every processor and shows a picture through
+the virtual GPU. It does not run programs yet. Measured on this Mac, the
+same work is 8 times faster native than emulated. The plan and the numbers
+are in [015](docs/design/015-arm64-native.md).
+
 Userland defaults to `ReleaseSafe` when the kernel is built in Debug mode,
 so software graphics remain responsive while retaining bounds checks. Use
 `zig build -Duser-optimize=Debug` to debug userland instruction by instruction.

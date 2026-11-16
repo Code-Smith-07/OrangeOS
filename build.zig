@@ -527,16 +527,20 @@ pub fn build(b: *std.Build) void {
         const sysroot = "build/wpe/sysroot";
         // What libWPEWebKit-2.0.so links, as static libraries.
         const wpe_libs = [_][]const u8{
-            "WPEWebKitStatic", "WPEPAL",       "WPESkia",      "WPExdgmime",
+            "WPEWebKitStatic",    "WPEPAL",       "WPESkia",      "WPExdgmime",
             // Media (W11): GStreamer and its plugins, then FFmpeg.
-            "gstreamer-full-1.0", "opus", "avfilter", "avformat", "avcodec", "swresample", "swscale", "avutil",
-            "soup-3.0",   "gioopenssl", "ssl",
-            "crypto",          "psl",          "nghttp2",      "epoxy",      "xkbcommon",  "xslt",       "xml2",
-            "sqlite3",         "gcrypt",       "gpg-error",    "tasn1",      "webpdemux",  "webpmux",    "webp",
-            "sharpyuv",        "harfbuzz-icu", "harfbuzz",     "fontconfig", "expat",      "freetype",   "png16",
-            "jpeg",            "woff2dec",     "woff2common",  "brotlidec",  "brotlienc",  "brotlicommon", "icui18n",
-            "icuuc",           "icudata",      "gio-2.0",      "gmodule-2.0", "gobject-2.0", "ffi",      "glib-2.0",
-            "pcre2-8",         "z",
+            "gstreamer-full-1.0", "opus",         "avfilter",     "avformat",
+            "avcodec",            "swresample",   "swscale",      "avutil",
+            "soup-3.0",           "gioopenssl",   "ssl",          "crypto",
+            "psl",                "nghttp2",      "epoxy",        "xkbcommon",
+            "xslt",               "xml2",         "sqlite3",      "gcrypt",
+            "gpg-error",          "tasn1",        "webpdemux",    "webpmux",
+            "webp",               "sharpyuv",     "harfbuzz-icu", "harfbuzz",
+            "fontconfig",         "expat",        "freetype",     "png16",
+            "jpeg",               "woff2dec",     "woff2common",  "brotlidec",
+            "brotlienc",          "brotlicommon", "icui18n",      "icuuc",
+            "icudata",            "gio-2.0",      "gmodule-2.0",  "gobject-2.0",
+            "ffi",                "glib-2.0",     "pcre2-8",      "z",
         };
         const WpeProbe = struct { name: []const u8, sources: []const []const u8, libs: []const []const u8, cxx: bool, peel: bool = false };
         // libpeel for C (userland/libs/libpeel/c_api.zig), for the browser.
@@ -559,21 +563,21 @@ pub fn build(b: *std.Build) void {
                 "gio-2.0", "gmodule-2.0", "gobject-2.0", "ffi", "glib-2.0", "pcre2-8", "z",
             } },
             .{ .name = "wpe-libs-probe", .sources = &.{ "userland/bin/wpe-libs-probe/probe.c", "userland/bin/wpe-libs-probe/woff2.cpp" }, .cxx = true, .libs = &.{
-                "png16",     "jpeg",       "webpdemux",  "webp",        "sharpyuv",     "harfbuzz-icu", "harfbuzz",
-                "fontconfig", "expat",     "freetype",   "icui18n",     "icuuc",        "icudata",      "xslt",
-                "xml2",      "sqlite3",    "gcrypt",     "gpg-error",   "tasn1",        "xkbcommon",    "epoxy",
-                "woff2enc",  "woff2dec",   "woff2common", "brotlienc",  "brotlidec",    "brotlicommon", "glib-2.0",
-                "pcre2-8",   "z",
+                "png16",      "jpeg",     "webpdemux",   "webp",      "sharpyuv",  "harfbuzz-icu", "harfbuzz",
+                "fontconfig", "expat",    "freetype",    "icui18n",   "icuuc",     "icudata",      "xslt",
+                "xml2",       "sqlite3",  "gcrypt",      "gpg-error", "tasn1",     "xkbcommon",    "epoxy",
+                "woff2enc",   "woff2dec", "woff2common", "brotlienc", "brotlidec", "brotlicommon", "glib-2.0",
+                "pcre2-8",    "z",
             } },
             // GStreamer with its plugins and FFmpeg (W11).
             .{ .name = "gst-probe", .sources = &.{"userland/bin/gst-probe/probe.c"}, .cxx = false, .libs = &.{
-                "gstreamer-full-1.0", "opus", "avfilter", "avformat", "avcodec", "swresample", "swscale", "avutil",
-                "gio-2.0",            "gmodule-2.0", "gobject-2.0", "ffi",   "glib-2.0",  "pcre2-8",  "z",
+                "gstreamer-full-1.0", "opus",        "avfilter",    "avformat", "avcodec",  "swresample", "swscale", "avutil",
+                "gio-2.0",            "gmodule-2.0", "gobject-2.0", "ffi",      "glib-2.0", "pcre2-8",    "z",
             } },
             .{ .name = "https-probe", .sources = &.{"userland/bin/https-probe/probe.c"}, .cxx = false, .libs = &.{
-                "soup-3.0",   "gioopenssl", "ssl",          "crypto",      "psl",     "nghttp2", "brotlidec",
-                "brotlicommon", "sqlite3",  "gio-2.0",      "gmodule-2.0", "gobject-2.0", "ffi", "glib-2.0",
-                "pcre2-8",    "z",
+                "soup-3.0",     "gioopenssl", "ssl",     "crypto",      "psl",         "nghttp2", "brotlidec",
+                "brotlicommon", "sqlite3",    "gio-2.0", "gmodule-2.0", "gobject-2.0", "ffi",     "glib-2.0",
+                "pcre2-8",      "z",
             } },
             // WPE WebKit (W6/W7): the UI program and the two helper
             // processes WebKit starts from /libexec/wpe-webkit-2.0, linked
@@ -674,6 +678,46 @@ pub fn build(b: *std.Build) void {
     kernel.link_gc_sections = false;
 
     const install_kernel = b.addInstallArtifact(kernel, .{});
+
+    // ── Zest kernel, Arm64 (docs/design/015) ────────────────────────────────
+    // `zig build arm` builds only this: the Arm kernel is a separate program
+    // until the port reaches the desktop. Like the x86 kernel, it does not
+    // use floating point or SIMD registers.
+    const ArmFeature = std.Target.aarch64.Feature;
+    var arm_sub = std.Target.Cpu.Feature.Set.empty;
+    arm_sub.addFeature(@intFromEnum(ArmFeature.fp_armv8));
+    arm_sub.addFeature(@intFromEnum(ArmFeature.neon));
+    const arm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .aarch64,
+        .os_tag = .freestanding,
+        .abi = .none,
+        .cpu_features_sub = arm_sub,
+    });
+    const arm_kernel_mod = b.createModule(.{
+        .root_source_file = b.path("kernel/main_arm64.zig"),
+        .target = arm_target,
+        .optimize = if (optimize == .Debug) .ReleaseSafe else optimize,
+        .red_zone = false,
+        .omit_frame_pointer = false,
+        .pic = false,
+        .stack_protector = false,
+        .stack_check = false,
+        .sanitize_c = false,
+        .strip = false,
+        .single_threaded = false,
+    });
+    arm_kernel_mod.addAssemblyFile(b.path("kernel/arch/aarch64/boot.S"));
+    arm_kernel_mod.addAssemblyFile(b.path("kernel/arch/aarch64/vectors.S"));
+    const arm_kernel = b.addExecutable(.{
+        .name = "kernel-arm64.elf",
+        .root_module = arm_kernel_mod,
+        .use_lld = true,
+    });
+    arm_kernel.setLinkerScript(b.path("boot/linker-aarch64.ld"));
+    arm_kernel.entry = .{ .symbol_name = "_start" };
+    arm_kernel.link_gc_sections = false;
+    const arm_step = b.step("arm", "Build the Arm64 kernel (stage A0)");
+    arm_step.dependOn(&b.addInstallArtifact(arm_kernel, .{}).step);
 
     // ── ISO assembly ─────────────────────────────────────────────────────────
     // Depends on the kernel artifact directly, not on the install step, so the
