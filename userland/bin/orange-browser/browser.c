@@ -548,6 +548,38 @@ static gboolean shortcut(guint keyval)
 	case 'W':
 		close_tab(browser.active);
 		return TRUE;
+	case '=':
+	case '+':
+	case '-':
+	case '_':
+	case '0': {
+		/* Page zoom, as in other browsers: Ctrl with +, - and 0. */
+		static const double levels[] = { 0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0 };
+		double now = webkit_web_view_get_zoom_level(ACTIVE->web_view), next = 1.0;
+		if (keyval == '=' || keyval == '+') {
+			next = levels[G_N_ELEMENTS(levels) - 1];
+			for (gsize i = 0; i < G_N_ELEMENTS(levels); i++)
+				if (levels[i] > now + 0.01) {
+					next = levels[i];
+					break;
+				}
+		} else if (keyval == '-' || keyval == '_') {
+			next = levels[0];
+			for (gsize i = G_N_ELEMENTS(levels); i-- > 0;)
+				if (levels[i] < now - 0.01) {
+					next = levels[i];
+					break;
+				}
+		}
+		webkit_web_view_set_zoom_level(ACTIVE->web_view, next);
+		printf("orange-browser: zoom %d%%\n", (int)(next * 100 + 0.5));
+		fflush(stdout);
+		return TRUE;
+	}
+	case 'r':
+	case 'R':
+		webkit_web_view_reload(ACTIVE->web_view);
+		return TRUE;
 	case 0xff09: /* Tab */
 	case 0xfe20: /* ISO_Left_Tab (Shift+Tab) */
 		if (browser.count > 1) {
@@ -560,9 +592,27 @@ static gboolean shortcut(guint keyval)
 	}
 }
 
+/* Debug images: F12 runs /etc/orange-browser/inspect.js in the page, so a
+ * layout problem on a real site can be asked about (its console.log lines
+ * reach the serial log). Ordinary images have no such file. */
+static void run_inspector(void)
+{
+	char *script = NULL;
+	if (!g_file_get_contents("/etc/orange-browser/inspect.js", &script, NULL, NULL))
+		return;
+	webkit_web_view_evaluate_javascript(ACTIVE->web_view, script, -1, NULL, NULL, NULL, NULL, NULL);
+	g_free(script);
+	printf("orange-browser: inspector script run\n");
+	fflush(stdout);
+}
+
 static void handle_key(const PeelEvent *e)
 {
 	gboolean pressed = e->value & 1, extended = (e->value & 2) != 0;
+	if (pressed && !extended && e->code == 0x58) { /* F12 */
+		run_inspector();
+		return;
+	}
 	WPEModifiers modifier = orange_key_modifier(e->code, extended);
 	if (modifier) {
 		browser.modifiers = pressed ? browser.modifiers | modifier : browser.modifiers & ~modifier;
@@ -714,6 +764,21 @@ static void resize(int width, int height)
 	fflush(stdout);
 }
 
+/* Debug images: how many frames reached the screen in the last five
+ * seconds, so playback smoothness can be measured, not guessed. */
+static gboolean report_frames(gpointer data)
+{
+	static guint64 last;
+	(void)data;
+	guint64 now = orange_frames_shown();
+	if (now != last) {
+		printf("orange-browser: frames %u in 5 s\n", (unsigned)(now - last));
+		fflush(stdout);
+	}
+	last = now;
+	return G_SOURCE_CONTINUE;
+}
+
 static gboolean dispatch(gpointer data)
 {
 	PeelEvent *e = data;
@@ -760,6 +825,21 @@ int main(int argc, char **argv)
 	g_mkdir_with_parents(PROFILE "/media", 0700);
 	printf("orange-browser: website data in %s\n", data_dir);
 
+	/* The largest video a site may send. Video is decoded on the processor
+	 * (there is no graphics chip to help), and sites choose a stream by
+	 * what the browser says it can play: on a Retina screen YouTube picks
+	 * 720p at 60 frames a second for a small player, which is far more
+	 * than software decoding keeps up with under emulation. 480p at 30 is
+	 * smooth there. A faster machine can raise it, or remove it with
+	 * "none", in /data/preferences/browser-video (WIDTHxHEIGHT@RATE). */
+	const char *video_limit = "854x480@30";
+	char *chosen = NULL;
+	if (g_file_get_contents("/data/preferences/browser-video", &chosen, NULL, NULL) && *g_strstrip(chosen))
+		video_limit = chosen;
+	if (strcmp(video_limit, "none") != 0)
+		g_setenv("WEBKIT_GST_VIDEO_DECODING_LIMIT", video_limit, TRUE);
+	printf("orange-browser: video limit %s\n", video_limit);
+
 	if (orange_peel_open_resizable("Orange Browser", WINDOW_WIDTH, WINDOW_HEIGHT, MIN_WIDTH, MIN_HEIGHT, TABBAR,
 	                               &browser.window) != 0) {
 		fprintf(stderr, "orange-browser: no display\n");
@@ -787,10 +867,16 @@ int main(int argc, char **argv)
 
 	browser.settings = webkit_settings_new();
 	webkit_settings_set_enable_webgl(browser.settings, FALSE);
+	/* Each wheel step moves the page at once. WebKit's animated ("smooth")
+	 * scrolling advances with the frames it manages to draw, and on a busy
+	 * page (YouTube under emulation) a step crawled a few points at a time:
+	 * the cookie dialog there could not be scrolled to its buttons. */
+	webkit_settings_set_enable_smooth_scrolling(browser.settings, FALSE);
 	/* Debug images (ORANGE_BROWSER_CONSOLE=1 scripts/mkdisk.sh): page
 	 * console messages go to standard output, which is the serial log. */
 	if (access(CONSOLE_FLAG, F_OK) == 0) {
 		webkit_settings_set_enable_write_console_messages_to_stdout(browser.settings, TRUE);
+		g_timeout_add_seconds(5, report_frames, NULL);
 		/* GStreamer's warnings and errors, in the web process too. */
 		g_setenv("GST_DEBUG", "3", FALSE);
 	}

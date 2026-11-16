@@ -369,6 +369,14 @@ static void view_show_frame(OrangeView *self)
 	display->commit(s->x, s->y, s->width, s->height);
 }
 
+/* Frames of the active view put on screen since the program started. */
+static guint64 frames_shown;
+
+guint64 orange_frames_shown(void)
+{
+	return frames_shown;
+}
+
 void orange_view_set_active(WPEView *view, gboolean active)
 {
 	OrangeView *self = ORANGE_VIEW(view);
@@ -408,8 +416,10 @@ static gboolean view_render_buffer(WPEView *view, WPEBuffer *buffer, const WPERe
 		 * reads as 0x00RRGGBB once alpha is ignored. */
 		memcpy(self->frame + (gsize)row * width, data + (gsize)row * source_stride, (gsize)width * 4);
 	}
-	if (self->active)
+	if (self->active) {
 		view_show_frame(self);
+		frames_shown++;
+	}
 
 	if (self->shown) {
 		wpe_view_buffer_rendered(view, self->shown);

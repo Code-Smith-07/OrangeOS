@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>scroll:ready</title>
+<style>
+body { font: 16px Inter, sans-serif; margin: 24px; background: #fff7ee; }
+#box { width: 420px; height: 260px; overflow: auto; border: 2px solid #f28a1e; border-radius: 10px; background: #fff; }
+#box p { margin: 0; padding: 14px 18px; border-bottom: 1px solid #f1e3d3; }
+#fixed { position: fixed; right: 30px; top: 90px; width: 300px; height: 300px; overflow: auto; background: #eef5ff; border: 2px solid #2f8cf0; border-radius: 10px; }
+#fixed p { margin: 0; padding: 14px 18px; }
+</style></head><body>
+<h2>Scrolling inside the page</h2>
+<p>The wheel over a box scrolls that box, not the page.</p>
+<div id="box"></div>
+<div id="fixed"></div>
+<div style="height:2000px"></div>
+<script>
+for (const id of ["box", "fixed"]) {
+  const el = document.getElementById(id);
+  for (let i = 1; i <= 60; i++) { const p = document.createElement("p"); p.textContent = id + " line " + i; el.appendChild(p); }
+  el.addEventListener("scroll", () => { document.title = "scroll:" + id + "=" + Math.round(el.scrollTop); });
+}
+window.addEventListener("scroll", () => { document.title = "scroll:page=" + Math.round(window.scrollY); });
+window.addEventListener("wheel", (e) => { window.lastWheel = e.deltaY + "/" + e.deltaMode; }, { passive: true });
+</script></body></html>

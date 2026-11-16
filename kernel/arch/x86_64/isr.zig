@@ -233,7 +233,12 @@ export fn isrDispatch(frame: *TrapFrame) callconv(.c) void {
         }
         if (frame.cs & 3 == 3 and app_fault) {
             if (sched.currentTask()) |t| {
-                console.print("[app fault] pid {d} tid {d} {s}: {s} at 0x{x}\n", .{ t.ownerId(), t.tid, t.nameSlice(), exception_names[vec], frame.rip });
+                // For a page fault, also the address it touched and why
+                // (error bits: 1 present, 2 write, 4 user, 16 execute): the
+                // difference between a null pointer and a wild jump.
+                if (vec == 14) {
+                    console.print("[app fault] pid {d} tid {d} {s}: {s} at 0x{x}, touching 0x{x} (error {d})\n", .{ t.ownerId(), t.tid, t.nameSlice(), exception_names[vec], frame.rip, readCr2(), frame.error_code });
+                } else console.print("[app fault] pid {d} tid {d} {s}: {s} at 0x{x}\n", .{ t.ownerId(), t.tid, t.nameSlice(), exception_names[vec], frame.rip });
                 // One faulting thread ends its whole program.
                 sched.exitGroup(128 + @as(i32, vec));
             }

@@ -285,3 +285,46 @@ sound at a time, no downloads or file uploads yet, and no IPv6. Heavy
 sites are slow here because the whole computer is emulated; in a virtual
 machine on an Intel or AMD PC they run at normal speed.
 
+
+## 10. YouTube, measured (16 Nov 2026)
+
+`tools/youtube_check.py` opens a YouTube watch page (Big Buck Bunny),
+answers the European cookie question once ("Reject all"; the answer is
+kept in the cookies on the data disk, so it is not asked again), starts
+the film and measures it. No Google sign-in is used or needed.
+
+What changed in the browser for this:
+
+- Video is limited to 854x480 at 30 frames a second by default
+  (`WEBKIT_GST_VIDEO_DECODING_LIMIT`). Without the limit YouTube picked
+  1280x720 at 60, because the screen scale is 2, and the film did not
+  advance at all. `/data/preferences/browser-video` overrides the limit
+  (`1280x720@30`, or `none`).
+- Smooth scrolling is off: its animation stalls on a busy page and made
+  the wheel crawl.
+- Ctrl with + or - changes the page zoom, Ctrl+0 resets it, Ctrl+R reloads.
+- Each program may hold 1024 open files (was 256), with a warning in the
+  kernel log if a program reaches the limit.
+- A fault in a program now logs the address it touched.
+
+Measured on this Mac (Apple Silicon, so every x86 instruction is
+emulated), 2 processors, 480p:
+
+| What | Result |
+|---|---|
+| Film played | 37.7 s of film in 60.8 s (62% of real time) |
+| Picture | about 5 frames a second reached the screen |
+| Sound | heard for 33 s of 49.5 s, with gaps |
+| Crashes | none in the measured run |
+
+More emulated processors did not help (6.1 against 6.7 frames a second).
+This is not smooth, and no setting inside the guest can make it smooth:
+the cost is the emulation of the processor itself. Section 9's note
+stands (on an Intel or AMD PC the same image runs at normal speed), and
+docs/design/015 is the plan that fixes it on Apple Silicon.
+
+One open fault: twice, at the start of playback, the web process and the
+browser both stopped in `memcpy` reading address 0. Raising the open-file
+limit was a guess at the cause; it has not happened since, but it is not
+proven fixed. `zig build -Dwpe-symbols` keeps the symbols needed to look
+up the address if it happens again.

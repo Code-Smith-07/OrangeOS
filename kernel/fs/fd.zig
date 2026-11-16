@@ -28,7 +28,14 @@ const console_file = @import("console_file.zig");
 const record_lock = @import("lock.zig");
 
 pub const Error = vfs.Error;
-pub const MAX_OPEN = 256;
+/// Descriptors one process may hold. A browser playing video holds several
+/// hundred (connections, pipes, a shared-memory handle for each picture
+/// in flight); at 256 it ran out, and WebKit then copied from a mapping it
+/// never got.
+pub const MAX_OPEN = 1024;
+/// Said once per boot when a process runs out, so the cause of what follows
+/// (failed opens, sockets, shared memory) is in the log.
+var exhausted_reported = false;
 /// New descriptors take the lowest free number. 0-2 start as the console,
 /// so files begin at 3 unless the program closed one of those.
 pub const FD_BASE: i32 = 0;
@@ -174,6 +181,10 @@ pub fn install(table: *FileTable, desc: *Description, min: i32, cloexec: bool) E
         if (entry.desc != null) continue;
         entry.* = .{ .desc = desc, .cloexec = cloexec };
         return @intCast(i);
+    }
+    if (!exhausted_reported) {
+        exhausted_reported = true;
+        @import("../console.zig").warn("process {d} has all {d} descriptors open; further opens fail", .{ table.owner_pid, MAX_OPEN });
     }
     return Error.TooManyOpen;
 }

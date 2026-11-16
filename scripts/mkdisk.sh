@@ -132,6 +132,10 @@ if [ "${ORANGE_WPE_PROBES:-0}" = 1 ]; then
     if [ "${ORANGE_BROWSER_CONSOLE:-0}" = 1 ]; then
         mkdir -p "$ROOTFS/etc/orange-browser"
         : > "$ROOTFS/etc/orange-browser/console"
+        # F12 in the browser runs this in the page (ORANGE_BROWSER_INSPECT=file).
+        if [ -n "${ORANGE_BROWSER_INSPECT:-}" ] && [ -f "$ORANGE_BROWSER_INSPECT" ]; then
+            cp "$ORANGE_BROWSER_INSPECT" "$ROOTFS/etc/orange-browser/inspect.js"
+        fi
     fi
     # Content types by file name, for file:// URLs (GIO's xdgmime).
     mkdir -p "$ROOTFS/usr/share/mime"

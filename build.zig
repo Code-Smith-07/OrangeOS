@@ -72,6 +72,9 @@ pub fn build(b: *std.Build) void {
     // WPE WebKit trial (docs/design/012): probes linked against libraries
     // cross-built by tools/wpe/build_deps.py. Off by default, since a plain
     // checkout has no build/wpe/sysroot.
+    // For naming the function at a crash address: link the WebKit programs
+    // with their symbol tables (the code is laid out the same either way).
+    const wpe_symbols = b.option(bool, "wpe-symbols", "Keep symbols in the WPE programs, to resolve crash addresses") orelse false;
     const wpe_probes = b.option(bool, "wpe-probes", "Build WPE trial probes against build/wpe/sysroot (run tools/wpe/build_deps.py first)") orelse false;
     ui_options.addOption(bool, "wpe_probes", wpe_probes);
     ui_options.addOption(bool, "wpe_first", b.option(bool, "wpe-first", "Run the WPE trial probes before the other runtime probes (for iterating on them)") orelse false);
@@ -590,7 +593,7 @@ pub fn build(b: *std.Build) void {
                 .root_source_file = b.path("userland/libs/musl-orange/crt.zig"),
                 .target = user_target,
                 .optimize = user_optimize,
-                .strip = user_optimize != .Debug,
+                .strip = user_optimize != .Debug and !wpe_symbols,
                 .red_zone = false,
                 .pic = false,
                 .stack_protector = false,
