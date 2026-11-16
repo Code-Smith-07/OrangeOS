@@ -70,7 +70,7 @@ public final class HardwareMonitor {
             } else { bluetooth = .init(source: "IOBluetooth", status: "unavailable", permission: "allowed", note: "No host controller returned") }
         case .denied: bluetooth = .init(source: "CoreBluetooth.authorization", status: "permission_required", permission: "denied", note: "Host permission denied; no controller query")
         case .restricted: bluetooth = .init(source: "CoreBluetooth.authorization", status: "permission_required", permission: "restricted", note: "Restricted by host policy")
-        default: bluetooth = .init(source: "CoreBluetooth.authorization", status: "permission_required", permission: "not_determined", note: "Allow Bluetooth status in the Mac companion menu; no automatic prompt")
+        default: bluetooth = .init(source: "CoreBluetooth.authorization", status: "permission_required", permission: "not_determined", note: "Answer the Mac's Bluetooth question, or choose it in the companion menu")
         }
         // Prefer the built-in-display adapter, which binds controls to a stable
         // observed CGDisplayID; retain IOKit readback for other configurations.

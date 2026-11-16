@@ -104,8 +104,9 @@ final class CompanionMenu: NSObject, NSMenuDelegate, CBCentralManagerDelegate {
     let grantItem = NSMenuItem(title: "Allow OrangeOS to change Mac volume", action: #selector(toggleAudio), keyEquivalent: "")
     let brightnessItem = NSMenuItem(title: "Allow built-in display brightness control", action: #selector(toggleBrightness), keyEquivalent: "")
     let bluetoothItem = NSMenuItem(title: "", action: #selector(bluetoothPermission), keyEquivalent: "")
-    /// Created only when the person chooses the Bluetooth item: creating a
-    /// manager is what makes macOS ask. It never scans or connects.
+    /// Created when the person chooses the Bluetooth item, or at start when
+    /// Bluetooth was granted on the command line: creating a manager is what
+    /// makes macOS ask. It never scans or connects.
     var bluetoothManager: CBCentralManager?
     init(consent: AudioConsent, brightness: BrightnessConsent, wifi: RadioConsent, bluetooth: RadioConsent) {
         self.consent = consent
@@ -139,6 +140,14 @@ final class CompanionMenu: NSObject, NSMenuDelegate, CBCentralManagerDelegate {
         menu.delegate = self
         item.menu = menu
         refreshBluetooth()
+        // Started with Bluetooth already granted (scripts/run-desktop.sh does
+        // this): the person has asked for real Bluetooth, so let macOS put
+        // its own question now instead of waiting for the menu item. macOS
+        // asks once and remembers the answer; a denial is never asked again.
+        // Only from the app bundle: without its Info.plist text macOS stops a
+        // program that asks.
+        if bluetooth.allowed && CBManager.authorization == .notDetermined,
+           Bundle.main.object(forInfoDictionaryKey: "NSBluetoothAlwaysUsageDescription") != nil { bluetoothPermission() }
     }
     func menuWillOpen(_ menu: NSMenu) { refreshBluetooth() }
     func centralManagerDidUpdateState(_ central: CBCentralManager) { refreshBluetooth() }
