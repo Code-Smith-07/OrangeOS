@@ -372,13 +372,20 @@ fn syncShell() void {
         addDamage(.{ .x = 0, .y = 0, .w = screen.width, .h = desktop.BAR_H });
         shell.bar = &bar;
         if (pulp.desktop_profile) {
-            // Where each menu title is, for tests and for reading logs.
-            pulp.print("desktop: menu bar {s}:", .{shell.app_name});
+            // Where each menu title is, for tests and for reading logs. One
+            // write for the whole line: another program's log line must
+            // never land in the middle of it.
+            var line: [512]u8 = undefined;
+            var used = (std.fmt.bufPrint(&line, "desktop: menu bar {s}:", .{shell.app_name}) catch line[0..0]).len;
             for (bar.menus[0..bar.count], 0..) |m, i| {
                 const r = desktop.menuTitle(&screen, &shell, i);
-                pulp.print(" {s}@{d}+{d}", .{ m.title, r.x, r.w });
+                used += (std.fmt.bufPrint(line[used..], " {s}@{d}+{d}", .{ m.title, r.x, r.w }) catch line[used..used]).len;
             }
-            pulp.puts("\n");
+            if (used < line.len) {
+                line[used] = '\n';
+                used += 1;
+            }
+            pulp.puts(line[0..used]);
         }
     }
     shell.bar = &bar;
