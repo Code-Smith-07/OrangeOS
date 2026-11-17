@@ -15,7 +15,7 @@ const pci = @import("../../dev/pci/pci.zig");
 const vmm = @import("../../mm/vmm.zig");
 const pmm = @import("../../mm/pmm.zig");
 const console = @import("../../console.zig");
-const tsc = @import("../../time/tsc.zig");
+const tsc = @import("../../arch/arch.zig").tsc;
 const spinlock = @import("../../sync/spinlock.zig");
 const sched = @import("../../sched/sched.zig");
 
@@ -142,7 +142,7 @@ fn sendVerb(value: u32) ?u32 {
     var deadline = tsc.microsSinceBoot() + 100_000;
     while (r16(REG_ICIS) & ICIS_BUSY != 0) {
         if (tsc.microsSinceBoot() > deadline) return null;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
 
     // Clear any stale result before issuing a new command, or the first poll
@@ -160,7 +160,7 @@ fn sendVerb(value: u32) ?u32 {
             w16(REG_ICIS, ICIS_VALID);
             return resp;
         }
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
     return null;
 }
@@ -240,7 +240,7 @@ fn resetController() Error!void {
     const deadline = tsc.microsSinceBoot() + 500_000;
     while (tsc.microsSinceBoot() < deadline) {
         if (r32(REG_GCTL) & GCTL_CRST != 0) break;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     } else return Error.Timeout;
 
     // Codecs need time to report their presence after a reset.

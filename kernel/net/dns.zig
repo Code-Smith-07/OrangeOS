@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const net = @import("net.zig");
-const tsc = @import("../time/tsc.zig");
+const tsc = @import("../arch/arch.zig").tsc;
 
 const DNS_PORT: u16 = 53;
 const TYPE_A: u16 = 1;

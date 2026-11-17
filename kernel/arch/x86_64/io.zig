@@ -66,6 +66,27 @@ pub inline fn sti() void {
     asm volatile ("sti" ::: "memory");
 }
 
+/// Every earlier store is visible to other processors and devices before
+/// anything after this runs.
+pub inline fn barrier() void {
+    asm volatile ("mfence" ::: "memory");
+}
+
+/// A hint inside a spin loop: let the other hardware thread run.
+pub inline fn pause() void {
+    asm volatile ("pause");
+}
+
+/// Are interrupts on for this processor right now?
+pub inline fn interruptsEnabled() bool {
+    const flags = asm volatile (
+        \\ pushfq
+        \\ popq %[out]
+        : [out] "=r" (-> u64),
+    );
+    return flags & (1 << 9) != 0; // IF
+}
+
 /// Park the CPU permanently. Interrupts disabled, so nothing can wake it.
 pub fn hang() noreturn {
     cli();

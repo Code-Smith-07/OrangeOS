@@ -15,12 +15,11 @@
 //! calibration bug rather than a scheduling one.
 
 const build_options = @import("build_options");
-const apic = @import("../arch/x86_64/apic.zig");
-const isr = @import("../arch/x86_64/isr.zig");
-const tsc = @import("tsc.zig");
-const pic = @import("../arch/x86_64/pic.zig");
+const apic = @import("../arch/arch.zig").apic;
+const isr = @import("../arch/arch.zig").isr;
+const tsc = @import("../arch/arch.zig").tsc;
 const sched = @import("../sched/sched.zig");
-const percpu = @import("../arch/x86_64/percpu.zig");
+const percpu = @import("../arch/arch.zig").percpu;
 
 pub const TICK_HZ: u32 = build_options.tick_hz;
 const NS_PER_TICK: u64 = 1_000_000_000 / TICK_HZ;
@@ -78,7 +77,7 @@ fn errorHandler(frame: *isr.TrapFrame) void {
 
 pub fn init() void {
     boot_tsc = tsc.read();
-    wall_epoch = @import("rtc.zig").epoch();
+    wall_epoch = @import("../arch/arch.zig").rtc.epoch();
     wall_base_ms = millisSinceBoot();
 
     isr.register(apic.VECTOR_TIMER, tickHandler);
@@ -112,7 +111,7 @@ pub fn monotonicNs() u64 {
 pub fn busySleepMs(ms: u64) void {
     const target_ns = monotonicNs() + ms * 1_000_000;
     while (monotonicNs() < target_ns) {
-        asm volatile ("hlt");
+        @import("../arch/arch.zig").io.halt();
     }
 }
 

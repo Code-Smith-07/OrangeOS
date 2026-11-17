@@ -216,7 +216,10 @@ fn testWriteXorExecute() void {
     check("vmm: CR0.WP is set (kernel honours read-only pages)", vmm.writeProtectEnabled());
 
     // The HHDM covers all of RAM; it must never be executable.
-    const hhdm_flags = vmm.leafFlags(pml4, pmm.physToVirt(0x100000));
+    // Any address that is certainly memory: the kernel's own first page,
+    // seen through the direct map. (A fixed address like 1 MB is memory on
+    // a PC but a device hole on Arm.)
+    const hhdm_flags = vmm.leafFlags(pml4, pmm.physToVirt(@import("../arch/arch.zig").boot.executableAddress().?.physical_base));
     check(
         "vmm: HHDM is writable and NOT executable",
         hhdm_flags != null and (hhdm_flags.? & vmm.NO_EXECUTE) != 0,

@@ -23,7 +23,7 @@ const vmm = @import("../mm/vmm.zig");
 const address_space = @import("../mm/address_space.zig");
 const user_vm = @import("../mm/user_vm.zig");
 const sched = @import("../sched/sched.zig");
-const io = @import("../arch/x86_64/io.zig");
+const io = @import("../arch/arch.zig").io;
 const spinlock = @import("../sync/spinlock.zig");
 
 pub const Error = error{Fault};

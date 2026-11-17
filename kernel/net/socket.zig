@@ -21,7 +21,7 @@ const tcp = @import("tcp.zig");
 const heap = @import("../mm/heap.zig");
 const sched = @import("../sched/sched.zig");
 const readiness = @import("../ipc/readiness.zig");
-const tsc = @import("../time/tsc.zig");
+const tsc = @import("../arch/arch.zig").tsc;
 
 pub const Kind = enum { stream, datagram };
 

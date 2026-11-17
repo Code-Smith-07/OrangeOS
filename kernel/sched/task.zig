@@ -10,7 +10,7 @@
 const std = @import("std");
 const heap = @import("../mm/heap.zig");
 const pmm = @import("../mm/pmm.zig");
-const context = @import("../arch/x86_64/context.zig");
+const context = @import("../arch/arch.zig").context;
 const vmm = @import("../mm/vmm.zig");
 const handle = @import("../ipc/handle.zig");
 const ipc_object = @import("../ipc/object.zig");
@@ -151,7 +151,7 @@ pub const Task = struct {
     /// User FS base (thread pointer), restored on each CPU before resumption.
     fs_base: u64 = 0,
     /// Kernel-owned, initialized without inheriting the spawning CPU's state.
-    fpu: @import("../arch/x86_64/fpu.zig").State = .{},
+    fpu: @import("../arch/arch.zig").fpu.State = .{},
     kstack_base: u64,
     kstack_size: usize,
 

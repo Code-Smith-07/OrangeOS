@@ -21,7 +21,7 @@ const vmm = @import("../../mm/vmm.zig");
 const pmm = @import("../../mm/pmm.zig");
 const block = @import("block.zig");
 const console = @import("../../console.zig");
-const tsc = @import("../../time/tsc.zig");
+const tsc = @import("../../arch/arch.zig").tsc;
 
 // Host control registers.
 const HBA_CAP: usize = 0x00;
@@ -162,7 +162,7 @@ fn waitNotBusy(index: u5, timeout_us: u64) block.Error!void {
     while (tsc.microsSinceBoot() < deadline) {
         const tfd = portRead(index, PORT_TFD);
         if (tfd & (TFD_BSY | TFD_DRQ) == 0) return;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
     return block.Error.Timeout;
 }
@@ -177,7 +177,7 @@ fn stopPort(index: u5) void {
     while (tsc.microsSinceBoot() < deadline) {
         const c = portRead(index, PORT_CMD);
         if (c & (CMD_FR | CMD_CR) == 0) break;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
 }
 
@@ -185,7 +185,7 @@ fn startPort(index: u5) void {
     const deadline = tsc.microsSinceBoot() + 500_000;
     while (tsc.microsSinceBoot() < deadline) {
         if (portRead(index, PORT_CMD) & CMD_CR == 0) break;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
     var cmd = portRead(index, PORT_CMD);
     cmd |= CMD_FRE | CMD_ST;
@@ -259,7 +259,7 @@ fn runCommand(
     while (tsc.microsSinceBoot() < deadline) {
         if (portRead(port.index, PORT_CI) & 1 == 0) break;
         if (portRead(port.index, PORT_IS) & (1 << 30) != 0) return block.Error.IoError;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     } else return block.Error.Timeout;
 
     if (portRead(port.index, PORT_TFD) & TFD_ERR != 0) return block.Error.IoError;

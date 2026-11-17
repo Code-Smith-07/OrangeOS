@@ -1,5 +1,5 @@
 #!/bin/sh
-# Boot the Arm64 kernel (stage A0, docs/design/015) in QEMU.
+# Boot Orange OS for Arm64 (docs/design/015) in QEMU.
 #
 #   scripts/run-arm.sh            native speed where the host is Arm
 #   ORANGE_ARM_ACCEL=tcg ...      force emulation (any host)
@@ -12,7 +12,15 @@
 set -e
 cd "$(dirname "$0")/.."
 KERNEL=zig-out/bin/kernel-arm64.elf
+DISK="${ORANGE_ARM_DISK:-build/arm64-disk.img}"
 [ -f "$KERNEL" ] || { echo "run-arm: build it first: zig build arm" >&2; exit 1; }
+[ -f "$DISK" ] || { echo "run-arm: make the disk first: scripts/mkdisk-arm.sh" >&2; exit 1; }
+# The disk is loaded into the machine's memory at 1.1 GB (above the kernel
+# and its first allocations) and the kernel is told where with ramdisk=.
+# Writes stay in memory and are gone at power off, until stage A3's disk
+# driver. The kernel keeps a 1 GB machine's top free for itself.
+DISK_ADDR=0x48000000
+DISK_SIZE=$(wc -c < "$DISK" | tr -d ' ')
 
 ACCEL="${ORANGE_ARM_ACCEL:-}"
 if [ -z "$ACCEL" ]; then
@@ -37,4 +45,6 @@ exec qemu-system-aarch64 \
     -smp "${ORANGE_VM_CPUS:-4}" -m "${ORANGE_VM_MEMORY:-1024}" \
     -global virtio-mmio.force-legacy=false -device virtio-gpu-device \
     -display "$DISPLAY_ARG" -serial stdio \
+    -device loader,file="$DISK",addr=$DISK_ADDR,force-raw=on \
+    -append "ramdisk=$DISK_ADDR,$DISK_SIZE" \
     -kernel "$KERNEL" "$@"

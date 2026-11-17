@@ -4,28 +4,37 @@
 // at the kernel's physical load address. This file:
 //   1. leaves hypervisor level (EL2) for kernel level (EL1) if it was
 //      started there;
-//   2. turns the memory map on with one small table that maps the first
-//      512 GB twice: at its own address (so this code keeps running) and in
-//      the upper half, where the rest of the kernel is linked;
+//   2. turns the memory map on with a small fixed set of tables that give
+//      the same layout the x86 kernel gets from its boot loader:
+//        - every physical address at itself (so this code keeps running);
+//        - every physical address again at HHDM + address ("direct map");
+//        - the kernel image at 0xFFFFFFFF80000000.
+//      The kernel later builds its real tables (mm/vmm.zig) and these are
+//      only used again when another processor starts;
 //   3. gives the processor its stack and calls kmain(processor index,
 //      device tree address or 0).
 //
 // The first processor arrives at _start. The others are started later by
 // the kernel (PSCI CPU_ON) at _secondary_start with their index in x0.
 
-#define KERNEL_VIRT   0xFFFFFF8000000000
 #define STACK_SHIFT   16                  // 64 KB a processor
 #define MAX_CPUS      8
+#define KERNEL_PHYS   0x40200000          // must match boot/linker-aarch64.ld
 
-// One-gigabyte blocks. Normal memory: read/write, cached, access flag set,
-// never executable from user level. Device memory: uncached, never executable.
+// Blocks (1 GB at level 1, 2 MB at level 2). Normal memory: read/write,
+// cached, access flag set, never executable from user level. Device memory:
+// uncached, never executable.
 #define BLOCK_NORMAL  0x0040000000000701
 #define BLOCK_DEVICE  0x0060000000000405
+#define TABLE         0x3
 
-// 39-bit addresses in both halves, 4 KB pages, cached page-table walks.
-#define TCR_VALUE     0xB5193519
-// Memory map, data cache and instruction cache on; the bits that must be 1.
-#define SCTLR_VALUE   0x30D01805
+// 48-bit addresses in both halves, 4 KB pages, cached page-table walks.
+#define TCR_VALUE     0xB5103510
+// Memory map, data cache and instruction cache on; the bits that must be 1;
+// and what programs may do themselves: read the cache geometry (UCT), zero
+// cache lines (DZE), clean caches for code they generate (UCI), and wait
+// for an event or interrupt without a trap (nTWE, nTWI).
+#define SCTLR_VALUE   0x34D5D805
 
     .section .boot.text, "ax"
     .global _start
@@ -71,7 +80,7 @@ enter:
     eret
 
 at_el1:
-    adrp    x1, boot_table
+    adrp    x1, boot_root
     msr     ttbr0_el1, x1
     msr     ttbr1_el1, x1
     mov     x1, #0xff                     // attr 0 normal, attr 1 device
@@ -113,9 +122,16 @@ at_el1:
 
     .section .boot.data, "aw"
     .balign 4096
-    .global boot_table
-boot_table:
-    .quad   BLOCK_DEVICE                  // 0 to 1 GB: serial, interrupt controller, fw_cfg
+    .global boot_root
+boot_root:
+    .quad   boot_direct + TABLE           // 0: physical addresses as they are
+    .fill   255, 8, 0
+    .quad   boot_direct + TABLE           // 256: the direct map (HHDM)
+    .fill   254, 8, 0
+    .quad   boot_high + TABLE             // 511: the top 512 GB
+
+boot_direct:
+    .quad   BLOCK_DEVICE                  // 0 to 1 GB: serial, interrupt controller, virtio
     .set    gb, 1
     .rept   255                           // 1 to 256 GB: memory
     .quad   BLOCK_NORMAL + (gb << 30)
@@ -124,6 +140,18 @@ boot_table:
     .rept   256                           // 256 to 512 GB: PCI and high devices
     .quad   BLOCK_DEVICE + (gb << 30)
     .set    gb, gb + 1
+    .endr
+
+boot_high:
+    .fill   510, 8, 0
+    .quad   boot_kernel + TABLE           // 0xFFFFFFFF80000000: the kernel image
+    .quad   0
+
+boot_kernel:                              // 1 GB from the kernel's load address
+    .set    mb2, 0
+    .rept   512
+    .quad   BLOCK_NORMAL + KERNEL_PHYS + (mb2 << 21)
+    .set    mb2, mb2 + 1
     .endr
 
     .section .bss.stacks, "aw", %nobits

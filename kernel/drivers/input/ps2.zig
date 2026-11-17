@@ -49,7 +49,7 @@ fn waitWritable() void {
     var spins: u32 = 0;
     while (spins < 100_000) : (spins += 1) {
         if (io.inb(STATUS) & STATUS_INPUT_FULL == 0) return;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
 }
 
@@ -57,7 +57,7 @@ fn waitReadable() bool {
     var spins: u32 = 0;
     while (spins < 100_000) : (spins += 1) {
         if (io.inb(STATUS) & STATUS_OUTPUT_FULL != 0) return true;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
     return false;
 }

@@ -147,10 +147,66 @@ fn wpeProbes() void {
     pulp.puts("runtime: PASS WPE WebKit render\n");
 }
 
+/// Run `path` `rounds` times, `together` copies at once, and require every
+/// copy to exit with `expected`. Prints one PASS or FAIL line.
+fn check(path: []const u8, rounds: usize, together: usize, expected: i64, label: []const u8) void {
+    for (0..rounds) |_| {
+        var pids: [8]i64 = undefined;
+        for (pids[0..together]) |*pid| pid.* = pulp.spawn(path) catch {
+            pulp.print("runtime: FAIL {s}: could not start {s}\n", .{ label, path });
+            pulp.exit(230);
+        };
+        for (pids[0..together]) |pid| {
+            const code = pulp.wait(pid) catch pulp.exit(231);
+            if (code != expected) {
+                pulp.print("runtime: FAIL {s}: {s} exit {d}, expected {d}\n", .{ label, path, code, expected });
+                pulp.exit(232);
+            }
+        }
+    }
+    pulp.print("runtime: PASS {s}\n", .{label});
+}
+
+/// The runtime checks for the Arm64 system (docs/design/015, stage A2): the
+/// programs that exist on Arm so far: the Zig ones and the C ones on musl.
+/// C++, the JIT and the network join as their stages arrive.
+fn armRuntime() void {
+    check("/bin/vm-probe", 3, 1, 0, "repeated VM processes");
+    check("/bin/fault-null", 1, 1, 142, "a null access ends only its program");
+    check("/bin/fault-ro", 1, 1, 142, "a write to read-only memory ends only its program");
+    check("/bin/fault-nx", 1, 1, 142, "running data ends only its program");
+    check("/bin/fault-wx", 1, 1, 142, "writable and executable memory is refused");
+    check("/bin/fault-opcode", 1, 1, 134, "an invalid instruction ends only its program");
+    check("/bin/simd-probe", 2, 6, 0, "concurrent vector register isolation");
+    check("/bin/tls-probe", 2, 6, 0, "per-thread TLS register across processors");
+    check("/bin/futex-probe", 24, 1, 0, "24 shared-word wait/wake process cycles");
+    check("/bin/thread-probe", 4, 2, 0, "multi-threaded programs: remote TLB, mutex, private TLS, VM churn and join");
+    check("/bin/thread-exit-probe", 8, 1, 42, "program exit ends waiting, sleeping and spinning threads");
+    check("/bin/thread-fault-probe", 4, 1, 142, "a faulting thread ends its whole program");
+    check("/bin/thread-last-probe", 8, 1, 9, "a program outlives its first thread");
+    check("/bin/reap-probe", 300, 1, 0, "300 child reaps and slot reuse");
+    check("/bin/orphan-probe", 2, 6, 0, "orphan children are collected");
+    check("/bin/fd-probe", 96, 1, 0, "private file descriptors and 96 exit cleanups");
+    check("/bin/ipc-probe", 96, 1, 0, "96 IPC registry reuse, mappings and exit cleanups");
+    check("/bin/musl-probe", 1, 1, 0, "C program on musl");
+    check("/bin/file-probe", 1, 1, 0, "writable files in /tmp");
+    check("/bin/thread-capacity", 1, 1, 0, "511 threads in one program");
+    check("/bin/pipe-probe", 1, 1, 0, "pipes, eventfd and descriptor duplication");
+    check("/bin/epoll-probe", 1, 1, 0, "epoll, poll and select");
+    check("/bin/unix-probe", 1, 1, 0, "socket pairs and descriptor passing");
+    check("/bin/spawn-probe", 1, 1, 0, "posix_spawn, working directories and cross-process descriptors");
+    check("/bin/mmap-probe", 1, 1, 0, "lazily backed memory");
+    check("/bin/shm-probe", 1, 1, 0, "shared memory and file mappings");
+    check("/bin/random-probe", 1, 1, 0, "randomness and device files");
+    check("/bin/signal-probe", 1, 1, 0, "POSIX signals");
+    pulp.puts("runtime: PASS all Arm64 checks\n");
+}
+
 export fn _start() callconv(.c) noreturn {
     banner();
     if (pulp.runtime_test and pulp.wpe_probes and pulp.wpe_first) wpeProbes();
-    if (pulp.runtime_test) {
+    if (pulp.runtime_test and pulp.is_arm) armRuntime();
+    if (pulp.runtime_test and !pulp.is_arm) {
         for (0..3) |_| {
             const probe = pulp.spawn("/bin/vm-probe") catch pulp.exit(90);
             const result = pulp.wait(probe) catch pulp.exit(91);

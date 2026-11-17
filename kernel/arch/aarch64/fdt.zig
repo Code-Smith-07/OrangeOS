@@ -41,6 +41,8 @@ pub const Node = struct {
     method: []const u8 = "",
     reg: []const u8 = "",
     interrupts: []const u8 = "",
+    /// The kernel command line (only on the "chosen" node).
+    bootargs: []const u8 = "",
     /// How the PARENT of this node says addresses and sizes are written.
     address_cells: u32 = 2,
     size_cells: u32 = 1,
@@ -187,6 +189,8 @@ pub const Iterator = struct {
                         node.reg = value;
                     } else if (std.mem.eql(u8, name, "interrupts")) {
                         node.interrupts = value;
+                    } else if (std.mem.eql(u8, name, "bootargs")) {
+                        node.bootargs = text(value);
                     } else if (std.mem.eql(u8, name, "#address-cells") and len == 4) {
                         node.child_address_cells = be32(value, 0);
                     } else if (std.mem.eql(u8, name, "#size-cells") and len == 4) {

@@ -1,27 +1,12 @@
 //! Prove FS-relative user TLS survives preemption, blocking and CPU migration.
 const pulp = @import("pulp");
 
-comptime {
-    asm (
-        \\.section .text
-        \\.global tlsProbeCpuId
-        \\tlsProbeCpuId:
-        \\    pushq %rbx
-        \\    movl $1, %eax
-        \\    cpuid
-        \\    shrl $24, %ebx
-        \\    movl %ebx, %eax
-        \\    popq %rbx
-        \\    retq
-    );
+fn tlsProbeCpuId() u32 {
+    return pulp.processorHint();
 }
 
-extern fn tlsProbeCpuId() callconv(.c) u32;
-
 fn tlsValue() u64 {
-    return asm volatile ("movq %%fs:0, %[value]"
-        : [value] "=r" (-> u64),
-    );
+    return pulp.tlsFirstWord();
 }
 
 export fn _start() callconv(.c) noreturn {

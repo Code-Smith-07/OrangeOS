@@ -9,11 +9,11 @@
 //! Phase 1 replaces this with register dumps and a symbolized backtrace.
 
 const console = @import("console.zig");
-const io = @import("arch/x86_64/io.zig");
+const io = @import("arch/arch.zig").io;
 const fbcon = @import("drivers/video/fbcon.zig");
-const isr = @import("arch/x86_64/isr.zig");
+const isr = @import("arch/arch.zig").isr;
 const backtrace = @import("debug/backtrace.zig");
-const smp = @import("arch/x86_64/smp.zig");
+const smp = @import("arch/arch.zig").smp;
 const fmt = @import("lib/fmt.zig");
 
 /// Take the screen back and show the log that led here.

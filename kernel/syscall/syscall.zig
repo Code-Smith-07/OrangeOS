@@ -16,8 +16,9 @@ const epoll = @import("../ipc/epoll.zig");
 const signal = @import("../sched/signal.zig");
 const unix_socket = @import("../ipc/unix_socket.zig");
 const heap = @import("../mm/heap.zig");
-const serial = @import("../drivers/char/serial.zig");
-const io = @import("../arch/x86_64/io.zig");
+const arch = @import("../arch/arch.zig");
+const serial = arch.serial;
+const io = @import("../arch/arch.zig").io;
 const process = @import("../sched/process.zig");
 const pmm = @import("../mm/pmm.zig");
 const citrusfs = @import("../fs/citrusfs/citrusfs.zig");
@@ -32,7 +33,7 @@ const task_mod = @import("../sched/task.zig");
 
 /// Register state at the syscall boundary. Field order is the reverse of the
 /// push order in syscallEntry.
-pub const SyscallFrame = extern struct {
+pub const SyscallFrame = if (arch.is_x86) extern struct {
     r15: u64,
     r14: u64,
     r13: u64,
@@ -54,7 +55,29 @@ pub const SyscallFrame = extern struct {
     rflags: u64,
     rsp: u64,
     ss: u64,
-};
+
+    /// Argument `n` of the call. The fourth is in r10, not rcx: the syscall
+    /// instruction overwrites rcx with the return address.
+    pub inline fn arg(self: *const @This(), comptime n: u3) u64 {
+        return switch (n) {
+            0 => self.rdi,
+            1 => self.rsi,
+            2 => self.rdx,
+            3 => self.r10,
+            4 => self.r8,
+            5 => self.r9,
+            else => unreachable,
+        };
+    }
+    /// Which call the program asked for.
+    pub inline fn number(self: *const @This()) u64 {
+        return self.rax;
+    }
+    /// What the program sees as the call's result.
+    pub inline fn setResult(self: *@This(), value: u64) void {
+        self.rax = value;
+    }
+} else arch.isr.TrapFrame;
 
 /// Numbers follow the ABI table in ARCHITECTURE.md section 11.2. Once a
 /// number is assigned it is stable and is never reused for anything else.
@@ -207,13 +230,13 @@ var syscall_count: u64 = 0;
 
 /// The single entry point from assembly. Returns 1 when the saved registers
 /// must all be restored (the return goes through IRETQ), 0 for SYSRET.
-export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) u64 {
+pub export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) u64 {
     syscall_count += 1;
 
     // sigreturn replaces every saved register, rax included.
-    if (frame.rax == @intFromEnum(Nr.sigreturn)) {
+    if (frame.number() == @intFromEnum(Nr.sigreturn)) {
         const t = sched.currentTask() orelse sched.exit(1);
-        if (!signal.restore(frame, t, frame.rdi)) sched.exitGroup(128 + signal.SIGSEGV);
+        if (!signal.restore(frame, t, frame.arg(0))) sched.exitGroup(128 + signal.SIGSEGV);
         if (sched.killPending()) sched.exit(0);
         _ = signal.deliver(frame);
         return 1;
@@ -221,123 +244,123 @@ export fn syscallDispatch(frame: *SyscallFrame) callconv(.c) u64 {
 
     // Arguments: rdi, rsi, rdx, r10, r8, r9. Note r10, not rcx — the syscall
     // instruction clobbers rcx with the return address.
-    const result: i64 = switch (@as(Nr, @enumFromInt(frame.rax))) {
-        .exit => sysExit(@bitCast(frame.rdi)),
-        .write => sysWrite(frame.rdi, frame.rsi, frame.rdx),
+    const result: i64 = switch (@as(Nr, @enumFromInt(frame.number()))) {
+        .exit => sysExit(@bitCast(frame.arg(0))),
+        .write => sysWrite(frame.arg(0), frame.arg(1), frame.arg(2)),
         .getpid => sysGetpid(),
         .getppid => @intCast(sched.parentOfCurrent()),
-        .open => sysOpen(frame.rdi, frame.rsi, frame.rdx),
-        .mkdir => sysMkdir(frame.rdi, frame.rsi),
-        .rmdir => sysRemove(frame.rdi, frame.rsi, true),
-        .unlink => sysRemove(frame.rdi, frame.rsi, false),
-        .rename => sysRename(frame.rdi, frame.rsi, frame.rdx, frame.r10),
-        .ftruncate => sysFtruncate(frame.rdi, frame.rsi),
-        .readdir_fd => sysReaddirFd(frame.rdi, frame.rsi, frame.rdx),
-        .statfs => sysStatfs(frame.rdi, frame.rsi, frame.rdx),
-        .pread => sysPread(frame.rdi, frame.rsi, frame.rdx, frame.r10),
-        .pwrite => sysPwrite(frame.rdi, frame.rsi, frame.rdx, frame.r10),
-        .pipe => sysPipe(frame.rdi, frame.rsi),
-        .dup => sysDup(frame.rdi, frame.rsi, frame.rdx),
-        .fd_control => sysFdControl(frame.rdi, frame.rsi, frame.rdx),
-        .eventfd => sysEventFd(frame.rdi, frame.rsi),
-        .epoll_create => sysEpollCreate(frame.rdi),
-        .epoll_ctl => sysEpollCtl(frame.rdi, frame.rsi, frame.rdx, frame.r10),
-        .epoll_wait => sysEpollWait(frame.rdi, frame.rsi, frame.rdx, frame.r10),
-        .poll => sysPoll(frame.rdi, frame.rsi, frame.rdx),
-        .socketpair => sysSocketPair(frame.rdi, frame.rsi, frame.rdx),
-        .sendmsg => sysSendMsg(frame.rdi, frame.rsi, frame.rdx),
-        .recvmsg => sysRecvMsg(frame.rdi, frame.rsi, frame.rdx),
-        .shutdown => sysShutdown(frame.rdi, frame.rsi),
-        .socket => sysSocket(frame.rdi, frame.rsi, frame.rdx, frame.r10),
-        .connect => sysConnect(frame.rdi, frame.rsi, frame.rdx),
-        .bind => sysBind(frame.rdi, frame.rsi, frame.rdx),
-        .listen => sysListen(frame.rdi),
-        .sockname => sysSockname(frame.rdi, frame.rsi, frame.rdx, frame.r10),
-        .getsockopt => sysGetsockopt(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
-        .setsockopt => sysSetsockopt(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
-        .fs_sync => sysFsSync(frame.rdi),
-        .chdir => sysChdir(frame.rdi, frame.rsi),
-        .getcwd => sysGetcwd(frame.rdi, frame.rsi),
-        .resolve_path => sysResolvePath(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
-        .spawn_process => sysSpawnProcess(frame.rdi),
-        .vm_map => sysVmMap(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9),
-        .vm_advise => sysVmAdvise(frame.rdi, frame.rsi, frame.rdx),
-        .vm_remap => sysVmRemap(frame.rdi, frame.rsi, frame.rdx, frame.r10),
-        .memfd => sysMemfd(frame.rdi),
-        .getrandom => sysGetrandom(frame.rdi, frame.rsi, frame.rdx),
-        .sigaction => sysSigaction(frame.rdi, frame.rsi, frame.rdx),
-        .sigmask => sysSigmask(frame.rdi, frame.rsi, frame.rdx),
-        .kill => sysKill(frame.rdi, frame.rsi),
-        .tkill => sysTkill(frame.rdi, frame.rsi),
+        .open => sysOpen(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .mkdir => sysMkdir(frame.arg(0), frame.arg(1)),
+        .rmdir => sysRemove(frame.arg(0), frame.arg(1), true),
+        .unlink => sysRemove(frame.arg(0), frame.arg(1), false),
+        .rename => sysRename(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3)),
+        .ftruncate => sysFtruncate(frame.arg(0), frame.arg(1)),
+        .readdir_fd => sysReaddirFd(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .statfs => sysStatfs(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .pread => sysPread(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3)),
+        .pwrite => sysPwrite(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3)),
+        .pipe => sysPipe(frame.arg(0), frame.arg(1)),
+        .dup => sysDup(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .fd_control => sysFdControl(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .eventfd => sysEventFd(frame.arg(0), frame.arg(1)),
+        .epoll_create => sysEpollCreate(frame.arg(0)),
+        .epoll_ctl => sysEpollCtl(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3)),
+        .epoll_wait => sysEpollWait(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3)),
+        .poll => sysPoll(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .socketpair => sysSocketPair(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .sendmsg => sysSendMsg(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .recvmsg => sysRecvMsg(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .shutdown => sysShutdown(frame.arg(0), frame.arg(1)),
+        .socket => sysSocket(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3)),
+        .connect => sysConnect(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .bind => sysBind(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .listen => sysListen(frame.arg(0)),
+        .sockname => sysSockname(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3)),
+        .getsockopt => sysGetsockopt(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3), frame.arg(4)),
+        .setsockopt => sysSetsockopt(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3), frame.arg(4)),
+        .fs_sync => sysFsSync(frame.arg(0)),
+        .chdir => sysChdir(frame.arg(0), frame.arg(1)),
+        .getcwd => sysGetcwd(frame.arg(0), frame.arg(1)),
+        .resolve_path => sysResolvePath(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3), frame.arg(4)),
+        .spawn_process => sysSpawnProcess(frame.arg(0)),
+        .vm_map => sysVmMap(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3), frame.arg(4), frame.arg(5)),
+        .vm_advise => sysVmAdvise(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .vm_remap => sysVmRemap(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3)),
+        .memfd => sysMemfd(frame.arg(0)),
+        .getrandom => sysGetrandom(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .sigaction => sysSigaction(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .sigmask => sysSigmask(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .kill => sysKill(frame.arg(0), frame.arg(1)),
+        .tkill => sysTkill(frame.arg(0), frame.arg(1)),
         .sigreturn => unreachable, // handled before the switch
-        .sigaltstack => sysSigaltstack(frame.rdi, frame.rsi),
-        .sigpending => sysSigpending(frame.rdi),
-        .close => sysClose(frame.rdi),
-        .read => sysRead(frame.rdi, frame.rsi, frame.rdx),
-        .spawn => sysSpawn(frame.rdi, frame.rsi),
-        .wait => sysWait(frame.rdi, frame.rsi),
-        .mmap => sysMmap(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9),
-        .munmap => sysMunmap(frame.rdi, frame.rsi),
-        .mprotect => sysMprotect(frame.rdi, frame.rsi, frame.rdx),
-        .vm_reserve => sysVmReserve(frame.rdi),
-        .vm_commit => sysVmCommit(frame.rdi, frame.rsi, frame.rdx),
-        .vm_decommit => sysVmDecommit(frame.rdi, frame.rsi),
-        .tls_set_base => sysTlsSetBase(frame.rdi),
+        .sigaltstack => sysSigaltstack(frame.arg(0), frame.arg(1)),
+        .sigpending => sysSigpending(frame.arg(0)),
+        .close => sysClose(frame.arg(0)),
+        .read => sysRead(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .spawn => sysSpawn(frame.arg(0), frame.arg(1)),
+        .wait => sysWait(frame.arg(0), frame.arg(1)),
+        .mmap => sysMmap(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3), frame.arg(4), frame.arg(5)),
+        .munmap => sysMunmap(frame.arg(0), frame.arg(1)),
+        .mprotect => sysMprotect(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .vm_reserve => sysVmReserve(frame.arg(0)),
+        .vm_commit => sysVmCommit(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .vm_decommit => sysVmDecommit(frame.arg(0), frame.arg(1)),
+        .tls_set_base => sysTlsSetBase(frame.arg(0)),
         .tls_get_base => sysTlsGetBase(),
-        .user_wait => sysUserWait(frame.rdi, frame.rsi, frame.rdx),
-        .user_wake => sysUserWake(frame.rdi, frame.rsi),
-        .thread_create => sysThreadCreate(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
-        .thread_exit => sysThreadExit(@bitCast(frame.rdi)),
+        .user_wait => sysUserWait(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .user_wake => sysUserWake(frame.arg(0), frame.arg(1)),
+        .thread_create => sysThreadCreate(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3), frame.arg(4)),
+        .thread_exit => sysThreadExit(@bitCast(frame.arg(0))),
         .gettid => sysGettid(),
-        .set_exit_word => sysSetExitWord(frame.rdi),
-        .seek => sysSeek(frame.rdi, frame.rsi, frame.rdx),
-        .stat => sysStat(frame.rdi, frame.rsi, frame.rdx),
-        .fstat => sysFstat(frame.rdi, frame.rsi),
-        .clock_ns => sysClockNs(frame.rdi),
-        .sleep_ms => sysSleepMs(frame.rdi),
+        .set_exit_word => sysSetExitWord(frame.arg(0)),
+        .seek => sysSeek(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .stat => sysStat(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .fstat => sysFstat(frame.arg(0), frame.arg(1)),
+        .clock_ns => sysClockNs(frame.arg(0)),
+        .sleep_ms => sysSleepMs(frame.arg(0)),
         // Fourth argument is in r10, not rcx: the syscall instruction
         // clobbers rcx with the return address.
-        .readdir => sysReaddir(frame.rdi, frame.rsi, frame.rdx, frame.r10, 0),
-        .readdir_page => sysReaddir(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8),
-        .port_create => sysPortCreate(frame.rdi, frame.rsi),
-        .port_connect => sysPortConnect(frame.rdi, frame.rsi),
-        .port_send => sysPortSend(frame.rdi, frame.rsi, frame.rdx, frame.r10),
-        .port_recv => sysPortRecv(frame.rdi, frame.rsi, frame.rdx, frame.r10),
-        .shm_create => sysShmCreate(frame.rdi, frame.rsi, frame.rdx),
-        .shm_open => sysShmOpen(frame.rdi, frame.rsi),
-        .shm_size => sysShmSize(frame.rdi),
+        .readdir => sysReaddir(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3), 0),
+        .readdir_page => sysReaddir(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3), frame.arg(4)),
+        .port_create => sysPortCreate(frame.arg(0), frame.arg(1)),
+        .port_connect => sysPortConnect(frame.arg(0), frame.arg(1)),
+        .port_send => sysPortSend(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3)),
+        .port_recv => sysPortRecv(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3)),
+        .shm_create => sysShmCreate(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .shm_open => sysShmOpen(frame.arg(0), frame.arg(1)),
+        .shm_size => sysShmSize(frame.arg(0)),
         .pty_create => sysPtyCreate(),
-        .pty_read => sysPtyRead(frame.rdi, frame.rsi, frame.rdx),
-        .pty_write => sysPtyWrite(frame.rdi, frame.rsi, frame.rdx),
-        .spawn_pty => sysSpawnPty(frame.rdi, frame.rsi, frame.rdx),
-        .net_ping => sysNetPing(frame.rdi, frame.rsi, frame.rdx),
-        .net_info => sysNetInfo(frame.rdi),
-        .net_resolve => sysNetResolve(frame.rdi, frame.rsi),
-        .udp_open => sysUdpOpen(frame.rdi),
-        .udp_send => sysUdpSend(frame.rdi, frame.rsi, frame.rdx, frame.r10),
-        .udp_recv => sysUdpRecv(frame.rdi, frame.rsi, frame.rdx),
-        .udp_close => sysUdpClose(frame.rdi),
-        .tcp_connect => sysTcpConnect(frame.rdi, frame.rsi, frame.rdx),
-        .tcp_send => sysTcpSend(frame.rdi, frame.rsi, frame.rdx),
-        .tcp_recv => sysTcpRecv(frame.rdi, frame.rsi, frame.rdx, frame.r10),
-        .tcp_close => sysTcpClose(frame.rdi),
-        .host_io => sysHostIo(frame.rdi, frame.rsi, frame.rdx),
-        .host_snapshot => sysHostSnapshot(frame.rdi, frame.rsi, frame.rdx),
-        .host_command => @import("host_command.zig").operation(frame.rdi, frame.rsi, frame.rdx),
-        .shm_map => sysShmMap(frame.rdi, frame.rsi),
-        .handle_close => sysHandleClose(frame.rdi),
-        .fb_acquire => sysFbAcquire(frame.rdi),
+        .pty_read => sysPtyRead(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .pty_write => sysPtyWrite(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .spawn_pty => sysSpawnPty(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .net_ping => sysNetPing(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .net_info => sysNetInfo(frame.arg(0)),
+        .net_resolve => sysNetResolve(frame.arg(0), frame.arg(1)),
+        .udp_open => sysUdpOpen(frame.arg(0)),
+        .udp_send => sysUdpSend(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3)),
+        .udp_recv => sysUdpRecv(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .udp_close => sysUdpClose(frame.arg(0)),
+        .tcp_connect => sysTcpConnect(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .tcp_send => sysTcpSend(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .tcp_recv => sysTcpRecv(frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3)),
+        .tcp_close => sysTcpClose(frame.arg(0)),
+        .host_io => sysHostIo(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .host_snapshot => sysHostSnapshot(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .host_command => @import("host_command.zig").operation(frame.arg(0), frame.arg(1), frame.arg(2)),
+        .shm_map => sysShmMap(frame.arg(0), frame.arg(1)),
+        .handle_close => sysHandleClose(frame.arg(0)),
+        .fb_acquire => sysFbAcquire(frame.arg(0)),
         .fb_map => sysFbMap(),
-        .input_read => sysInputRead(frame.rdi, frame.rsi),
-        .input_bind => sysInputBind(frame.rdi),
-        .input_wait => sysInputWait(frame.rdi),
+        .input_read => sysInputRead(frame.arg(0), frame.arg(1)),
+        .input_bind => sysInputBind(frame.arg(0)),
+        .input_wait => sysInputWait(frame.arg(0)),
         .yield => sysYield(),
         .uptime => sysUptime(),
         .wall_time => if (@import("../time/time.zig").unixSeconds()) |seconds| @intCast(seconds) else -5,
         else => ENOSYS,
     };
 
-    frame.rax = @bitCast(result);
+    frame.setResult(@bitCast(result));
     // A thread of an exiting program never returns to user mode.
     if (sched.killPending()) sched.exit(0);
     // Pending signals are acted on here; a handler means a full restore.
@@ -381,6 +404,9 @@ fn sysMprotect(address: u64, len: u64, prot: u64) i64 {
     io.sti();
     defer io.cli();
     user_vm.protect(space, address, len, prot) catch |e| return vmErrno(e);
+    // Code a program generated (a JIT) becomes runnable here: on Arm the
+    // instruction caches must be told.
+    if (arch.is_arm and prot & 4 != 0) arch.mmu.syncInstructions();
     return 0;
 }
 /// vm_map flags.
@@ -633,12 +659,14 @@ fn sysTlsSetBase(base: u64) i64 {
     if (base >= validate.USER_MAX) return -22;
     const t = sched.currentTask() orelse return EIO;
     t.fs_base = base;
-    @import("../arch/x86_64/fsbase.zig").set(base);
+    @import("../arch/arch.zig").fsbase.set(base);
     return 0;
 }
 
 fn sysTlsGetBase() i64 {
     const t = sched.currentTask() orelse return EIO;
+    // Arm programs may also set the register themselves.
+    if (arch.is_arm) t.fs_base = arch.fsbase.get();
     return @intCast(t.fs_base);
 }
 
@@ -1199,7 +1227,9 @@ fn epollOf(epfd: u64) error{ BadFd, NotEpoll }!struct { desc: *fd_mod.Descriptio
 }
 
 /// epoll_event is packed on x86-64: u32 events, then u64 data (12 bytes).
-const EPOLL_EVENT_SIZE = 12;
+/// Arm64 aligns the data: u32 events, 4 bytes of padding, u64 data (16).
+const EPOLL_EVENT_SIZE = if (arch.is_arm) 16 else 12;
+const EPOLL_DATA_AT = if (arch.is_arm) 8 else 4;
 
 fn sysEpollCtl(epfd: u64, op: u64, target: u64, event_ptr: u64) i64 {
     const instance = epollOf(epfd) catch |e| return if (e == error.BadFd) EBADF else EINVAL;
@@ -1212,7 +1242,7 @@ fn sysEpollCtl(epfd: u64, op: u64, target: u64, event_ptr: u64) i64 {
     if (op != 2) {
         var raw: [EPOLL_EVENT_SIZE]u8 = undefined;
         validate.copyFromUser(vmm.currentCr3(), &raw, event_ptr, EPOLL_EVENT_SIZE) catch return EFAULT;
-        interest = .{ .events = std.mem.readInt(u32, raw[0..4], .little), .data = std.mem.readInt(u64, raw[4..12], .little) };
+        interest = .{ .events = std.mem.readInt(u32, raw[0..4], .little), .data = std.mem.readInt(u64, raw[EPOLL_DATA_AT..][0..8], .little) };
     }
     epoll.control(instance.ep, @enumFromInt(op), @intCast(target), desc, interest) catch |e| return epollErrno(e);
     return 0;
@@ -1233,8 +1263,9 @@ fn sysEpollWait(epfd: u64, out: u64, max: u64, timeout: u64) i64 {
     var raw: [EPOLL_BATCH * EPOLL_EVENT_SIZE]u8 = undefined;
     for (events[0..ready], 0..) |item, i| {
         const at = raw[i * EPOLL_EVENT_SIZE ..][0..EPOLL_EVENT_SIZE];
+        @memset(at, 0);
         std.mem.writeInt(u32, at[0..4], item.events, .little);
-        std.mem.writeInt(u64, at[4..12], item.data, .little);
+        std.mem.writeInt(u64, at[EPOLL_DATA_AT..][0..8], item.data, .little);
     }
     const bytes = ready * EPOLL_EVENT_SIZE;
     validate.copyToUser(vmm.currentCr3(), out, raw[0..bytes], bytes) catch return EFAULT;

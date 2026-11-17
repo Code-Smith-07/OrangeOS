@@ -12,7 +12,7 @@ const std = @import("std");
 const net = @import("net.zig");
 const e1000 = @import("../drivers/net/e1000.zig");
 const console = @import("../console.zig");
-const tsc = @import("../time/tsc.zig");
+const tsc = @import("../arch/arch.zig").tsc;
 
 const CLIENT_PORT: u16 = 68;
 const SERVER_PORT: u16 = 67;

@@ -25,6 +25,9 @@ const ELF_MAGIC = [4]u8{ 0x7F, 'E', 'L', 'F' };
 
 const ET_EXEC: u16 = 2;
 const EM_X86_64: u16 = 62;
+const EM_AARCH64: u16 = 183;
+/// Programs must be built for the processor the kernel is built for.
+const EM_NATIVE: u16 = if (@import("builtin").cpu.arch == .aarch64) EM_AARCH64 else EM_X86_64;
 const PT_LOAD: u32 = 1;
 
 const PF_X: u32 = 1;
@@ -87,7 +90,7 @@ fn validate(hdr: *align(1) const Header) Error!void {
     if (!std.mem.eql(u8, hdr.ident[0..4], &ELF_MAGIC)) return Error.NotElf;
     if (hdr.ident[4] != 2) return Error.NotElf64; // EI_CLASS
     if (hdr.ident[5] != 1) return Error.NotLittleEndian; // EI_DATA
-    if (hdr.machine != EM_X86_64) return Error.WrongArchitecture;
+    if (hdr.machine != EM_NATIVE) return Error.WrongArchitecture;
     if (hdr.type != ET_EXEC) return Error.NotExecutable;
 }
 

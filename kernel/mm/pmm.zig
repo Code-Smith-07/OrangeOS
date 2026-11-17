@@ -16,7 +16,7 @@
 
 const std = @import("std");
 const spinlock = @import("../sync/spinlock.zig");
-const limine = @import("../boot/limine_req.zig");
+const limine = @import("../arch/arch.zig").boot;
 const console = @import("../console.zig");
 
 pub const PAGE_SIZE: usize = 4096;

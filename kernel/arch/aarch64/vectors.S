@@ -1,11 +1,13 @@
 // Orange OS — Arm64 exception vectors.
 //
 // The processor jumps to one of sixteen slots (four kinds of event from each
-// of four origins). Every slot saves the interrupted registers on the stack
-// and calls exceptionEntry(frame, slot) in exceptions.zig; when that
-// returns, the registers are restored and the interrupted code continues.
+// of four origins). Every slot saves the interrupted registers on the
+// current kernel stack (isr.zig's TrapFrame) and calls
+// exceptionEntry(frame, slot); when that returns, the registers are restored
+// from the frame, which the handler may have changed (system call results,
+// signal delivery), and the interrupted code continues.
 
-#define FRAME_SIZE 272                    // x0-x30, return address, saved state
+#define FRAME_SIZE 272                    // x0-x30, return address, saved state, user stack pointer
 
 .macro  slot number
     .balign 0x80
@@ -54,10 +56,13 @@ save_and_call:
     mrs     x2, elr_el1
     mrs     x3, spsr_el1
     stp     x30, x2, [sp, #240]
-    str     x3, [sp, #256]
+    mrs     x4, sp_el0
+    stp     x3, x4, [sp, #256]
     mov     x0, sp
+    mov     x29, #0                       // backtraces stop here
     bl      exceptionEntry
-    ldr     x3, [sp, #256]
+    ldp     x3, x4, [sp, #256]
+    msr     sp_el0, x4
     ldp     x30, x2, [sp, #240]
     msr     spsr_el1, x3
     msr     elr_el1, x2

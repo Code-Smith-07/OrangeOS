@@ -6,15 +6,15 @@
 //! full non-global flush on each target instead of one INVLPG per page.
 const std = @import("std");
 const spinlock = @import("../sync/spinlock.zig");
-const isr = @import("../arch/x86_64/isr.zig");
-const apic = @import("../arch/x86_64/apic.zig");
-const smp = @import("../arch/x86_64/smp.zig");
-const percpu = @import("../arch/x86_64/percpu.zig");
-const tsc = @import("../time/tsc.zig");
+const isr = @import("../arch/arch.zig").isr;
+const apic = @import("../arch/arch.zig").apic;
+const smp = @import("../arch/arch.zig").smp;
+const percpu = @import("../arch/arch.zig").percpu;
+const tsc = @import("../arch/arch.zig").tsc;
 const vmm = @import("vmm.zig");
 const preempt = @import("../sched/preempt.zig");
 
-pub const VECTOR: u8 = 0xF1;
+pub const VECTOR: u8 = smp.VECTOR_TLB;
 /// Above this many pages a CR3 reload is cheaper than per-page INVLPG.
 pub const FULL_FLUSH_PAGES: usize = 32;
 pub const Result = struct {
@@ -126,7 +126,7 @@ fn request(cr3: u64, address: u64, pages: usize, sample: bool, requested_mask: u
     const deadline = tsc.microsSinceBoot() + 1_000_000;
     while (@atomicLoad(usize, &pending, .acquire) != 0) {
         if (tsc.microsSinceBoot() >= deadline) @panic("TLB shootdown timeout");
-        asm volatile ("pause");
+        @import("../arch/arch.zig").io.pause();
     }
     return .{ .remote_mask = @atomicLoad(u64, &remote_mask, .acquire), .samples = samples };
 }

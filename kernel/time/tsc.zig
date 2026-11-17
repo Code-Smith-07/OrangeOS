@@ -87,6 +87,6 @@ pub fn busyWaitUs(micros: u64) void {
     if (ticks_per_us == 0) return;
     const target = read() + micros * ticks_per_us;
     while (read() < target) {
-        asm volatile ("pause");
+        @import("../arch/arch.zig").io.pause();
     }
 }

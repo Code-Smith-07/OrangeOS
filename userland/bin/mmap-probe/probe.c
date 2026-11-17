@@ -155,7 +155,12 @@ int main(void)
 
 	/* W^X code in lazily backed memory. */
 	unsigned char *code = mmap(NULL, PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+#if defined(__aarch64__)
+	/* mov w0, #42; ret */
+	const unsigned char body[] = { 0x40, 0x05, 0x80, 0x52, 0xc0, 0x03, 0x5f, 0xd6 };
+#else
 	const unsigned char body[] = { 0xb8, 42, 0, 0, 0, 0xc3 }; /* mov eax, 42; ret */
+#endif
 	memcpy(code, body, sizeof body);
 	CHECK(mprotect(code, PAGE, PROT_READ | PROT_EXEC) == 0, "flip to executable");
 	int (*function)(void) = (int (*)(void))(void *)code;

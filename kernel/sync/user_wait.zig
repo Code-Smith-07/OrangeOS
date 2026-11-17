@@ -5,7 +5,7 @@ const sched = @import("../sched/sched.zig");
 const vmm = @import("../mm/vmm.zig");
 const pmm = @import("../mm/pmm.zig");
 const validate = @import("../syscall/validate.zig");
-const io = @import("../arch/x86_64/io.zig");
+const io = @import("../arch/arch.zig").io;
 const address_space = @import("../mm/address_space.zig");
 
 pub const Error = error{ Invalid, BadAddress, WouldBlock, Timeout };

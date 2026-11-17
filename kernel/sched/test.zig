@@ -29,47 +29,7 @@ fn check(name: []const u8, ok: bool) void {
 /// preempted several times, then verify nothing changed. A context switch that
 /// drops or misorders a register shows up here and almost nowhere else.
 fn registerIntegrity(_: ?*anyopaque) void {
-    // Note on the comparisons below: x86-64 `cmpq` has no 64-bit immediate
-    // form, so each magic value is reloaded into a scratch register with
-    // `movabsq` and compared register-to-register. Writing
-    // `cmpq $0xB0B0..., %rbx` assembles nowhere.
-    var ok: u64 = 0;
-    asm volatile (
-        \\ movabsq $0xB0B0B0B0B0B0B0B0, %rbx
-        \\ movabsq $0x1212121212121212, %r12
-        \\ movabsq $0x1313131313131313, %r13
-        \\ movabsq $0x1414141414141414, %r14
-        \\ movabsq $0x1515151515151515, %r15
-        \\
-        \\ # Spin long enough that the timer preempts us many times.
-        \\ movq $30000000, %rcx
-        \\ 1:
-        \\ decq %rcx
-        \\ jnz 1b
-        \\
-        \\ # Every register must still hold what we put there.
-        \\ xorq %rax, %rax
-        \\ movabsq $0xB0B0B0B0B0B0B0B0, %rdx
-        \\ cmpq %rdx, %rbx
-        \\ jne 2f
-        \\ movabsq $0x1212121212121212, %rdx
-        \\ cmpq %rdx, %r12
-        \\ jne 2f
-        \\ movabsq $0x1313131313131313, %rdx
-        \\ cmpq %rdx, %r13
-        \\ jne 2f
-        \\ movabsq $0x1414141414141414, %rdx
-        \\ cmpq %rdx, %r14
-        \\ jne 2f
-        \\ movabsq $0x1515151515151515, %rdx
-        \\ cmpq %rdx, %r15
-        \\ jne 2f
-        \\ movq $1, %rax
-        \\ 2:
-        : [out] "={rax}" (ok),
-        :
-        : "rbx", "rcx", "rdx", "r12", "r13", "r14", "r15", "memory"
-    );
+    const ok: u64 = @intFromBool(@import("../arch/arch.zig").context.registersSurvivePreemption());
 
     check("context switch preserves callee-saved registers", ok == 1);
     reportIfDone();

@@ -1,0 +1,30 @@
+/* Orange OS — user program linker script (Arm64; the x86 one is user.ld).
+ *
+ * Loads at 4 MiB, above the null guard region the kernel refuses to map.
+ */
+OUTPUT_FORMAT(elf64-littleaarch64)
+ENTRY(_start)
+
+SECTIONS
+{
+    . = 0x400000;
+
+    .text : { *(.text .text.*) }
+    . = ALIGN(0x1000);
+    .rodata : { *(.rodata .rodata.*) }
+    . = ALIGN(0x1000);
+    .init_array : {
+        PROVIDE(__init_array_start = .);
+        KEEP(*(.init_array .init_array.*))
+        PROVIDE(__init_array_end = .);
+    }
+    . = ALIGN(0x1000);
+    /* Thread-local storage: the linker emits a PT_TLS segment describing
+     * these, and a C runtime copies the image into each thread's block. */
+    .tdata : { *(.tdata .tdata.*) }
+    .tbss  : { *(.tbss .tbss.*) }
+    .data : { *(.data .data.*) }
+    .bss  : { *(.bss .bss.*) *(COMMON) }
+
+    /DISCARD/ : { *(.eh_frame*) *(.note .note.*) *(.comment) }
+}

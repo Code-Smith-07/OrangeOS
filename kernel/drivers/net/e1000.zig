@@ -15,7 +15,7 @@ const pci = @import("../../dev/pci/pci.zig");
 const vmm = @import("../../mm/vmm.zig");
 const pmm = @import("../../mm/pmm.zig");
 const console = @import("../../console.zig");
-const tsc = @import("../../time/tsc.zig");
+const tsc = @import("../../arch/arch.zig").tsc;
 
 const VENDOR_INTEL: u16 = 0x8086;
 const DEVICE_82540EM: u16 = 0x100E;
@@ -260,7 +260,7 @@ pub fn send(frame: []const u8) Error!void {
     const deadline = tsc.microsSinceBoot() + 1_000_000;
     while (tx_ring[i].status & TXD_STAT_DD == 0) {
         if (tsc.microsSinceBoot() > deadline) return Error.TxTimeout;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
 
     const dst: [*]u8 = @ptrFromInt(tx_buffers[i]);

@@ -1,7 +1,9 @@
 //! Verify descriptor isolation, per-process capacity and slot reuse.
 const pulp = @import("pulp");
 
-var files: [253]i64 = undefined;
+/// Must match MAX_OPEN in kernel/fs/fd.zig.
+const MAX_OPEN = 1024;
+var files: [MAX_OPEN - 3]i64 = undefined;
 
 export fn _start() callconv(.c) noreturn {
     var one: [1]u8 = undefined;
@@ -9,7 +11,7 @@ export fn _start() callconv(.c) noreturn {
     if (pulp.syscall3(pulp.NR.read, 0x8000_0000_0000_0000, @intFromPtr(&one), 1) != -9) pulp.exit(9);
     if (pulp.syscall1(pulp.NR.close, 0x8000_0000_0000_0000) != -9) pulp.exit(10);
 
-    // 256 slots per program; 0-2 are the console, so files get 3..255.
+    // MAX_OPEN slots per program; 0-2 are the console, so files get 3 and up.
     for (&files, 0..) |*fd, i| {
         fd.* = pulp.open("/etc/motd") catch pulp.exit(2);
         if (fd.* != @as(i64, @intCast(i + 3))) pulp.exit(3);

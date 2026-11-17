@@ -24,7 +24,7 @@ fn sleeper(_: *anyopaque) void {
 
 fn spinner(_: *anyopaque) void {
     announce();
-    while (true) asm volatile ("pause");
+    while (true) @import("std").atomic.spinLoopHint();
 }
 
 fn receiver(_: *anyopaque) void {

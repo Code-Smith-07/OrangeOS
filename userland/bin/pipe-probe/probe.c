@@ -210,10 +210,12 @@ int main(void)
 	close(file);
 
 	/* The descriptor limit, and recovery after closing. */
-	int opened[300], count = 0;
-	while (count < 300 && (opened[count] = open("/etc/motd", O_RDONLY)) >= 0)
+	/* The kernel allows 1024 per program (MAX_OPEN in kernel/fs/fd.zig). */
+	static int opened[1100];
+	int count = 0;
+	while (count < 1100 && (opened[count] = open("/etc/motd", O_RDONLY)) >= 0)
 		count++;
-	CHECK(count > 240 && count < 256 && errno == EMFILE, "EMFILE at the descriptor limit");
+	CHECK(count > 1000 && count < 1024 && errno == EMFILE, "EMFILE at the descriptor limit");
 	for (int i = 0; i < count; i++)
 		close(opened[i]);
 	int again = open("/etc/motd", O_RDONLY);

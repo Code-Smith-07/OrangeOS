@@ -86,9 +86,9 @@ fn walk(rbp: u64, start_depth: usize) void {
 
 /// Current frame pointer, for panics raised from Zig rather than a trap.
 pub inline fn currentRbp() u64 {
-    return asm volatile ("movq %%rbp, %[out]"
-        : [out] "=r" (-> u64),
-    );
+    // Both processors keep the same record at the frame pointer: the
+    // caller's frame pointer, then the return address.
+    return @frameAddress();
 }
 
 /// Frame-pointer walk written straight to the outputs without the console

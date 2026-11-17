@@ -22,7 +22,7 @@ const vmm = @import("../../mm/vmm.zig");
 const pmm = @import("../../mm/pmm.zig");
 const block = @import("block.zig");
 const console = @import("../../console.zig");
-const tsc = @import("../../time/tsc.zig");
+const tsc = @import("../../arch/arch.zig").tsc;
 
 // Controller registers.
 const REG_CAP: usize = 0x00;
@@ -183,7 +183,7 @@ fn submit(q: *Queue, cmd: SqEntry) ?CqEntry {
             return result;
         }
         if (r32(REG_CSTS) & CSTS_CFS != 0) return null; // controller fault
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
     return null;
 }
@@ -211,7 +211,7 @@ fn disableController() Error!void {
     const deadline = tsc.microsSinceBoot() + 5_000_000;
     while (tsc.microsSinceBoot() < deadline) {
         if (r32(REG_CSTS) & CSTS_RDY == 0) return;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
     return Error.Timeout;
 }
@@ -227,7 +227,7 @@ fn enableController() Error!void {
         const csts = r32(REG_CSTS);
         if (csts & CSTS_CFS != 0) return Error.ControllerFault;
         if (csts & CSTS_RDY != 0) return;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
     return Error.Timeout;
 }

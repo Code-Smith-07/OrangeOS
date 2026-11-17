@@ -4,7 +4,7 @@
 //! once a video mode is available. Writing before either exists is a no-op
 //! rather than a fault.
 
-const serial = @import("drivers/char/serial.zig");
+const serial = @import("arch/arch.zig").serial;
 const fbcon = @import("drivers/video/fbcon.zig");
 const fmt = @import("lib/fmt.zig");
 const spinlock = @import("sync/spinlock.zig");

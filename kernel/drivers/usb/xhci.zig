@@ -18,7 +18,7 @@ const pci = @import("../../dev/pci/pci.zig");
 const vmm = @import("../../mm/vmm.zig");
 const pmm = @import("../../mm/pmm.zig");
 const console = @import("../../console.zig");
-const tsc = @import("../../time/tsc.zig");
+const tsc = @import("../../arch/arch.zig").tsc;
 const hid = @import("hid.zig");
 
 // Capability registers.
@@ -218,7 +218,7 @@ fn waitReady() Error!void {
     const deadline = tsc.microsSinceBoot() + 1_000_000;
     while (tsc.microsSinceBoot() < deadline) {
         if (r32(op_base, OP_USBSTS) & USBSTS_CNR == 0) return;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
     return Error.Timeout;
 }
@@ -230,7 +230,7 @@ fn reset() Error!void {
     var deadline = tsc.microsSinceBoot() + 1_000_000;
     while (tsc.microsSinceBoot() < deadline) {
         if (r32(op_base, OP_USBSTS) & USBSTS_HCH != 0) break;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     } else return Error.Timeout;
 
     w32(op_base, OP_USBCMD, USBCMD_HCRST);
@@ -238,7 +238,7 @@ fn reset() Error!void {
     deadline = tsc.microsSinceBoot() + 1_000_000;
     while (tsc.microsSinceBoot() < deadline) {
         if (r32(op_base, OP_USBCMD) & USBCMD_HCRST == 0) break;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     } else return Error.Timeout;
 
     try waitReady();
@@ -322,7 +322,7 @@ pub fn init() Error!bool {
     const deadline = tsc.microsSinceBoot() + 1_000_000;
     while (tsc.microsSinceBoot() < deadline) {
         if (r32(op_base, OP_USBSTS) & USBSTS_HCH == 0) break;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     } else return Error.Timeout;
 
     present = true;
@@ -400,7 +400,7 @@ fn waitCommand(timeout_us: u64) ?Event {
             // Port status changes arrive unsolicited; keep looking.
             continue;
         }
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
     return null;
 }
@@ -522,7 +522,7 @@ fn controlIn(dev: *Device, request_type: u8, request: u8, value: u16, index: u16
             // read that returned less than the maximum requested.
             return e.completion_code == 1 or e.completion_code == 13;
         }
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
     return false;
 }
@@ -613,7 +613,7 @@ fn setConfiguration(dev: *Device, value: u8) bool {
             if (e.trb_type != TRB_TRANSFER_EVENT) continue;
             return e.completion_code == 1 or e.completion_code == 13;
         }
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
     return false;
 }
@@ -756,7 +756,7 @@ fn resetPort(port: u8) bool {
             w32(op_base, off, (now & ~PORTSC_RW1C) | PORTSC_PRC);
             return r32(op_base, off) & PORTSC_PED != 0;
         }
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
     return false;
 }

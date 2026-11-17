@@ -2,16 +2,24 @@
 //! firmware calls (PSCI) that start other processors and power the machine
 //! off.
 
-/// boot.S maps all physical memory at this offset. Must match
-/// boot/linker-aarch64.ld.
-pub const KERNEL_VIRT: u64 = 0xFFFF_FF80_0000_0000;
+/// boot.S (and later mm/vmm.zig) maps physical memory at this offset: the
+/// direct map, the same as the x86 kernel's.
+pub const HHDM: u64 = 0xFFFF_8000_0000_0000;
+/// Where the kernel image is linked, and the physical address that is.
+/// Must match boot/linker-aarch64.ld.
+pub const KERNEL_BASE: u64 = 0xFFFF_FFFF_8000_0000;
+pub const KERNEL_PHYS: u64 = 0x4020_0000;
 pub const MAX_CPUS = 8;
 
+/// A physical address, seen through the direct map.
 pub fn virt(physical: u64) u64 {
-    return physical +% KERNEL_VIRT;
+    return physical +% HHDM;
 }
+/// The physical address behind a kernel address: either something in the
+/// kernel image (a static variable) or a direct-map address.
 pub fn phys(virtual: u64) u64 {
-    return virtual -% KERNEL_VIRT;
+    if (virtual >= KERNEL_BASE) return virtual - KERNEL_BASE + KERNEL_PHYS;
+    return virtual -% HHDM;
 }
 pub fn ptr(comptime T: type, physical: u64) T {
     return @ptrFromInt(virt(physical));
@@ -42,14 +50,6 @@ pub inline fn waitForInterrupt() void {
 }
 pub inline fn relax() void {
     asm volatile ("yield");
-}
-
-/// This processor's index (0 is the one that booted), kept in TPIDR_EL1.
-pub inline fn index() usize {
-    return @intCast(read("tpidr_el1"));
-}
-pub fn setIndex(n: usize) void {
-    write("tpidr_el1", n);
 }
 
 /// The processor's hardware number, as the device tree and PSCI use it.

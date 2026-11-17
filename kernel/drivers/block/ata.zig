@@ -11,11 +11,11 @@
 //! drive has them and 28-bit otherwise. Every wait has a deadline, so a
 //! missing or stuck drive costs a moment at boot and nothing more.
 const std = @import("std");
-const io = @import("../../arch/x86_64/io.zig");
+const io = @import("../../arch/arch.zig").io;
 const pci = @import("../../dev/pci/pci.zig");
 const block = @import("block.zig");
 const console = @import("../../console.zig");
-const tsc = @import("../../time/tsc.zig");
+const tsc = @import("../../arch/arch.zig").tsc;
 
 const Channel = struct { base: u16, control: u16 };
 const CHANNELS = [_]Channel{
@@ -74,7 +74,7 @@ fn wait(ch: Channel, need_data: bool, micros: u64) block.Error!void {
             if (!need_data or status & ST_DRQ != 0) return;
         }
         if (tsc.microsSinceBoot() > deadline) return block.Error.Timeout;
-        asm volatile ("pause");
+        @import("../../arch/arch.zig").io.pause();
     }
 }
 

@@ -5,6 +5,7 @@
 //! the processor's own interface, reached through system registers.
 
 const cpu = @import("cpu.zig");
+const percpu = @import("percpu.zig");
 
 // Distributor.
 const GICD_CTLR = 0x0000;
@@ -28,7 +29,7 @@ pub const SPURIOUS: u32 = 1023;
 
 var distributor: u64 = 0;
 var redistributors: u64 = 0;
-var own: [cpu.MAX_CPUS]u64 = [_]u64{0} ** cpu.MAX_CPUS;
+var own: [percpu.MAX_CPUS]u64 = [_]u64{0} ** percpu.MAX_CPUS;
 
 fn reg32(address: u64) *volatile u32 {
     return @ptrFromInt(address);
@@ -51,11 +52,14 @@ pub fn initProcessor() bool {
         if (typer >> 32 == wanted) break frame;
         if (typer & TYPER_LAST != 0) return false;
     };
-    own[cpu.index()] = mine;
+    own[percpu.cpuIndex()] = mine;
 
     reg32(mine + GICR_WAKER).* &= ~WAKER_SLEEP;
     while (reg32(mine + GICR_WAKER).* & WAKER_CHILDREN_ASLEEP != 0) cpu.relax();
     reg32(mine + GICR_IGROUPR0).* = 0xFFFF_FFFF; // all of them ordinary interrupts
+    // Interrupts 0 to 15 are the ones processors send each other.
+    for (0..16) |n| @as(*volatile u8, @ptrFromInt(mine + GICR_IPRIORITYR + n)).* = 0x90;
+    reg32(mine + GICR_ISENABLER0).* = 0xFFFF;
 
     // The processor's interface: system registers on, accept every
     // priority, ordinary (group 1) interrupts on.
@@ -67,9 +71,28 @@ pub fn initProcessor() bool {
     return true;
 }
 
+const GICD_IGROUPR = 0x0080;
+const GICD_ISENABLER = 0x0100;
+const GICD_IPRIORITYR = 0x0400;
+const GICD_ICFGR = 0x0C00;
+const GICD_IROUTER = 0x6000;
+
+/// Let a device interrupt (32 and up) through, delivered to the processor
+/// with hardware number `target`, level-triggered.
+pub fn enableShared(interrupt: u32, target: u64) void {
+    const word = interrupt / 32;
+    const bit = @as(u32, 1) << @intCast(interrupt % 32);
+    reg32(distributor + GICD_IGROUPR + word * 4).* |= bit;
+    @as(*volatile u8, @ptrFromInt(distributor + GICD_IPRIORITYR + interrupt)).* = 0xA0;
+    const cfg = reg32(distributor + GICD_ICFGR + (interrupt / 16) * 4);
+    cfg.* &= ~(@as(u32, 2) << @intCast((interrupt % 16) * 2));
+    @as(*volatile u64, @ptrFromInt(distributor + GICD_IROUTER + interrupt * 8)).* = target & 0xFF_00FF_FFFF;
+    reg32(distributor + GICD_ISENABLER + word * 4).* = bit;
+}
+
 /// Let one of this processor's private interrupts (0 to 31) through.
 pub fn enablePrivate(interrupt: u5) void {
-    const mine = own[cpu.index()];
+    const mine = own[percpu.cpuIndex()];
     @as(*volatile u8, @ptrFromInt(mine + GICR_IPRIORITYR + interrupt)).* = 0xA0;
     reg32(mine + GICR_ISENABLER0).* = @as(u32, 1) << interrupt;
 }
@@ -81,4 +104,19 @@ pub fn acknowledge() u32 {
 
 pub fn done(interrupt: u32) void {
     cpu.write("S3_0_C12_C12_1", interrupt); // ICC_EOIR1_EL1
+}
+
+/// Interrupt another processor. `target` is its hardware number; `number`
+/// is 0 to 15.
+pub fn sendToProcessor(target: u64, number: u4) void {
+    const aff0 = target & 0xFF;
+    const value = (((target >> 32) & 0xFF) << 48) | (((target >> 16) & 0xFF) << 32) | (((target >> 8) & 0xFF) << 16) |
+        (@as(u64, number) << 24) | (@as(u64, 1) << @intCast(aff0 & 0xF));
+    // Writing the SGI register is not ordered after earlier stores: without
+    // this barrier the target can take the interrupt before it can see the
+    // request it is about (a TLB shootdown then waits forever). x86 orders
+    // its interrupt sends for free; Linux does the same here.
+    asm volatile ("dsb ishst" ::: "memory");
+    cpu.write("S3_0_C12_C11_5", value); // ICC_SGI1R_EL1
+    cpu.isb();
 }

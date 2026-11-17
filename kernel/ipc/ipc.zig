@@ -21,7 +21,7 @@ const sched = @import("../sched/sched.zig");
 const task_mod = @import("../sched/task.zig");
 const vmm = @import("../mm/vmm.zig");
 const pmm = @import("../mm/pmm.zig");
-const io = @import("../arch/x86_64/io.zig");
+const io = @import("../arch/arch.zig").io;
 const spinlock = @import("../sync/spinlock.zig");
 
 pub const Error = object.Error;

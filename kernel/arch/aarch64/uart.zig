@@ -14,8 +14,12 @@ const FBRD = 0x28;
 const LCRH = 0x2C;
 const CR = 0x30; // control
 const FR_TX_FULL: u32 = 1 << 5;
+const FR_RX_EMPTY: u32 = 1 << 4;
+const IMSC = 0x38; // interrupt mask
+const ICR = 0x44; // interrupt clear
+const RX_INTERRUPTS: u32 = (1 << 4) | (1 << 6); // data received, receive timeout
 
-var base: u64 = cpu.KERNEL_VIRT + 0x0900_0000;
+var base: u64 = cpu.HHDM + 0x0900_0000;
 var lock = std.atomic.Value(bool).init(false);
 
 fn reg(offset: u64) *volatile u32 {
@@ -27,6 +31,32 @@ pub fn init(physical: ?u64) void {
     reg(CR).* = 0;
     reg(LCRH).* = (3 << 5) | (1 << 4); // 8 bits, FIFO on
     reg(CR).* = (1 << 0) | (1 << 8) | (1 << 9); // on, send, receive
+}
+
+/// A received byte, if one is waiting.
+pub fn readByte() ?u8 {
+    if (reg(FR).* & FR_RX_EMPTY != 0) return null;
+    return @truncate(reg(DR).*);
+}
+
+/// Interrupt when bytes arrive.
+pub fn enableReceiveInterrupt() void {
+    reg(ICR).* = 0x7FF;
+    reg(IMSC).* = RX_INTERRUPTS;
+}
+
+/// Acknowledge the port's interrupt.
+pub fn clearInterrupts() void {
+    reg(ICR).* = RX_INTERRUPTS;
+}
+
+pub fn hasInput() bool {
+    return reg(FR).* & FR_RX_EMPTY == 0;
+}
+
+/// Plain output, no lock: the console above has its own.
+pub fn write(s: []const u8) void {
+    raw(s);
 }
 
 fn put(c: u8) void {

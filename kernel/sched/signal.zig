@@ -18,6 +18,7 @@
 //! A synchronous fault goes to the program's handler for its signal if there
 //! is one and it is not blocked; otherwise the program ends as before.
 
+const arch = @import("../arch/arch.zig");
 const std = @import("std");
 const sched = @import("sched.zig");
 const task_mod = @import("task.zig");
@@ -208,6 +209,11 @@ fn fxrstor(in: *const [FPSTATE_SIZE]u8) void {
 /// handler. `frame` is a SyscallFrame or TrapFrame (same register names).
 /// Fails if the stack cannot take the frame.
 fn setupFrame(frame: anytype, t: *task_mod.Task, sig: u32, action: Action, info: Info) error{Fault}!void {
+    if (arch.is_x86) return setupFrameX86(frame, t, sig, action, info);
+    return arch.signal.setupFrame(frame, t, sig, action, info);
+}
+
+fn setupFrameX86(frame: anytype, t: *task_mod.Task, sig: u32, action: Action, info: Info) error{Fault}!void {
     // Stack: the alternate one if asked for and not already on it.
     var top = frame.rsp;
     const on_alt = !t.alt_stack.disabled and top > t.alt_stack.sp and top <= t.alt_stack.sp + t.alt_stack.size;
@@ -273,6 +279,11 @@ fn setupFrame(frame: anytype, t: *task_mod.Task, sig: u32, action: Action, info:
 /// sigreturn: restore what the frame at `uc_address` saved. False if the
 /// frame is unreadable or holds values user mode may not have.
 pub fn restore(frame: anytype, t: *task_mod.Task, uc_address: u64) bool {
+    if (arch.is_x86) return restoreX86(frame, t, uc_address);
+    return arch.signal.restore(frame, t, uc_address);
+}
+
+fn restoreX86(frame: anytype, t: *task_mod.Task, uc_address: u64) bool {
     var uc: [UCONTEXT_SIZE]u8 = undefined;
     validate.copyFromUser(vmm.currentCr3(), &uc, uc_address, UCONTEXT_SIZE) catch return false;
     const rip = get(&uc, GREGS + REG.RIP * 8);

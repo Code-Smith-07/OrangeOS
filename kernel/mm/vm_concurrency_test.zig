@@ -14,8 +14,8 @@ const pmm = @import("pmm.zig");
 const validate = @import("../syscall/validate.zig");
 const sched = @import("../sched/sched.zig");
 const preempt = @import("../sched/preempt.zig");
-const smp = @import("../arch/x86_64/smp.zig");
-const tsc = @import("../time/tsc.zig");
+const smp = @import("../arch/arch.zig").smp;
+const tsc = @import("../arch/arch.zig").tsc;
 const console = @import("../console.zig");
 
 const PAGE = vmm.PAGE_SIZE;
@@ -121,7 +121,7 @@ fn pinnedReader(arg: ?*anyopaque) void {
             // changes the range while this CPU is still touching it.
             @atomicStore(u64, &reader.seen, phase, .release);
         }
-        asm volatile ("pause");
+        @import("../arch/arch.zig").io.pause();
     }
 }
 
@@ -419,7 +419,7 @@ fn holder(arg: ?*anyopaque) void {
                 h.timeouts += 1;
                 break;
             }
-            asm volatile ("pause");
+            @import("../arch/arch.zig").io.pause();
         }
         if (words[PAGE / 8 - 1] != pattern(round)) @atomicStore(bool, &h.failed, true, .release);
         access.end();

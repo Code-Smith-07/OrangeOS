@@ -8,11 +8,11 @@ const vmm = @import("vmm.zig");
 const pmm = @import("pmm.zig");
 const sched = @import("../sched/sched.zig");
 const preempt = @import("../sched/preempt.zig");
-const percpu = @import("../arch/x86_64/percpu.zig");
+const percpu = @import("../arch/arch.zig").percpu;
 const spinlock = @import("../sync/spinlock.zig");
-const tsc = @import("../time/tsc.zig");
+const tsc = @import("../arch/arch.zig").tsc;
 const console = @import("../console.zig");
-const smp = @import("../arch/x86_64/smp.zig");
+const smp = @import("../arch/arch.zig").smp;
 
 const VA: u64 = 0x0000_3000_0000_0000;
 const WORKERS = 8;
@@ -38,7 +38,7 @@ pub fn testPreemptGuard() void {
         const pending: *const volatile bool = &local.need_resched;
         const deadline = tsc.microsSinceBoot() + 1_000_000;
         while ((!pending.* or ticks.* == tick_before) and tsc.microsSinceBoot() < deadline) {
-            asm volatile ("pause");
+            @import("../arch/arch.zig").io.pause();
         }
         ok = ok and pending.* and ticks.* > tick_before and
             percpu.cpuIndex() == start_cpu and task.switches == switches and
@@ -83,7 +83,7 @@ fn pinnedReader(arg: ?*anyopaque) void {
             last = phase;
             @atomicStore(u64, &shared.seen[0], phase, .release);
         }
-        asm volatile ("pause");
+        @import("../arch/arch.zig").io.pause();
     }
 }
 
@@ -138,7 +138,7 @@ fn worker(arg: ?*anyopaque) void {
             // spawning eight tasks may execute every request serially on TCG.
             while (@atomicLoad(usize, &shared.contenders_ready, .acquire) < @min(smp.cpusOnline(), 2)) {
                 if (tsc.microsSinceBoot() >= deadline) @panic("TLB contender rendezvous timeout");
-                asm volatile ("pause");
+                @import("../arch/arch.zig").io.pause();
             }
             for (0..64) |_| _ = shared.space.invalidate(VA);
             pin.release();

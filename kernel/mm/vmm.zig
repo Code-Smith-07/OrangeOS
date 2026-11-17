@@ -12,27 +12,29 @@
 
 const std = @import("std");
 const pmm = @import("pmm.zig");
-const limine = @import("../boot/limine_req.zig");
+const arch = @import("../arch/arch.zig");
+const limine = arch.boot;
+const pte = arch.pte;
+const mmu = arch.mmu;
+const flags_mod = @import("page_flags.zig");
 
 pub const PAGE_SIZE: usize = 4096;
 pub const HUGE_2M: usize = 2 * 1024 * 1024;
 
 // Page table entry flags.
-pub const PRESENT: u64 = 1 << 0;
-pub const WRITABLE: u64 = 1 << 1;
-pub const USER: u64 = 1 << 2;
-pub const WRITE_THROUGH: u64 = 1 << 3;
-pub const NO_CACHE: u64 = 1 << 4;
-pub const ACCESSED: u64 = 1 << 5;
-pub const DIRTY: u64 = 1 << 6;
-pub const HUGE: u64 = 1 << 7;
-pub const GLOBAL: u64 = 1 << 8;
-/// Software bit: a private 4 KiB frame owned by this address space. SHM and
-/// framebuffer mappings borrow frames and must never be freed by teardown.
-pub const OWNED: u64 = 1 << 9;
-pub const NO_EXECUTE: u64 = 1 << 63;
+pub const PRESENT = flags_mod.PRESENT;
+pub const WRITABLE = flags_mod.WRITABLE;
+pub const USER = flags_mod.USER;
+pub const WRITE_THROUGH = flags_mod.WRITE_THROUGH;
+pub const NO_CACHE = flags_mod.NO_CACHE;
+pub const ACCESSED = flags_mod.ACCESSED;
+pub const DIRTY = flags_mod.DIRTY;
+pub const HUGE = flags_mod.HUGE;
+pub const GLOBAL = flags_mod.GLOBAL;
+pub const OWNED = flags_mod.OWNED;
+pub const NO_EXECUTE = flags_mod.NO_EXECUTE;
 
-const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+const ADDR_MASK: u64 = pte.ADDR_MASK;
 
 pub const Error = error{OutOfMemory};
 
@@ -71,14 +73,14 @@ inline fn storeEntry(entry: *u64, value: u64) void {
 /// Walk to the next level, allocating a table if it isn't there yet.
 fn nextTable(table: *[512]u64, index: usize, flags: u64) Error!*[512]u64 {
     const entry = loadEntry(&table[index]);
-    if (entry & PRESENT == 0) {
+    if (!pte.present(entry)) {
         const phys = pmm.allocPageZeroed() catch return Error.OutOfMemory;
-        storeEntry(&table[index], phys | PRESENT | WRITABLE | flags);
+        storeEntry(&table[index], pte.table(phys, flags));
         return tableAt(phys);
     }
     // Intermediate entries must permit anything a leaf below might need; the
     // leaf's own flags do the actual restricting.
-    const widened = entry | (flags & (WRITABLE | USER));
+    const widened = pte.widen(entry, flags);
     if (widened != entry) storeEntry(&table[index], widened);
     return tableAt(widened);
 }
@@ -92,7 +94,7 @@ pub fn mapPage(pml4_phys: u64, virt: u64, phys: u64, flags: u64) Error!void {
     const pd = try nextTable(pdpt, indexOf(virt, 2), inter);
     const pt = try nextTable(pd, indexOf(virt, 1), inter);
 
-    storeEntry(&pt[indexOf(virt, 0)], (phys & ADDR_MASK) | flags | PRESENT);
+    storeEntry(&pt[indexOf(virt, 0)], pte.leaf(phys, flags));
 }
 
 /// Map one 2 MiB page. The PD entry becomes a leaf.
@@ -103,7 +105,7 @@ pub fn mapHuge2M(pml4_phys: u64, virt: u64, phys: u64, flags: u64) Error!void {
     const pdpt = try nextTable(pml4, indexOf(virt, 3), inter);
     const pd = try nextTable(pdpt, indexOf(virt, 2), inter);
 
-    pd[indexOf(virt, 1)] = (phys & ADDR_MASK) | flags | PRESENT | HUGE;
+    pd[indexOf(virt, 1)] = pte.block(phys, flags);
 }
 
 /// Map a range with 4 KiB pages.
@@ -134,21 +136,21 @@ pub fn mapRangeHuge(pml4_phys: u64, virt: u64, phys: u64, size: usize, flags: u6
 pub fn translate(pml4_phys: u64, virt: u64) ?u64 {
     const pml4 = tableAt(pml4_phys);
     const e3 = loadEntry(&pml4[indexOf(virt, 3)]);
-    if (e3 & PRESENT == 0) return null;
+    if (!pte.present(e3)) return null;
 
     const pdpt = tableAt(e3);
     const e2 = loadEntry(&pdpt[indexOf(virt, 2)]);
-    if (e2 & PRESENT == 0) return null;
-    if (e2 & HUGE != 0) return (e2 & ADDR_MASK) | (virt & 0x3FFF_FFFF);
+    if (!pte.present(e2)) return null;
+    if (pte.huge(e2)) return (e2 & ADDR_MASK) | (virt & 0x3FFF_FFFF);
 
     const pd = tableAt(e2);
     const e1 = loadEntry(&pd[indexOf(virt, 1)]);
-    if (e1 & PRESENT == 0) return null;
-    if (e1 & HUGE != 0) return (e1 & ADDR_MASK) | (virt & 0x1F_FFFF);
+    if (!pte.present(e1)) return null;
+    if (pte.huge(e1)) return (e1 & ADDR_MASK) | (virt & 0x1F_FFFF);
 
     const pt = tableAt(e1);
     const e0 = loadEntry(&pt[indexOf(virt, 0)]);
-    if (e0 & PRESENT == 0) return null;
+    if (!pte.present(e0)) return null;
     return (e0 & ADDR_MASK) | (virt & 0xFFF);
 }
 
@@ -161,23 +163,23 @@ pub fn anyMapped(pml4_phys: u64, virt: u64, size: u64) bool {
     const pml4 = tableAt(pml4_phys);
     while (address < end) {
         const e3 = loadEntry(&pml4[indexOf(address, 3)]);
-        if (e3 & PRESENT == 0) {
+        if (!pte.present(e3)) {
             address = (address | ((1 << 39) - 1)) + 1;
             continue;
         }
         const e2 = loadEntry(&tableAt(e3)[indexOf(address, 2)]);
-        if (e2 & PRESENT == 0) {
+        if (!pte.present(e2)) {
             address = (address | ((1 << 30) - 1)) + 1;
             continue;
         }
-        if (e2 & HUGE != 0) return true;
+        if (pte.huge(e2)) return true;
         const e1 = loadEntry(&tableAt(e2)[indexOf(address, 1)]);
-        if (e1 & PRESENT == 0) {
+        if (!pte.present(e1)) {
             address = (address | ((1 << 21) - 1)) + 1;
             continue;
         }
-        if (e1 & HUGE != 0) return true;
-        if (loadEntry(&tableAt(e1)[indexOf(address, 0)]) & PRESENT != 0) return true;
+        if (pte.huge(e1)) return true;
+        if (pte.present(loadEntry(&tableAt(e1)[indexOf(address, 0)]))) return true;
         address += PAGE_SIZE;
     }
     return false;
@@ -190,18 +192,18 @@ pub fn nextPossiblyMapped(pml4_phys: u64, virt: u64, end: u64) ?u64 {
     const pml4 = tableAt(pml4_phys);
     while (address < end) {
         const e3 = loadEntry(&pml4[indexOf(address, 3)]);
-        if (e3 & PRESENT == 0) {
+        if (!pte.present(e3)) {
             address = (address | ((1 << 39) - 1)) + 1;
             continue;
         }
         const e2 = loadEntry(&tableAt(e3)[indexOf(address, 2)]);
-        if (e2 & PRESENT == 0) {
+        if (!pte.present(e2)) {
             address = (address | ((1 << 30) - 1)) + 1;
             continue;
         }
-        if (e2 & HUGE != 0) return address;
+        if (pte.huge(e2)) return address;
         const e1 = loadEntry(&tableAt(e2)[indexOf(address, 1)]);
-        if (e1 & PRESENT == 0) {
+        if (!pte.present(e1)) {
             address = (address | ((1 << 21) - 1)) + 1;
             continue;
         }
@@ -215,22 +217,22 @@ pub fn nextPossiblyMapped(pml4_phys: u64, virt: u64, end: u64) ?u64 {
 pub fn leafFlags(pml4_phys: u64, virt: u64) ?u64 {
     const pml4 = tableAt(pml4_phys);
     const e3 = loadEntry(&pml4[indexOf(virt, 3)]);
-    if (e3 & PRESENT == 0) return null;
+    if (!pte.present(e3)) return null;
 
     const pdpt = tableAt(e3);
     const e2 = loadEntry(&pdpt[indexOf(virt, 2)]);
-    if (e2 & PRESENT == 0) return null;
-    if (e2 & HUGE != 0) return e2 & ~ADDR_MASK;
+    if (!pte.present(e2)) return null;
+    if (pte.huge(e2)) return pte.flagsOf(e2);
 
     const pd = tableAt(e2);
     const e1 = loadEntry(&pd[indexOf(virt, 1)]);
-    if (e1 & PRESENT == 0) return null;
-    if (e1 & HUGE != 0) return e1 & ~ADDR_MASK;
+    if (!pte.present(e1)) return null;
+    if (pte.huge(e1)) return pte.flagsOf(e1);
 
     const pt = tableAt(e1);
     const e0 = loadEntry(&pt[indexOf(virt, 0)]);
-    if (e0 & PRESENT == 0) return null;
-    return e0 & ~ADDR_MASK;
+    if (!pte.present(e0)) return null;
+    return pte.flagsOf(e0);
 }
 
 pub fn textStart() u64 {
@@ -245,20 +247,15 @@ pub fn dataStart() u64 {
     return symAddr(&__data_start);
 }
 
+/// Make `phys` the page table this processor walks (for user addresses on
+/// processors that keep the kernel's table separately).
 pub fn loadCr3(phys: u64) void {
-    asm volatile ("movq %[p], %%cr3"
-        :
-        : [p] "r" (phys),
-        : "memory"
-    );
+    mmu.loadRoot(phys);
 }
 
+/// Forget this processor's cached translation of one page.
 pub fn invalidatePage(virt: u64) void {
-    asm volatile ("invlpg (%[v])"
-        :
-        : [v] "r" (virt),
-        : "memory"
-    );
+    mmu.invalidatePage(virt);
 }
 
 /// Drop every non-global translation on this CPU by reloading CR3. Cheaper
@@ -267,54 +264,9 @@ pub fn flushLocal() void {
     loadCr3(currentCr3());
 }
 
-/// Enable NX. Without this, setting bit 63 on a PTE causes a reserved-bit
-/// page fault instead of marking the page non-executable.
-fn enableNx() void {
-    const IA32_EFER: u32 = 0xC000_0080;
-    const NXE: u64 = 1 << 11;
-
-    // One rdmsr, both halves from the same instruction. Two separate rdmsr
-    // instructions taking eax from one and edx from the other is not a 64-bit
-    // read - the compiler may schedule them independently.
-    var low: u32 = undefined;
-    var high: u32 = undefined;
-    asm volatile ("rdmsr"
-        : [low] "={eax}" (low),
-          [high] "={edx}" (high),
-        : [msr] "{ecx}" (IA32_EFER),
-    );
-    const efer = (@as(u64, high) << 32) | low;
-    const updated = efer | NXE;
-
-    asm volatile ("wrmsr"
-        :
-        : [msr] "{ecx}" (IA32_EFER),
-          [lo] "{eax}" (@as(u32, @truncate(updated))),
-          [hi] "{edx}" (@as(u32, @truncate(updated >> 32))),
-    );
-}
-
-/// Set CR0.WP. Without it, ring 0 may write to pages marked read-only, which
-/// would make the .text/.rodata protections above decorative. Limine happens
-/// to set it, but inheriting a security property from the bootloader is not
-/// something to rely on.
-fn enableWriteProtect() void {
-    const WP: u64 = 1 << 16;
-    const cr0 = asm volatile ("movq %%cr0, %[out]"
-        : [out] "=r" (-> u64),
-    );
-    asm volatile ("movq %[v], %%cr0"
-        :
-        : [v] "r" (cr0 | WP),
-        : "memory"
-    );
-}
-
+/// Does the kernel itself fault on writes to read-only pages?
 pub fn writeProtectEnabled() bool {
-    const cr0 = asm volatile ("movq %%cr0, %[out]"
-        : [out] "=r" (-> u64),
-    );
-    return cr0 & (1 << 16) != 0;
+    return mmu.writeProtectEnabled();
 }
 
 fn symAddr(sym: *u8) u64 {
@@ -322,8 +274,7 @@ fn symAddr(sym: *u8) u64 {
 }
 
 pub fn init() !void {
-    enableNx();
-    enableWriteProtect();
+    mmu.enableProtections();
 
     const exec = limine.executableAddress() orelse return error.NoExecutableAddress;
     const hhdm = pmm.hhdmBase();
@@ -369,14 +320,21 @@ pub fn init() !void {
     // ── HHDM: every physical page, RW, never executable ──────────────────────
     const mm = limine.memmap() orelse return error.NoMemoryMap;
     var highest: u64 = 0;
+    var lowest: u64 = ~@as(u64, 0);
     var i: usize = 0;
     while (i < mm.entry_count) : (i += 1) {
         const e = mm.entries[i];
         const top = e.base + e.length;
         if (top > highest) highest = top;
+        if (e.base < lowest) lowest = e.base;
     }
-    const hhdm_size = std.mem.alignForward(u64, highest, HUGE_2M);
-    try mapRangeHuge(kernel_pml4_phys, hhdm, 0, @intCast(hhdm_size), PRESENT | WRITABLE | NO_EXECUTE);
+    // On a PC the direct map covers everything from 0, device holes
+    // included. On Arm the devices sit below memory and must not be mapped
+    // as ordinary cached memory, so the map starts where memory starts and
+    // each device gets its own uncached mapping (mapMmio).
+    const hhdm_from: u64 = if (mmu.DIRECT_MAP_FROM_ZERO) 0 else std.mem.alignBackward(u64, lowest, HUGE_2M);
+    const hhdm_size = std.mem.alignForward(u64, highest, HUGE_2M) - hhdm_from;
+    try mapRangeHuge(kernel_pml4_phys, hhdm + hhdm_from, hhdm_from, @intCast(hhdm_size), PRESENT | WRITABLE | NO_EXECUTE);
 
     // ── Framebuffer ─────────────────────────────────────────────────────────
     if (limine.framebuffers()) |fbr| {
@@ -397,7 +355,16 @@ pub fn init() !void {
         }
     }
 
-    loadCr3(kernel_pml4_phys);
+    // Where the direct map does not cover the devices, the ones already in
+    // use (the log port, the interrupt controller) need their own uncached
+    // mappings before the switch, at the addresses they already have.
+    if (!mmu.DIRECT_MAP_FROM_ZERO) {
+        for (limine.deviceRegions()) |region| {
+            try mapRange(kernel_pml4_phys, hhdm + region.base, region.base, @intCast(region.size), PRESENT | WRITABLE | NO_EXECUTE | NO_CACHE | WRITE_THROUGH);
+        }
+    }
+
+    mmu.installKernelRoot(kernel_pml4_phys);
 }
 
 /// Create a fresh address space for a user process.
@@ -426,26 +393,26 @@ pub fn destroyAddressSpace(pml4_phys: u64) void {
     var l4: usize = 0;
     while (l4 < 256) : (l4 += 1) {
         const e3 = pml4[l4];
-        if (e3 & PRESENT == 0) continue;
+        if (!pte.present(e3)) continue;
         const pdpt = tableAt(e3);
 
         var l3: usize = 0;
         while (l3 < 512) : (l3 += 1) {
             const e2 = pdpt[l3];
-            if (e2 & PRESENT == 0 or e2 & HUGE != 0) continue;
+            if (!pte.present(e2) or pte.huge(e2)) continue;
             const pd = tableAt(e2);
 
             var l2: usize = 0;
             while (l2 < 512) : (l2 += 1) {
                 const e1 = pd[l2];
-                if (e1 & PRESENT == 0 or e1 & HUGE != 0) continue;
+                if (!pte.present(e1) or pte.huge(e1)) continue;
                 const pt = tableAt(e1);
 
                 var l1: usize = 0;
                 while (l1 < 512) : (l1 += 1) {
                     const e0 = pt[l1];
-                    if (e0 & PRESENT == 0) continue;
-                    if (e0 & OWNED != 0) pmm.freePage(e0 & ADDR_MASK);
+                    if (!pte.present(e0)) continue;
+                    if (pte.owned(e0)) pmm.freePage(e0 & ADDR_MASK);
                 }
                 pmm.freePage(e1 & ADDR_MASK);
             }
@@ -466,7 +433,7 @@ pub fn allocAndMap(pml4_phys: u64, virt: u64, flags: u64) Error!u64 {
 }
 
 fn emptyTable(table: *const [512]u64) bool {
-    for (table) |*entry| if (loadEntry(entry) & PRESENT != 0) return false;
+    for (table) |*entry| if (pte.present(loadEntry(entry))) return false;
     return true;
 }
 
@@ -490,15 +457,15 @@ pub fn unlinkEmptyTables(pml4_phys: u64, virt: u64, out: *[3]u64) usize {
     const pml4 = tableAt(pml4_phys);
     const e3 = &pml4[indexOf(virt, 3)];
     const e3_value = loadEntry(e3);
-    if (e3_value & PRESENT == 0) return 0;
+    if (!pte.present(e3_value)) return 0;
     const pdpt = tableAt(e3_value);
     const e2 = &pdpt[indexOf(virt, 2)];
     const e2_value = loadEntry(e2);
-    if (e2_value & PRESENT != 0 and e2_value & HUGE == 0) {
+    if (pte.present(e2_value) and !pte.huge(e2_value)) {
         const pd = tableAt(e2_value);
         const e1 = &pd[indexOf(virt, 1)];
         const e1_value = loadEntry(e1);
-        if (e1_value & PRESENT != 0 and e1_value & HUGE == 0 and emptyTable(tableAt(e1_value))) {
+        if (pte.present(e1_value) and !pte.huge(e1_value) and emptyTable(tableAt(e1_value))) {
             storeEntry(e1, 0);
             out[count] = e1_value & ADDR_MASK;
             count += 1;
@@ -524,14 +491,14 @@ pub fn detachPage(pml4_phys: u64, virt: u64) ?u64 {
     if (virt >= 0x0000_8000_0000_0000) return null;
     const pml4 = tableAt(pml4_phys);
     const e3 = loadEntry(&pml4[indexOf(virt, 3)]);
-    if (e3 & PRESENT == 0) return null;
+    if (!pte.present(e3)) return null;
     const e2 = loadEntry(&tableAt(e3)[indexOf(virt, 2)]);
-    if (e2 & PRESENT == 0 or e2 & HUGE != 0) return null;
+    if (!pte.present(e2) or pte.huge(e2)) return null;
     const e1 = loadEntry(&tableAt(e2)[indexOf(virt, 1)]);
-    if (e1 & PRESENT == 0 or e1 & HUGE != 0) return null;
+    if (!pte.present(e1) or pte.huge(e1)) return null;
     const leaf = &tableAt(e1)[indexOf(virt, 0)];
     const value = loadEntry(leaf);
-    if (value & PRESENT == 0) return null;
+    if (!pte.present(value)) return null;
     storeEntry(leaf, 0);
     return value & ADDR_MASK;
 }
@@ -550,13 +517,13 @@ pub fn clearKernelPage(virt: u64) ?u64 {
     if (virt < 0xffff_8000_0000_0000) return null;
     const pml4 = tableAt(kernel_pml4_phys);
     const e3 = pml4[indexOf(virt, 3)];
-    if (e3 & PRESENT == 0) return null;
+    if (!pte.present(e3)) return null;
     const e2 = tableAt(e3)[indexOf(virt, 2)];
-    if (e2 & PRESENT == 0 or e2 & HUGE != 0) return null;
+    if (!pte.present(e2) or pte.huge(e2)) return null;
     const e1 = tableAt(e2)[indexOf(virt, 1)];
-    if (e1 & PRESENT == 0 or e1 & HUGE != 0) return null;
+    if (!pte.present(e1) or pte.huge(e1)) return null;
     const leaf = &tableAt(e1)[indexOf(virt, 0)];
-    if (leaf.* & PRESENT == 0) return null;
+    if (!pte.present(leaf.*)) return null;
     const phys = leaf.* & ADDR_MASK;
     leaf.* = 0;
     invalidatePage(virt);
@@ -564,9 +531,7 @@ pub fn clearKernelPage(virt: u64) ?u64 {
 }
 
 pub fn currentCr3() u64 {
-    return asm volatile ("movq %%cr3, %[out]"
-        : [out] "=r" (-> u64),
-    );
+    return mmu.currentRoot();
 }
 
 /// Map a physical MMIO range into the HHDM window and return its virtual

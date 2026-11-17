@@ -10,10 +10,10 @@
 
 const std = @import("std");
 const sched = @import("sched.zig");
-const percpu = @import("../arch/x86_64/percpu.zig");
-const io = @import("../arch/x86_64/io.zig");
-const smp = @import("../arch/x86_64/smp.zig");
-const tsc = @import("../time/tsc.zig");
+const percpu = @import("../arch/arch.zig").percpu;
+const io = @import("../arch/arch.zig").io;
+const smp = @import("../arch/arch.zig").smp;
+const tsc = @import("../arch/arch.zig").tsc;
 const console = @import("../console.zig");
 
 const WORKERS = 8;
@@ -33,6 +33,11 @@ fn worker(arg: ?*anyopaque) void {
         io.cli();
         const block = percpu.this();
         io.sti();
+        // Keep every processor busy for a moment, so the worker resumes on
+        // whichever one is free. Without the load, at native speed the
+        // processor that wakes sleepers runs them all itself and nothing
+        // ever moves, which proves nothing.
+        tsc.busyWaitUs(1000);
         sched.sleepMs(1);
         if (@atomicLoad(?*anyopaque, &block.current, .acquire) != me) w.stale_block += 1;
         if (@as(?*anyopaque, @ptrCast(sched.currentTask())) != me) w.wrong_current += 1;

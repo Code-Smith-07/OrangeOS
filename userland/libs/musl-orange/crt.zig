@@ -1,14 +1,26 @@
 //! Program entry for C programs linked against musl on OrangeOS.
 //!
-//! The kernel enters `_start` with rsp at a zero return slot, directly above
-//! which sits the SysV initial stack (argc, argv, envp, auxiliary vector).
+//! On x86-64 the kernel enters `_start` with rsp at a zero return slot,
+//! directly above which sits the SysV initial stack (argc, argv, envp,
+//! auxiliary vector); on Arm64 the stack pointer is on argc itself.
 //! musl's __libc_start_main takes it from there: TLS, stdio, constructors,
 //! then main, then exit.
 //!
 //! SPDX-License-Identifier: MIT OR Apache-2.0
 
 comptime {
-    asm (
+    if (@import("builtin").cpu.arch == .aarch64) asm (
+        // Arm64: the stack pointer is on argc, already 16-byte aligned.
+        \\.text
+        \\.global _start
+        \\.type _start,%function
+        \\_start:
+        \\    mov x29, #0
+        \\    mov x30, #0
+        \\    mov x0, sp
+        \\    bl __orange_start_c
+        \\    udf #0
+    ) else asm (
         \\.text
         \\.global _start
         \\.type _start,@function

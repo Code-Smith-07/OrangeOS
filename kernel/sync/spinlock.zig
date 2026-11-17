@@ -10,7 +10,7 @@
 //! LLVM's system (cross-CPU) scope rather than a single-thread one.
 
 const std = @import("std");
-const io = @import("../arch/x86_64/io.zig");
+const io = @import("../arch/arch.zig").io;
 
 pub const SpinLock = struct {
     locked: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -19,7 +19,7 @@ pub const SpinLock = struct {
         while (self.locked.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
             // Tell the CPU this is a spin loop: saves power and avoids a
             // memory-order violation stall on exit.
-            asm volatile ("pause");
+            @import("../arch/arch.zig").io.pause();
         }
     }
 
@@ -40,12 +40,7 @@ pub const IrqState = struct {
 };
 
 pub fn interruptsEnabled() bool {
-    const flags = asm volatile (
-        \\ pushfq
-        \\ popq %[out]
-        : [out] "=r" (-> u64),
-    );
-    return flags & (1 << 9) != 0; // IF
+    return io.interruptsEnabled();
 }
 
 pub fn acquireIrqSave(lock: *SpinLock) IrqState {

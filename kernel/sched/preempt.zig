@@ -1,8 +1,8 @@
 //! Short CPU-pinned sections which still accept timer/device/IPI interrupts.
 //! Never sleep, yield, exit or take a lock held by a suspended task inside one.
 const std = @import("std");
-const percpu = @import("../arch/x86_64/percpu.zig");
-const io = @import("../arch/x86_64/io.zig");
+const percpu = @import("../arch/arch.zig").percpu;
+const io = @import("../arch/arch.zig").io;
 const spinlock = @import("../sync/spinlock.zig");
 
 pub const Guard = struct {

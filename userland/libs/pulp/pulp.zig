@@ -85,10 +85,29 @@ pub const STDOUT: u64 = 1;
 pub const STDERR: u64 = 2;
 
 // ── Raw syscall entry ───────────────────────────────────────────────────────
-// Arguments go in rdi, rsi, rdx, r10, r8, r9. Not rcx: the `syscall`
-// instruction overwrites it with the return address.
+// x86-64: the number in rax, arguments in rdi, rsi, rdx, r10, r8, r9. Not
+// rcx: the `syscall` instruction overwrites it with the return address.
+// Arm64: the number in x8, arguments in x0 to x5, `svc #0`; the result
+// comes back in x0. The kernel restores every other register.
+
+pub const is_arm = @import("builtin").cpu.arch == .aarch64;
+
+inline fn armCall(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) i64 {
+    return asm volatile ("svc #0"
+        : [ret] "={x0}" (-> i64),
+        : [nr] "{x8}" (nr),
+          [a0] "{x0}" (a0),
+          [a1] "{x1}" (a1),
+          [a2] "{x2}" (a2),
+          [a3] "{x3}" (a3),
+          [a4] "{x4}" (a4),
+          [a5] "{x5}" (a5),
+        : "memory"
+    );
+}
 
 pub inline fn syscall0(nr: u64) i64 {
+    if (is_arm) return armCall(nr, 0, 0, 0, 0, 0, 0);
     return asm volatile ("syscall"
         : [ret] "={rax}" (-> i64),
         : [nr] "{rax}" (nr),
@@ -97,6 +116,7 @@ pub inline fn syscall0(nr: u64) i64 {
 }
 
 pub inline fn syscall1(nr: u64, a0: u64) i64 {
+    if (is_arm) return armCall(nr, a0, 0, 0, 0, 0, 0);
     return asm volatile ("syscall"
         : [ret] "={rax}" (-> i64),
         : [nr] "{rax}" (nr),
@@ -106,6 +126,7 @@ pub inline fn syscall1(nr: u64, a0: u64) i64 {
 }
 
 pub inline fn syscall2(nr: u64, a0: u64, a1: u64) i64 {
+    if (is_arm) return armCall(nr, a0, a1, 0, 0, 0, 0);
     return asm volatile ("syscall"
         : [ret] "={rax}" (-> i64),
         : [nr] "{rax}" (nr),
@@ -116,6 +137,7 @@ pub inline fn syscall2(nr: u64, a0: u64, a1: u64) i64 {
 }
 
 pub inline fn syscall3(nr: u64, a0: u64, a1: u64, a2: u64) i64 {
+    if (is_arm) return armCall(nr, a0, a1, a2, 0, 0, 0);
     return asm volatile ("syscall"
         : [ret] "={rax}" (-> i64),
         : [nr] "{rax}" (nr),
@@ -127,6 +149,7 @@ pub inline fn syscall3(nr: u64, a0: u64, a1: u64, a2: u64) i64 {
 }
 
 pub inline fn syscall4(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64) i64 {
+    if (is_arm) return armCall(nr, a0, a1, a2, a3, 0, 0);
     return asm volatile ("syscall"
         : [ret] "={rax}" (-> i64),
         : [nr] "{rax}" (nr),
@@ -135,6 +158,43 @@ pub inline fn syscall4(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64) i64 {
           [a2] "{rdx}" (a2),
           [a3] "{r10}" (a3),
         : "rcx", "r11", "memory"
+    );
+}
+
+/// Which processor this code is running on, as a hint (it can change at
+/// any moment). For tests that check work really spreads across processors.
+pub fn processorHint() u32 {
+    if (is_arm) {
+        // The kernel keeps each processor's number in TPIDRRO_EL0, which
+        // programs may read but not write.
+        return @truncate(asm volatile ("mrs %[out], tpidrro_el0"
+            : [out] "=r" (-> u64),
+        ));
+    }
+    // CPUID leaf 1: the local APIC id in EBX bits 24 to 31.
+    var ebx: u32 = undefined;
+    asm volatile (
+        \\ xchgq %%rbx, %%rsi
+        \\ cpuid
+        \\ xchgq %%rbx, %%rsi
+        : [ebx] "={esi}" (ebx),
+        : [leaf] "{eax}" (@as(u32, 1)),
+        : "eax", "ecx", "edx"
+    );
+    return ebx >> 24;
+}
+
+/// The first word of the thread's TLS block (FS-relative on x86, through
+/// TPIDR_EL0 on Arm).
+pub fn tlsFirstWord() u64 {
+    if (is_arm) {
+        const base = asm volatile ("mrs %[out], tpidr_el0"
+            : [out] "=r" (-> u64),
+        );
+        return @as(*const volatile u64, @ptrFromInt(base)).*;
+    }
+    return asm volatile ("movq %%fs:0, %[value]"
+        : [value] "=r" (-> u64),
     );
 }
 
@@ -705,6 +765,7 @@ pub fn print(comptime fmt: []const u8, args: anytype) void {
 
 // ── Owned virtual memory ────────────────────────────────────────────────────
 pub inline fn syscall6(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) i64 {
+    if (is_arm) return armCall(nr, a0, a1, a2, a3, a4, a5);
     return asm volatile ("syscall"
         : [ret] "={rax}" (-> i64),
         : [nr] "{rax}" (nr),

@@ -2,7 +2,7 @@
 //! No direct Mac hardware access. DMA memory is never freed before device reset.
 const std = @import("std");
 const pci = @import("../../dev/pci/pci.zig");
-const io = @import("../../arch/x86_64/io.zig");
+const io = @import("../../arch/arch.zig").io;
 const pmm = @import("../../mm/pmm.zig");
 const sync = @import("../../sync/spinlock.zig");
 const console = @import("../../console.zig");
@@ -23,7 +23,7 @@ var credential: [64]u8 = undefined;
 var queues: [6]Queue = [_]Queue{.{}} ** 6;
 
 fn fence() void {
-    asm volatile ("mfence" ::: "memory");
+    io.barrier();
 }
 const Queue = struct {
     phys: u64 = 0,

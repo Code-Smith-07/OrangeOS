@@ -34,17 +34,17 @@
 
 const std = @import("std");
 const task_mod = @import("task.zig");
-const context = @import("../arch/x86_64/context.zig");
+const context = @import("../arch/arch.zig").context;
 const spinlock = @import("../sync/spinlock.zig");
 const console = @import("../console.zig");
-const io = @import("../arch/x86_64/io.zig");
+const io = @import("../arch/arch.zig").io;
 const time = @import("../time/time.zig");
-const gdt = @import("../arch/x86_64/gdt.zig");
-const percpu = @import("../arch/x86_64/percpu.zig");
+const gdt = @import("../arch/arch.zig").gdt;
+const percpu = @import("../arch/arch.zig").percpu;
 const address_space = @import("../mm/address_space.zig");
 const task_mod_kstack = @import("task.zig");
 const ipc_object = @import("../ipc/object.zig");
-const fsbase = @import("../arch/x86_64/fsbase.zig");
+const fsbase = @import("../arch/arch.zig").fsbase;
 
 pub const Task = task_mod.Task;
 pub const Priority = task_mod.Priority;
@@ -375,7 +375,7 @@ pub fn init() !void {
 
 fn idleLoop(_: ?*anyopaque) void {
     while (true) {
-        asm volatile ("hlt");
+        @import("../arch/arch.zig").io.halt();
     }
 }
 
@@ -670,6 +670,9 @@ fn switchTo(c: *percpu.PerCpu, next: *Task) void {
     // Switch address spaces if they differ. Reloading CR3 flushes the TLB, so
     // it is worth skipping when both threads share one.
     address_space.switchTo(prev.user_space, next.user_space);
+    // On Arm a program changes its thread pointer without asking the kernel,
+    // so the value has to be read back before it is replaced.
+    if (@import("../arch/arch.zig").is_arm) prev.fs_base = fsbase.get();
     fsbase.set(next.fs_base);
 
     // Run-queue lock and masked interrupts cover both state publication and
@@ -1119,7 +1122,7 @@ pub fn waitTimedOut() bool {
 /// Phase 2 with a bound. `timeout_ms` of 0 waits indefinitely.
 pub fn commitWaitTimeout(timeout_ms: u64) void {
     if (!started) {
-        asm volatile ("pause");
+        @import("../arch/arch.zig").io.pause();
         return;
     }
 
@@ -1165,7 +1168,7 @@ pub fn commitWaitTimeout(timeout_ms: u64) void {
 /// Phase 2: sleep, unless a wake already unlinked us.
 pub fn commitWait() void {
     if (!started) {
-        asm volatile ("pause");
+        @import("../arch/arch.zig").io.pause();
         return;
     }
 

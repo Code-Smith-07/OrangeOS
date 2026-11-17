@@ -348,22 +348,24 @@ The plan to bring the whole system to a macOS level of finish, with sizes
 measured from macOS itself and the path to UTM, VirtualBox and VMware, is
 [014](docs/design/014-macos-class-experience.md).
 
-**Arm64 (started).** On an Apple Silicon Mac the x86 system above is
+**Arm64 (programs run).** On an Apple Silicon Mac the x86 system above is
 emulated instruction by instruction, which is why heavy pages and video are
 slow there. The fix is an Arm64 build that Apple's Hypervisor runs
-directly, the way Parallels runs Windows. Its first stage exists:
+directly, the way Parallels runs Windows. The kernel is now one source for
+both processors (`kernel/arch/arch.zig` is the wall between them), and the
+Arm system boots to the shell with 36 programs, Zig and C on musl:
 
 ```sh
-zig build arm            # zig-out/bin/kernel-arm64.elf
-scripts/run-arm.sh       # native on an Arm host, emulated elsewhere
-python3 tools/arm_boot_smoke.py
+zig build arm               # kernel and programs for Arm64
+scripts/mkdisk-arm.sh       # build/arm64-disk.img
+scripts/run-arm.sh          # native on an Arm host, emulated elsewhere
+python3 tools/arm_smoke.py  # boots, shell, screen, and all runtime checks
 ```
 
-It boots on QEMU's Arm `virt` machine, reads the device tree, takes
-interrupts, runs the timer on every processor and shows a picture through
-the virtual GPU. It does not run programs yet. Measured on this Mac, the
-same work is 8 times faster native than emulated. The plan and the numbers
-are in [015](docs/design/015-arm64-native.md).
+All kernel tests and program checks pass on it, natively and emulated. A
+system call takes 61 ns natively against 1,084 ns emulated. There is no
+desktop on Arm yet (no keyboard, mouse or disk drivers there); the plan,
+the numbers and the limits are in [015](docs/design/015-arm64-native.md).
 
 Userland defaults to `ReleaseSafe` when the kernel is built in Debug mode,
 so software graphics remain responsive while retaining bounds checks. Use

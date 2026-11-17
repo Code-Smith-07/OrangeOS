@@ -68,7 +68,11 @@ static void on_ill(int sig, siginfo_t *info, void *context)
 	(void)info;
 	ucontext_t *uc = context;
 	ill_count++;
+#if defined(__aarch64__)
+	uc->uc_mcontext.pc += 4; /* skip the 4-byte udf */
+#else
 	uc->uc_mcontext.gregs[REG_RIP] += 2; /* skip the 2-byte ud2 */
+#endif
 }
 
 static sigjmp_buf escape;
@@ -167,11 +171,16 @@ int main(void)
 	CHECK(fault_address == (uintptr_t)guarded + 123 && guarded[123] == 42, "fault address, repair and retry");
 	munmap(guarded, 4096);
 
-	/* SIGILL: the handler edits the saved rip to step over ud2. */
+	/* SIGILL: the handler edits the saved program counter to step over the
+	 * invalid instruction (ud2 on x86-64, udf on Arm64). */
 	struct sigaction ill = { .sa_sigaction = on_ill, .sa_flags = SA_SIGINFO };
 	sigemptyset(&ill.sa_mask);
 	CHECK(sigaction(SIGILL, &ill, NULL) == 0, "SIGILL handler");
+#if defined(__aarch64__)
+	__asm__ volatile("udf #0");
+#else
 	__asm__ volatile("ud2");
+#endif
 	CHECK(ill_count == 1, "execution resumed after the edited rip");
 
 	/* SIGFPE: leave the handler with siglongjmp. */
@@ -180,7 +189,14 @@ int main(void)
 	 * 1 / x into a comparison). */
 	volatile int zero = 0, seven = 7, result = 0;
 	if (sigsetjmp(escape, 1) == 0) {
+#if defined(__aarch64__)
+		/* Arm's integer division never traps (x / 0 is 0), so the signal
+		 * is raised directly; the handler and siglongjmp are still tested. */
 		result = seven / zero;
+		raise(SIGFPE);
+#else
+		result = seven / zero;
+#endif
 		CHECK(0, "division by zero did not trap");
 	}
 	(void)result;

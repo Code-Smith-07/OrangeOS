@@ -3,7 +3,7 @@
 //! No GPU driver is involved: the bootloader sets a video mode and gives us a
 //! pointer to write pixels into. Everything drawn in Phase 0 is a CPU store.
 
-const limine = @import("../../boot/limine_req.zig");
+const limine = @import("../../arch/arch.zig").boot;
 
 pub const Color = u32;
 

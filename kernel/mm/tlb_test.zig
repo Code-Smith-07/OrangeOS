@@ -2,8 +2,8 @@
 const tlb = @import("tlb.zig");
 const vmm = @import("vmm.zig");
 const pmm = @import("pmm.zig");
-const smp = @import("../arch/x86_64/smp.zig");
-const percpu = @import("../arch/x86_64/percpu.zig");
+const smp = @import("../arch/arch.zig").smp;
+const percpu = @import("../arch/arch.zig").percpu;
 const console = @import("../console.zig");
 
 const TEST_VA: u64 = 0xffff_ffff_4000_0000;

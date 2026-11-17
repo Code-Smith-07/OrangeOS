@@ -8,7 +8,7 @@
 //! the same driver code works on machines that predate PCIe.
 
 const std = @import("std");
-const io = @import("../../arch/x86_64/io.zig");
+const io = @import("../../arch/arch.zig").io;
 const mcfg = @import("../acpi/mcfg.zig");
 const vmm = @import("../../mm/vmm.zig");
 const console = @import("../../console.zig");

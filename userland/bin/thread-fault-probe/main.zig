@@ -6,7 +6,11 @@ var word: u32 = 0;
 
 fn crasher(_: *anyopaque) void {
     pulp.sleepMs(10);
-    asm volatile ("movq $0, %%rax; movq (%%rax), %%rax" ::: "rax", "memory");
+    if (pulp.is_arm) {
+        asm volatile ("mov x9, #0; ldr x9, [x9]" ::: "x9", "memory");
+    } else {
+        asm volatile ("movq $0, %%rax; movq (%%rax), %%rax" ::: "rax", "memory");
+    }
 }
 
 export fn _start() callconv(.c) noreturn {

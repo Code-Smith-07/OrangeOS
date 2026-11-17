@@ -4,27 +4,12 @@
 const std = @import("std");
 const pulp = @import("pulp");
 
-comptime {
-    asm (
-        \\.section .text
-        \\.global threadProbeCpuId
-        \\threadProbeCpuId:
-        \\    pushq %rbx
-        \\    movl $1, %eax
-        \\    cpuid
-        \\    shrl $24, %ebx
-        \\    movl %ebx, %eax
-        \\    popq %rbx
-        \\    retq
-    );
+fn threadProbeCpuId() u32 {
+    return pulp.processorHint();
 }
 
-extern fn threadProbeCpuId() callconv(.c) u32;
-
 fn tlsValue() u64 {
-    return asm volatile ("movq %%fs:0, %[value]"
-        : [value] "=r" (-> u64),
-    );
+    return pulp.tlsFirstWord();
 }
 
 const WORKERS = 4;
@@ -64,7 +49,7 @@ fn tlbReader(_: *anyopaque) void {
             @atomicStore(u32, &seen, current, .release);
             _ = pulp.wakeWord(&seen, 1) catch 0;
         }
-        asm volatile ("pause");
+        @import("std").atomic.spinLoopHint();
     }
 }
 

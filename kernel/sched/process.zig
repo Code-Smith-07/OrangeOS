@@ -7,7 +7,7 @@ const std = @import("std");
 const vmm = @import("../mm/vmm.zig");
 const pmm = @import("../mm/pmm.zig");
 const elf = @import("../lib/elf.zig");
-const user = @import("../arch/x86_64/user.zig");
+const user = @import("../arch/arch.zig").user;
 const task_mod = @import("task.zig");
 const sched = @import("sched.zig");
 const console = @import("../console.zig");
@@ -90,7 +90,8 @@ fn writeUser(pml4: u64, address: u64, bytes: []const u8) void {
 }
 
 /// Lay out the SysV x86-64 initial process stack, above the zero return slot
-/// OrangeOS's native `_start` functions expect, so both kinds of entry work:
+/// OrangeOS's native `_start` functions expect, so both kinds of entry work
+/// (on Arm64 there is no return slot: the stack pointer is on argc):
 ///
 ///   rsp → 0 (terminal return address)
 ///         argc, argv[0..argc], NULL, envp[0..envc], NULL, auxv…, AT_NULL
@@ -159,7 +160,14 @@ fn buildInitialStack(pml4: u64, node: *const vfs.Node, loaded: elf.Loaded, path:
     at += auxv.len;
     std.debug.assert(at == count);
     // Keep argc (words[1]) 16-byte aligned.
-    cursor = std.mem.alignBackward(u64, cursor - (count - 1) * 8, 16) - 8;
+    cursor = std.mem.alignBackward(u64, cursor - (count - 1) * 8, 16);
+    if (@import("../arch/arch.zig").is_arm) {
+        // Arm has no return-address slot: a program starts with the stack
+        // pointer on argc, 16-byte aligned, as every Arm function expects.
+        writeUser(pml4, cursor, std.mem.sliceAsBytes(words[1..count]));
+        return cursor;
+    }
+    cursor -= 8;
     writeUser(pml4, cursor, std.mem.sliceAsBytes(words[0..count]));
     return cursor;
 }

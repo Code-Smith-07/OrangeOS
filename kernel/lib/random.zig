@@ -20,7 +20,7 @@
 
 const std = @import("std");
 const spinlock = @import("../sync/spinlock.zig");
-const percpu = @import("../arch/x86_64/percpu.zig");
+const percpu = @import("../arch/arch.zig").percpu;
 const sched = @import("../sched/sched.zig");
 
 const Blake2s = std.crypto.hash.blake2.Blake2s256;
@@ -44,56 +44,10 @@ const FastPool = struct {
 };
 var fast_pools: [percpu.MAX_CPUS]FastPool = [_]FastPool{.{}} ** percpu.MAX_CPUS;
 
+const hardware = @import("../arch/arch.zig").entropy;
+
 fn rdtsc() u64 {
-    var low: u32 = undefined;
-    var high: u32 = undefined;
-    asm volatile ("rdtsc"
-        : [low] "={eax}" (low),
-          [high] "={edx}" (high),
-    );
-    return (@as(u64, high) << 32) | low;
-}
-
-fn cpuid(leaf: u32, subleaf: u32) [4]u32 {
-    var eax: u32 = undefined;
-    var ebx: u32 = undefined;
-    var ecx: u32 = undefined;
-    var edx: u32 = undefined;
-    asm volatile ("cpuid"
-        : [eax] "={eax}" (eax),
-          [ebx] "={ebx}" (ebx),
-          [ecx] "={ecx}" (ecx),
-          [edx] "={edx}" (edx),
-        : [leaf] "{eax}" (leaf),
-          [subleaf] "{ecx}" (subleaf),
-    );
-    return .{ eax, ebx, ecx, edx };
-}
-
-/// One hardware random word, or null when the instruction is missing or
-/// keeps failing. RDSEED is preferred: it is meant for seeding.
-fn hardwareWord(use_seed: bool) ?u64 {
-    for (0..10) |_| {
-        var value: u64 = undefined;
-        var ok: u8 = undefined;
-        if (use_seed) {
-            asm volatile ("rdseed %[value]; setc %[ok]"
-                : [value] "=r" (value),
-                  [ok] "=r" (ok),
-                :
-                : "cc"
-            );
-        } else {
-            asm volatile ("rdrand %[value]; setc %[ok]"
-                : [value] "=r" (value),
-                  [ok] "=r" (ok),
-                :
-                : "cc"
-            );
-        }
-        if (ok != 0) return value;
-    }
-    return null;
+    return hardware.cycles();
 }
 
 pub const Source = enum { hardware, interrupts };
@@ -106,12 +60,10 @@ pub fn init(boot_material: []const u8) void {
     pool.update(boot_material);
     const tsc = rdtsc();
     pool.update(std.mem.asBytes(&tsc));
-    const has_rdrand = cpuid(1, 0)[2] & (1 << 30) != 0;
-    const has_rdseed = cpuid(0, 0)[0] >= 7 and cpuid(7, 0)[1] & (1 << 18) != 0;
-    if (has_rdseed or has_rdrand) {
+    if (hardware.available()) {
         var gathered: u32 = 0;
         for (0..8) |_| {
-            const word = hardwareWord(has_rdseed) orelse hardwareWord(false) orelse break;
+            const word = hardware.word() orelse break;
             pool.update(std.mem.asBytes(&word));
             gathered += 64;
         }

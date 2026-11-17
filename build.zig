@@ -332,7 +332,7 @@ pub fn build(b: *std.Build) void {
         musl_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ musl_root, dir }) });
     }
     for (musl_headers) |dir| musl_mod.addIncludePath(.{ .cwd_relative = dir });
-    const musl_sources = collectMuslSources(b, musl_root) catch |e| std.debug.panic("musl sources: {s}", .{@errorName(e)});
+    const musl_sources = collectMuslSources(b, musl_root, "x86_64", &musl_replaced_asm) catch |e| std.debug.panic("musl sources: {s}", .{@errorName(e)});
     const musl_src = b.pathJoin(&.{ musl_root, "src" });
     musl_mod.addCSourceFiles(.{
         .root = .{ .cwd_relative = musl_src },
@@ -706,6 +706,9 @@ pub fn build(b: *std.Build) void {
         .strip = false,
         .single_threaded = false,
     });
+    arm_kernel_mod.addOptions("build_options", options);
+    arm_kernel_mod.addImport("calendar", b.createModule(.{ .root_source_file = b.path("userland/libs/pulp/calendar.zig"), .target = arm_target, .optimize = optimize }));
+    arm_kernel_mod.addAssemblyFile(b.path("kernel/arch/aarch64/switch.S"));
     arm_kernel_mod.addAssemblyFile(b.path("kernel/arch/aarch64/boot.S"));
     arm_kernel_mod.addAssemblyFile(b.path("kernel/arch/aarch64/vectors.S"));
     const arm_kernel = b.addExecutable(.{
@@ -716,8 +719,148 @@ pub fn build(b: *std.Build) void {
     arm_kernel.setLinkerScript(b.path("boot/linker-aarch64.ld"));
     arm_kernel.entry = .{ .symbol_name = "_start" };
     arm_kernel.link_gc_sections = false;
-    const arm_step = b.step("arm", "Build the Arm64 kernel (stage A0)");
+    const arm_step = b.step("arm", "Build the Arm64 kernel");
     arm_step.dependOn(&b.addInstallArtifact(arm_kernel, .{}).step);
+
+    // ── Userland, Arm64 (stage A2) ───────────────────────────────────────────
+    // The Zig programs whose only dependency is Pulp, built for Arm and
+    // installed to zig-out/arm64/bin, where scripts/mkdisk-arm.sh finds
+    // them. Programs that draw (Peel and the apps) follow in stage A4, the
+    // C and C++ programs once musl is built for Arm.
+    var arm_user_add = std.Target.Cpu.Feature.Set.empty;
+    arm_user_add.addFeature(@intFromEnum(ArmFeature.fp_armv8));
+    arm_user_add.addFeature(@intFromEnum(ArmFeature.neon));
+    const arm_user_target = b.resolveTargetQuery(.{
+        .cpu_arch = .aarch64,
+        .os_tag = .freestanding,
+        .abi = .none,
+        .cpu_features_add = arm_user_add,
+    });
+    const arm_pulp_mod = b.createModule(.{
+        .root_source_file = b.path("userland/libs/pulp/pulp.zig"),
+        .target = arm_user_target,
+        .optimize = user_optimize,
+        .pic = false,
+        .stack_protector = false,
+        .stack_check = false,
+        .sanitize_c = false,
+        .single_threaded = false,
+    });
+    arm_pulp_mod.addOptions("ui_options", ui_options);
+    arm_pulp_mod.addImport("calendar", b.createModule(.{ .root_source_file = b.path("userland/libs/pulp/calendar.zig"), .target = arm_user_target, .optimize = user_optimize }));
+    const arm_programs = [_]UserProgram{
+        .{ .name = "init", .path = "userland/servers/seed/main.zig" },
+        .{ .name = "juice", .path = "userland/bin/juice/main.zig" },
+        .{ .name = "echo", .path = "userland/bin/echo/main.zig" },
+        .{ .name = "uname", .path = "userland/bin/uname/main.zig" },
+        .{ .name = "bench", .path = "userland/bin/bench/main.zig" },
+        .{ .name = "vm-probe", .path = "userland/bin/vm-probe/main.zig" },
+        .{ .name = "simd-probe", .path = "userland/bin/simd-probe/main.zig" },
+        .{ .name = "fault-null", .path = "userland/bin/fault-null/main.zig" },
+        .{ .name = "fault-ro", .path = "userland/bin/fault-ro/main.zig" },
+        .{ .name = "fault-nx", .path = "userland/bin/fault-nx/main.zig" },
+        .{ .name = "fault-wx", .path = "userland/bin/fault-wx/main.zig" },
+        .{ .name = "fault-opcode", .path = "userland/bin/fault-opcode/main.zig" },
+        .{ .name = "fd-probe", .path = "userland/bin/fd-probe/main.zig" },
+        .{ .name = "ipc-probe", .path = "userland/bin/ipc-probe/main.zig" },
+        .{ .name = "tls-probe", .path = "userland/bin/tls-probe/main.zig" },
+        .{ .name = "futex-probe", .path = "userland/bin/futex-probe/main.zig" },
+        .{ .name = "futex-waiter", .path = "userland/bin/futex-waiter/main.zig" },
+        .{ .name = "thread-probe", .path = "userland/bin/thread-probe/main.zig" },
+        .{ .name = "thread-exit-probe", .path = "userland/bin/thread-exit-probe/main.zig" },
+        .{ .name = "thread-fault-probe", .path = "userland/bin/thread-fault-probe/main.zig" },
+        .{ .name = "thread-last-probe", .path = "userland/bin/thread-last-probe/main.zig" },
+        .{ .name = "reap-probe", .path = "userland/bin/reap-probe/main.zig" },
+        .{ .name = "orphan-probe", .path = "userland/bin/orphan-probe/main.zig" },
+        .{ .name = "orphan-slow", .path = "userland/bin/orphan-slow/main.zig" },
+    };
+    for (arm_programs) |prog| {
+        const mod = b.createModule(.{
+            .root_source_file = b.path(prog.path),
+            .target = arm_user_target,
+            .optimize = user_optimize,
+            .strip = user_optimize != .Debug,
+            .pic = false,
+            .stack_protector = false,
+            .stack_check = false,
+            .sanitize_c = false,
+            .single_threaded = false,
+        });
+        mod.addImport("pulp", arm_pulp_mod);
+        const exe = b.addExecutable(.{ .name = prog.name, .root_module = mod, .use_lld = true });
+        exe.setLinkerScript(b.path("userland/user-aarch64.ld"));
+        exe.entry = .{ .symbol_name = "_start" };
+        arm_step.dependOn(&b.addInstallArtifact(exe, .{ .dest_dir = .{ .override = .{ .custom = "arm64/bin" } } }).step);
+    }
+
+    // musl for Arm64, the same way as for x86-64 above: musl's own aarch64
+    // files, except those that make system calls, which orange.zig replaces.
+    const arm_musl_headers = [_][]const u8{
+        b.pathJoin(&.{ zig_lib, "libc", "include", "aarch64-linux-musl" }),
+        b.pathJoin(&.{ zig_lib, "libc", "include", "generic-musl" }),
+    };
+    const arm_musl_mod = b.createModule(.{
+        .root_source_file = b.path("userland/libs/musl-orange/orange.zig"),
+        .target = arm_user_target,
+        .optimize = user_optimize,
+        .pic = false,
+        .stack_protector = false,
+        .stack_check = false,
+        .sanitize_c = false,
+        .single_threaded = false,
+    });
+    arm_musl_mod.addIncludePath(b.path("userland/libs/musl-orange/arch"));
+    for ([_][]const u8{ "arch/aarch64", "arch/generic", "src/include", "src/internal" }) |dir| {
+        arm_musl_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ musl_root, dir }) });
+    }
+    for (arm_musl_headers) |dir| arm_musl_mod.addIncludePath(.{ .cwd_relative = dir });
+    const arm_musl_sources = collectMuslSources(b, musl_root, "aarch64", &musl_replaced_asm_arm) catch |e| std.debug.panic("musl sources: {s}", .{@errorName(e)});
+    arm_musl_mod.addCSourceFiles(.{
+        .root = .{ .cwd_relative = musl_src },
+        .files = arm_musl_sources.c,
+        .flags = &.{ "-std=c99", "-nostdinc", "-ffreestanding", "-fexcess-precision=standard", "-frounding-math", "-fno-strict-aliasing", "-D_XOPEN_SOURCE=700", "-fno-stack-protector", "-w" },
+    });
+    for (arm_musl_sources.asm_files) |file| {
+        arm_musl_mod.addAssemblyFile(.{ .cwd_relative = b.pathJoin(&.{ musl_src, file }) });
+    }
+    const arm_musl_lib = b.addLibrary(.{ .linkage = .static, .name = "c", .root_module = arm_musl_mod });
+    const arm_c_programs = [_]CProgram{
+        .{ .name = "musl-probe", .sources = &.{"userland/bin/musl-probe/probe.c"} },
+        .{ .name = "file-probe", .sources = &.{"userland/bin/file-probe/probe.c"} },
+        .{ .name = "thread-capacity", .sources = &.{"userland/bin/thread-capacity/probe.c"} },
+        .{ .name = "pipe-probe", .sources = &.{"userland/bin/pipe-probe/probe.c"} },
+        .{ .name = "epoll-probe", .sources = &.{"userland/bin/epoll-probe/probe.c"} },
+        .{ .name = "unix-probe", .sources = &.{"userland/bin/unix-probe/probe.c"} },
+        .{ .name = "spawn-probe", .sources = &.{"userland/bin/spawn-probe/probe.c"} },
+        .{ .name = "spawn-child", .sources = &.{"userland/bin/spawn-child/child.c"} },
+        .{ .name = "mmap-probe", .sources = &.{"userland/bin/mmap-probe/probe.c"} },
+        .{ .name = "shm-probe", .sources = &.{"userland/bin/shm-probe/probe.c"} },
+        .{ .name = "random-probe", .sources = &.{"userland/bin/random-probe/probe.c"} },
+        .{ .name = "signal-probe", .sources = &.{"userland/bin/signal-probe/probe.c"} },
+    };
+    for (arm_c_programs) |program| {
+        const mod = b.createModule(.{
+            .root_source_file = b.path("userland/libs/musl-orange/crt.zig"),
+            .target = arm_user_target,
+            .optimize = user_optimize,
+            .strip = user_optimize != .Debug,
+            .pic = false,
+            .stack_protector = false,
+            .stack_check = false,
+            .sanitize_c = false,
+            .single_threaded = false,
+        });
+        mod.addCSourceFiles(.{
+            .files = program.sources,
+            .flags = &.{ "-std=c11", "-nostdinc", "-fno-stack-protector", "-Wall", "-Wextra", "-Werror" },
+        });
+        for (arm_musl_headers) |dir| mod.addSystemIncludePath(.{ .cwd_relative = dir });
+        mod.linkLibrary(arm_musl_lib);
+        const exe = b.addExecutable(.{ .name = program.name, .root_module = mod, .use_lld = true });
+        exe.setLinkerScript(b.path("userland/libs/musl-orange/program-aarch64.ld"));
+        exe.entry = .{ .symbol_name = "_start" };
+        arm_step.dependOn(&b.addInstallArtifact(exe, .{ .dest_dir = .{ .override = .{ .custom = "arm64/bin" } } }).step);
+    }
 
     // ── ISO assembly ─────────────────────────────────────────────────────────
     // Depends on the kernel artifact directly, not on the install step, so the
@@ -783,6 +926,15 @@ const MuslSources = struct { c: []const []const u8, asm_files: []const []const u
 /// musl assembly that executes `syscall` itself, replaced by
 /// userland/libs/musl-orange/orange.zig (vfork and the signal restorers fall
 /// back to musl's generic C, which reports ENOSYS or is never called).
+/// The same files on Arm64 (__set_thread_area.s stays: it only writes
+/// TPIDR_EL0, which needs no kernel).
+const musl_replaced_asm_arm = [_][]const u8{
+    "thread/aarch64/__unmapself.s",
+    "thread/aarch64/clone.s",
+    "thread/aarch64/syscall_cp.s",
+    "signal/aarch64/restore.s",
+    "process/aarch64/vfork.s",
+};
 const musl_replaced_asm = [_][]const u8{
     "thread/x86_64/__unmapself.s",
     "thread/x86_64/clone.s",
@@ -848,7 +1000,7 @@ fn contains(list: []const []const u8, item: []const u8) bool {
     return false;
 }
 
-fn collectMuslSources(b: *std.Build, musl_root: []const u8) !MuslSources {
+fn collectMuslSources(b: *std.Build, musl_root: []const u8, arch: []const u8, replaced_asm: []const []const u8) !MuslSources {
     const src = b.pathJoin(&.{ musl_root, "src" });
     var dirs = std.ArrayList([]const u8).init(b.allocator);
     var src_dir = try std.fs.openDirAbsolute(src, .{ .iterate = true });
@@ -869,7 +1021,7 @@ fn collectMuslSources(b: *std.Build, musl_root: []const u8) !MuslSources {
     for (dirs.items) |dir| {
         // Architecture files replace the generic C file of the same name.
         var overridden = std.StringHashMap(void).init(b.allocator);
-        const arch_rel = b.pathJoin(&.{ dir, "x86_64" });
+        const arch_rel = b.pathJoin(&.{ dir, arch });
         if (std.fs.openDirAbsolute(b.pathJoin(&.{ src, arch_rel }), .{ .iterate = true })) |arch_dir_value| {
             var arch_dir = arch_dir_value;
             defer arch_dir.close();
@@ -878,7 +1030,7 @@ fn collectMuslSources(b: *std.Build, musl_root: []const u8) !MuslSources {
                 if (entry.kind != .file) continue;
                 const ext = std.fs.path.extension(entry.name);
                 const rel = b.pathJoin(&.{ arch_rel, entry.name });
-                if (contains(&musl_replaced_asm, rel)) continue;
+                if (contains(replaced_asm, rel)) continue;
                 if (std.mem.eql(u8, ext, ".c")) {
                     try c.append(rel);
                 } else if (std.mem.eql(u8, ext, ".s") or std.mem.eql(u8, ext, ".S")) {

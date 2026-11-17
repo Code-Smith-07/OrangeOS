@@ -7,12 +7,16 @@
 //! the few answered without the kernel are ones that are genuinely no-ops here
 //! (masking signals that can never be delivered, advisory hints).
 //!
-//! This file also replaces musl's x86-64 assembly that executes `syscall`
-//! directly: thread creation, the thread pointer, cancellable system calls
+//! On Arm64 the same requests arrive with Arm's Linux call numbers
+//! (SysArm below) and Arm's structure layouts where they differ.
+//!
+//! This file also replaces musl's assembly that executes `syscall` (x86-64)
+//! or `svc` (Arm64) directly: thread creation, the thread pointer, cancellable system calls
 //! and a detached thread unmapping its own stack.
 //!
 //! SPDX-License-Identifier: MIT OR Apache-2.0
 const std = @import("std");
+const is_arm = @import("builtin").cpu.arch == .aarch64;
 
 // ── Native OrangeOS calls ───────────────────────────────────────────────────
 
@@ -88,7 +92,22 @@ const OR = struct {
     const clock_ns = 63;
 };
 
+inline fn armCall(nr: u64, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64) i64 {
+    return asm volatile ("svc #0"
+        : [ret] "={x0}" (-> i64),
+        : [nr] "{x8}" (nr),
+          [a] "{x0}" (a),
+          [b] "{x1}" (b),
+          [c] "{x2}" (c),
+          [d] "{x3}" (d),
+          [e] "{x4}" (e),
+          [f] "{x5}" (f),
+        : "memory"
+    );
+}
+
 inline fn raw(nr: u64, a: u64, b: u64, c: u64, d: u64, e: u64) i64 {
+    if (is_arm) return armCall(nr, a, b, c, d, e, 0);
     return asm volatile ("syscall"
         : [ret] "={rax}" (-> i64),
         : [nr] "{rax}" (nr),
@@ -102,6 +121,7 @@ inline fn raw(nr: u64, a: u64, b: u64, c: u64, d: u64, e: u64) i64 {
 }
 
 inline fn raw6(nr: u64, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64) i64 {
+    if (is_arm) return armCall(nr, a, b, c, d, e, f);
     return asm volatile ("syscall"
         : [ret] "={rax}" (-> i64),
         : [nr] "{rax}" (nr),
@@ -133,7 +153,10 @@ inline fn raw3(nr: u64, a: u64, b: u64, c: u64) i64 {
 
 // ── Linux numbers and constants musl uses ───────────────────────────────────
 
-const SYS = struct {
+const SYS = if (is_arm) SysArm else SysX86;
+
+/// Linux call numbers on x86-64.
+const SysX86 = struct {
     const read = 0;
     const write = 1;
     const open = 2;
@@ -249,6 +272,125 @@ const SYS = struct {
     const fchmodat2 = 452;
 };
 
+/// The same calls on Arm64 (generated from musl's aarch64 bits/syscall.h).
+/// Arm never had the older forms (open, stat, pipe, ...): musl uses the
+/// *at and *2 forms there, so those names get numbers no call can have.
+const SysArm = struct {
+    const read = 63;
+    const write = 64;
+    const open = -1000; // not on Arm64
+    const close = 57;
+    const stat = -1001; // not on Arm64
+    const fstat = 80;
+    const lstat = -1002; // not on Arm64
+    const lseek = 62;
+    const mmap = 222;
+    const mprotect = 226;
+    const munmap = 215;
+    const brk = 214;
+    const rt_sigaction = 134;
+    const rt_sigprocmask = 135;
+    const ioctl = 29;
+    const poll = -1003; // not on Arm64
+    const select = -1004; // not on Arm64
+    const socket = 198;
+    const sendto = 206;
+    const recvfrom = 207;
+    const sendmsg = 211;
+    const recvmsg = 212;
+    const shutdown = 210;
+    const socketpair = 199;
+    const connect = 203;
+    const accept = 202;
+    const bind = 200;
+    const listen = 201;
+    const getsockname = 204;
+    const getpeername = 205;
+    const setsockopt = 208;
+    const getsockopt = 209;
+    const accept4 = 242;
+    const wait4 = 260;
+    const kill = 129;
+    const rt_sigpending = 136;
+    const sigaltstack = 132;
+    const tkill = 130;
+    const tgkill = 131;
+    const chdir = 49;
+    const fchdir = 50;
+    const memfd_create = 279;
+    const getrandom = 278;
+    const epoll_create = -1005; // not on Arm64
+    const epoll_wait = -1006; // not on Arm64
+    const epoll_ctl = 21;
+    const pselect6 = 72;
+    const ppoll = 73;
+    const epoll_pwait = 22;
+    const epoll_create1 = 20;
+    const epoll_pwait2 = 441;
+    const pipe = -1007; // not on Arm64
+    const dup = 23;
+    const dup2 = -1008; // not on Arm64
+    const eventfd = -1009; // not on Arm64
+    const eventfd2 = 19;
+    const dup3 = 24;
+    const pipe2 = 59;
+    const pread64 = 67;
+    const pwrite64 = 68;
+    const readv = 65;
+    const writev = 66;
+    const access = -1010; // not on Arm64
+    const sched_yield = 124;
+    const mremap = 216;
+    const madvise = 233;
+    const nanosleep = 101;
+    const getpid = 172;
+    const exit = 93;
+    const uname = 160;
+    const fcntl = 25;
+    const getcwd = 17;
+    const rename = -1011; // not on Arm64
+    const mkdir = -1012; // not on Arm64
+    const rmdir = -1013; // not on Arm64
+    const unlink = -1014; // not on Arm64
+    const fsync = 82;
+    const fdatasync = 83;
+    const truncate = 45;
+    const ftruncate = 46;
+    const statfs = 43;
+    const sync = 81;
+    const syncfs = 267;
+    const getdents64 = 61;
+    const mkdirat = 34;
+    const unlinkat = 35;
+    const renameat = 38;
+    const renameat2 = 276;
+    const gettimeofday = 169;
+    const getuid = 174;
+    const getgid = 176;
+    const geteuid = 175;
+    const getegid = 177;
+    const getppid = 173;
+    const arch_prctl = -1015; // not on Arm64
+    const gettid = 178;
+    const time = -1016; // not on Arm64
+    const futex = 98;
+    const set_tid_address = 96;
+    const clock_gettime = 113;
+    const clock_getres = 114;
+    const clock_nanosleep = 115;
+    const exit_group = 94;
+    const openat = 56;
+    const newfstatat = 79;
+    const faccessat = 48;
+    const prlimit64 = 261;
+    const statx = 291;
+    const faccessat2 = 439;
+    const chmod = -1017; // not on Arm64
+    const fchmod = 52;
+    const fchmodat = 53;
+    const fchmodat2 = 452;
+};
+
 const E = struct {
     const PERM = 1;
     const NOENT = 2;
@@ -284,7 +426,7 @@ const O_CREAT: u64 = 0o100;
 const O_EXCL: u64 = 0o200;
 const O_TRUNC: u64 = 0o1000;
 const O_APPEND: u64 = 0o2000;
-const O_DIRECTORY: u64 = 0o200000;
+const O_DIRECTORY: u64 = if (is_arm) 0o40000 else 0o200000;
 const O_NONBLOCK: u64 = 0o4000;
 const O_CLOEXEC: u64 = 0o2000000;
 /// O_TMPFILE without its O_DIRECTORY bit.
@@ -408,8 +550,27 @@ fn changeMode(dirfd: i64, path_address: u64, flags: u64, mode: u64) i64 {
     return 0;
 }
 
-/// Linux `struct stat` for x86-64 (musl's kstat).
-const KStat = extern struct {
+/// Linux `struct stat` (musl's kstat), whose layout differs by processor.
+const KStat = if (is_arm) KStatArm else KStatX86;
+
+const KStatArm = extern struct {
+    dev: u64 = 0,
+    ino: u64 = 0,
+    mode: u32,
+    nlink: u32 = 1,
+    uid: u32 = 0,
+    gid: u32 = 0,
+    rdev: u64 = 0,
+    pad0: u64 = 0,
+    size: i64,
+    blksize: i32 = 4096,
+    pad1: i32 = 0,
+    blocks: i64,
+    times: [6]i64 = [_]i64{0} ** 6,
+    unused: [2]u32 = .{ 0, 0 },
+};
+
+const KStatX86 = extern struct {
     dev: u64 = 0,
     ino: u64 = 0,
     nlink: u64 = 1,
@@ -607,15 +768,16 @@ fn sendMessage(fd: u64, header_address: u64, flags: u64) i64 {
     var offset: u64 = 0;
     while (offset + CMSG_HEADER <= header.controllen) {
         const at = header.control + offset;
-        const length = @as(*const u64, @ptrFromInt(at)).*;
-        const level = @as(*const i32, @ptrFromInt(at + 8)).*;
-        const kind = @as(*const i32, @ptrFromInt(at + 12)).*;
+        // A control buffer is often a char array, so no alignment is assumed.
+        const length = @as(*align(1) const u64, @ptrFromInt(at)).*;
+        const level = @as(*align(1) const i32, @ptrFromInt(at + 8)).*;
+        const kind = @as(*align(1) const i32, @ptrFromInt(at + 12)).*;
         if (length < CMSG_HEADER or offset + length > header.controllen) return err(E.INVAL);
         if (level != SOL_SOCKET or kind != SCM_RIGHTS) return err(E.INVAL);
         const n: usize = @intCast((length - CMSG_HEADER) / 4);
         if (count + n > MAX_RIGHTS) return err(E.INVAL);
-        const data: [*]const i32 = @ptrFromInt(at + CMSG_HEADER);
-        @memcpy(rights[count .. count + n], data[0..n]);
+        const data: [*]const u8 = @ptrFromInt(at + CMSG_HEADER);
+        @memcpy(std.mem.sliceAsBytes(rights[count .. count + n]), data[0 .. n * 4]);
         count += n;
         offset += std.mem.alignForward(u64, length, 8);
     }
@@ -642,11 +804,12 @@ fn receiveMessage(fd: u64, header_address: u64, flags: u64) i64 {
     if (message.fd_count > 0) {
         const at = header.control;
         const length = CMSG_HEADER + @as(u64, message.fd_count) * 4;
-        @as(*u64, @ptrFromInt(at)).* = length;
-        @as(*i32, @ptrFromInt(at + 8)).* = SOL_SOCKET;
-        @as(*i32, @ptrFromInt(at + 12)).* = SCM_RIGHTS;
-        const data: [*]i32 = @ptrFromInt(at + CMSG_HEADER);
-        @memcpy(data[0..message.fd_count], rights[0..message.fd_count]);
+        // A control buffer is often a char array, so no alignment is assumed.
+        @as(*align(1) u64, @ptrFromInt(at)).* = length;
+        @as(*align(1) i32, @ptrFromInt(at + 8)).* = SOL_SOCKET;
+        @as(*align(1) i32, @ptrFromInt(at + 12)).* = SCM_RIGHTS;
+        const data: [*]u8 = @ptrFromInt(at + CMSG_HEADER);
+        @memcpy(data[0 .. message.fd_count * 4], std.mem.sliceAsBytes(rights[0..message.fd_count]));
         header.controllen = std.mem.alignForward(u64, length, 8);
     } else header.controllen = 0;
     return r;
@@ -1592,7 +1755,9 @@ fn uname(address: u64) i64 {
 
 // ── Replacements for musl's raw-syscall assembly ────────────────────────────
 
-export fn __set_thread_area(pointer: usize) callconv(.c) c_int {
+/// x86-64 only: Arm64 programs set their thread pointer themselves (musl's
+/// own aarch64 __set_thread_area writes TPIDR_EL0).
+fn setThreadArea(pointer: usize) callconv(.c) c_int {
     return @intCast(raw1(OR.tls_set_base, pointer));
 }
 
@@ -1638,9 +1803,10 @@ export fn __clone(
         .argument = argument,
         .tid_out = if (bits & CLONE_PARENT_SETTID != 0) ptid else null,
     };
-    // A zero return slot: the entry sees rsp = 8 mod 16, as after a CALL.
-    const rsp = top - 8;
-    @as(*usize, @ptrFromInt(rsp)).* = 0;
+    // x86: a zero return slot, so the entry sees rsp = 8 mod 16 as after a
+    // CALL. Arm: the stack pointer itself, 16-byte aligned.
+    const rsp = if (is_arm) top else top - 8;
+    if (!is_arm) @as(*usize, @ptrFromInt(rsp)).* = 0;
     const tid = raw(
         OR.thread_create,
         @intFromPtr(&cloneEntry),
@@ -1666,7 +1832,11 @@ export fn __clone(
 // one with the stack at the saved ucontext, which OrangeOS's sigreturn (154)
 // restores.
 comptime {
-    asm (
+    if (!is_arm) @export(&setThreadArea, .{ .name = "__set_thread_area" });
+}
+
+comptime {
+    if (is_arm) asm (arm_helpers) else asm (
         \\.text
         \\.global __syscall_cp_asm
         \\.hidden __syscall_cp_asm
@@ -1721,3 +1891,63 @@ comptime {
         \\    ud2
     );
 }
+
+/// The same helpers for Arm64. __syscall_cp_asm(cancel, nr, a1..a6) gets
+/// all eight arguments in x0-x7. A signal handler returns to __restore_rt
+/// through the link register with the stack at the frame the kernel built:
+/// siginfo (128 bytes), then the ucontext that sigreturn (154) restores.
+const arm_helpers =
+    \\.text
+    \\.global __syscall_cp_asm
+    \\.hidden __syscall_cp_asm
+    \\.global __cp_begin
+    \\.hidden __cp_begin
+    \\.global __cp_end
+    \\.hidden __cp_end
+    \\.global __cp_cancel
+    \\.hidden __cp_cancel
+    \\.type __syscall_cp_asm,%function
+    \\__syscall_cp_asm:
+    \\    stp x29, x30, [sp, #-16]!
+    \\    mov x29, sp
+    \\__cp_begin:
+    \\    ldr w9, [x0]
+    \\    cbnz w9, __cp_cancel
+    \\    mov x0, x1
+    \\    mov x1, x2
+    \\    mov x2, x3
+    \\    mov x3, x4
+    \\    mov x4, x5
+    \\    mov x5, x6
+    \\    mov x6, x7
+    \\    bl __orange_syscall
+    \\__cp_end:
+    \\    ldp x29, x30, [sp], #16
+    \\    ret
+    \\__cp_cancel:
+    \\    ldp x29, x30, [sp], #16
+    \\    b __cancel
+    \\
+    \\.global __restore_rt
+    \\.hidden __restore_rt
+    \\.type __restore_rt,%function
+    \\.global __restore
+    \\.hidden __restore
+    \\.type __restore,%function
+    \\__restore_rt:
+    \\__restore:
+    \\    add x0, sp, #128
+    \\    mov x8, #154
+    \\    svc #0
+    \\    udf #0
+    \\
+    \\.global __unmapself
+    \\.type __unmapself,%function
+    \\__unmapself:
+    \\    mov x8, #11
+    \\    svc #0
+    \\    mov x0, #0
+    \\    mov x8, #41
+    \\    svc #0
+    \\    udf #0
+;

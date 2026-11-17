@@ -8,7 +8,7 @@
 
 const sched = @import("../sched/sched.zig");
 const console = @import("../console.zig");
-const serial = @import("../drivers/char/serial.zig");
+const serial = @import("../arch/arch.zig").serial;
 const pty_mod = @import("../ipc/pty.zig");
 const ipc_object = @import("../ipc/object.zig");
 

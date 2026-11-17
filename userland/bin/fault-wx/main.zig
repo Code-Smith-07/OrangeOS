@@ -4,7 +4,11 @@ const pulp = @import("pulp");
 
 export fn _start() callconv(.c) noreturn {
     const page = pulp.mapMemory(4096, .read_write) catch pulp.exit(1);
-    page[0] = 0xC3; // ret
+    if (pulp.is_arm) {
+        @as(*u32, @ptrCast(page.ptr)).* = 0xD65F_03C0; // ret
+    } else {
+        page[0] = 0xC3; // ret
+    }
     pulp.protectMemory(page, .read_execute) catch pulp.exit(2);
     const function: *const fn () callconv(.c) void = @ptrCast(page.ptr);
     function();

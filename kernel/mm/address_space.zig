@@ -22,7 +22,7 @@ const pmm = @import("pmm.zig");
 const vmm = @import("vmm.zig");
 const user_vm = @import("user_vm.zig");
 const object = @import("../ipc/object.zig");
-const percpu = @import("../arch/x86_64/percpu.zig");
+const percpu = @import("../arch/arch.zig").percpu;
 const spinlock = @import("../sync/spinlock.zig");
 const preempt = @import("../sched/preempt.zig");
 const tlb = @import("tlb.zig");
@@ -171,7 +171,7 @@ pub const AddressSpace = struct {
         const previous = @atomicRmw(u64, &self.access_epoch, .Add, 1, .seq_cst);
         const slot: usize = @intCast(previous & 1);
         while (@atomicLoad(u32, &self.access_counts[slot], .seq_cst) != 0) {
-            asm volatile ("pause");
+            @import("../arch/arch.zig").io.pause();
         }
     }
 

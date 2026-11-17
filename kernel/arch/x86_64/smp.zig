@@ -119,6 +119,8 @@ export fn apEntry(index: u64) callconv(.c) noreturn {
 
 /// Vector used to stop every other core when the kernel panics.
 pub const VECTOR_PANIC_HALT: u8 = 0xF0;
+/// The interrupt one processor sends another to drop cached translations.
+pub const VECTOR_TLB: u8 = 0xF1;
 
 /// Destination shorthand 0b11: every CPU except the one sending.
 const SHORTHAND_ALL_BUT_SELF: u32 = 3 << 18;
